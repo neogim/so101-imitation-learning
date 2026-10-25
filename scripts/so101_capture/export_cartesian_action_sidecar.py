@@ -6,7 +6,7 @@ the action's *relative* TCP translation/rotation (plus original gripper goal).
 This is a proposed alternative training target, NOT data augmentation and NOT
 a trainable LeRobot ACT Dataset yet. Source Dataset is never written to.
 
-Requires local LeRobot with lerobot.model.kinematics.RobotKinematics, placo,
+Requires Placo directly (no LeRobot installation),
 pyarrow and numpy. Never imports robot hardware or sends motor commands.
 """
 from __future__ import annotations
@@ -86,7 +86,7 @@ def read_rows(root: Path):
 def export(root: Path, output: Path, urdf: Path, frame: str, expected_episodes: int | None) -> dict:
     import pyarrow as pa
     import pyarrow.parquet as pq
-    from lerobot.model.kinematics import RobotKinematics
+    import placo
 
     if not (root / "meta/info.json").is_file():
         raise ValueError("Not a LeRobot Dataset root")
@@ -125,7 +125,7 @@ def export(root: Path, output: Path, urdf: Path, frame: str, expected_episodes: 
             raise ValueError(f"Nonincreasing timestamp in episode {ep}")
         last[ep] = float(row["timestamp"])
         vec = target_from_fk(row["observation.state"], row["action"],
-                             solver.forward_kinematics)
+                             forward_kinematics)
         max_pos = max(max_pos, float(np.linalg.norm(vec[:3])))
         max_rot = max(max_rot, float(np.linalg.norm(vec[3:6])))
         converted.append({"episode_index": ep, "frame_index": ix,
