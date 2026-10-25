@@ -63,6 +63,26 @@ class SessionTests(unittest.TestCase):
         io.request.assert_not_called()
         self.assertFalse(sink.items)
 
+    def test_multicamera_not_sampled_in_safe_reset_or_after_episode_finish(self):
+        s, io, sink = self.make(image_names=('side', 'wrist'), image_shape=(480, 640, 3))
+        io.image_names = ('side', 'wrist')
+        io.image_shape = (480, 640, 3)
+        original_images = io.images
+        io.images = Mock(side_effect=AssertionError('camera sampled outside RECORDING'))
+        for i in range(12):
+            s.tick(i*.05)
+        io.images.assert_not_called()
+
+        io.images = Mock(side_effect=original_images)
+        s.tick(.6, 'r')
+        s.tick(.65)
+        self.assertEqual(s.mode, 'RECORDING')
+        recorded_calls = io.images.call_count
+        s.tick(.71, 'e')
+        self.assertEqual(s.mode, 'TELEOP_RESET')
+        self.assertEqual(io.images.call_count, recorded_calls)
+        self.assertEqual(sink.saved, 1)
+
     def test_resume_large_difference_refused(self):
         s, io, sink = self.make()
         for i in range(12):

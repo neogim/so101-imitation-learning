@@ -174,6 +174,7 @@ class OBSSourceCamera:
         self.stop_event = threading.Event()
         self.frame = None
         self.timestamp = None
+        self.last_sampled_timestamp = None
         self.last_changed = None
         self.last_digest = None
         self.error = None
@@ -204,11 +205,15 @@ class OBSSourceCamera:
         digest = hashlib.sha256(frame.tobytes()).digest()
         done_at = time.perf_counter()
         with self.lock:
-            if digest != self.content_digest:
+            changed = digest != self.content_digest
+            if changed:
                 self.last_changed = response_at
+                # OBS provides only the screenshot response time, not a device
+                # capture timestamp. Publish it only when pixels changed so a
+                # repeated OBS/DroidCam image cannot masquerade as a new frame.
+                self.frame, self.timestamp = frame, response_at
             self.content_digest = digest
             self.last_digest = digest
-            self.frame, self.timestamp = frame, response_at
             self.active_request_started_at = None
             self.last_fetch_timing = {
                 "request_started_at": started, "response_at": response_at,
@@ -229,7 +234,7 @@ class OBSSourceCamera:
                     "total_ms": (done_at-started)*1000,
                     "jpeg_bytes": len(raw),
                     "content_digest": digest.hex(),
-                    "content_changed": self.last_changed == response_at,
+                    "content_changed": changed,
                 })
 
     def connect(self):
@@ -263,16 +268,34 @@ class OBSSourceCamera:
                 return
             self.stop_event.wait(max(0, .04 - (time.perf_counter() - started)))
 
-    def sample(self, max_age_s=.10, freeze_timeout_s=10.0):
-        with self.lock:
-            if self.error or self.frame is None or self.timestamp is None:
-                raise CameraFault(f"{self.name}: {self.error or 'no frame'}")
+    def sample(self, max_age_s=.10, freeze_timeout_s=10.0, transient_wait_s=.05):
+        """Wait briefly for a changed, fresh OBS frame; never reuse the stale one."""
+        deadline = time.perf_counter() + transient_wait_s
+        while True:
+            with self.lock:
+                error = self.error
+                frame = self.frame
+                timestamp = self.timestamp
+                last_changed = self.last_changed
+            if error or frame is None or timestamp is None:
+                raise CameraFault(f"{self.name}: {error or 'no frame'}")
             now = time.perf_counter()
-            if now-self.timestamp > max_age_s:
-                raise CameraFault(f"{self.name}: stale frame {now-self.timestamp:.3f}s")
-            if self.last_changed is not None and now-self.last_changed > freeze_timeout_s:
-                raise CameraFault(f"{self.name}: repeated identical screenshot for {freeze_timeout_s}s")
-            return self.frame.copy(), self.timestamp
+            age = now - timestamp
+            unused = timestamp != self.last_sampled_timestamp
+            if age <= max_age_s and unused:
+                if last_changed is not None and now-last_changed > freeze_timeout_s:
+                    raise CameraFault(
+                        f"{self.name}: repeated identical screenshot for {freeze_timeout_s}s"
+                    )
+                with self.lock:
+                    self.last_sampled_timestamp = timestamp
+                return frame.copy(), timestamp
+            if now >= deadline:
+                raise CameraFault(
+                    f"{self.name}: stale or reused frame {age:.3f}s after waiting "
+                    f"{transient_wait_s:.3f}s for a changed fresh frame"
+                )
+            time.sleep(min(.002, deadline-now))
 
     def disconnect(self):
         self.stop_event.set()
@@ -419,6 +442,35 @@ class AVFoundationCamera(OBSSourceCamera):
                     "content_changed": changed,
                 })
         return True
+
+    def sample(self, max_age_s=.10, freeze_timeout_s=10.0, transient_wait_s=.05):
+        """Wait briefly for a fresh direct-capture frame; never return the stale one."""
+        deadline = time.perf_counter() + transient_wait_s
+        while True:
+            with self.lock:
+                error = self.error
+                frame = self.frame
+                timestamp = self.timestamp
+                last_changed = self.last_changed
+            if error or frame is None or timestamp is None:
+                raise CameraFault(f"{self.name}: {error or 'no frame'}")
+            now = time.perf_counter()
+            age = now - timestamp
+            if age <= max_age_s:
+                if last_changed is not None and now-last_changed > freeze_timeout_s:
+                    raise CameraFault(
+                        f"{self.name}: repeated identical screenshot for {freeze_timeout_s}s"
+                    )
+                return frame.copy(), timestamp
+            if now >= deadline:
+                raise CameraFault(
+                    f"{self.name}: stale frame {age:.3f}s after waiting "
+                    f"{transient_wait_s:.3f}s for a fresh frame"
+                )
+            # The capture thread publishes only frames whose capture-to-host age
+            # is <=100 ms. A delayed frame is discarded in _fetch(), so this
+            # loop cannot relabel or return it as fresh.
+            time.sleep(min(.002, deadline-now))
 
     def _run(self):
         while not self.stop_event.is_set():

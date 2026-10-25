@@ -5,16 +5,18 @@ from io import BytesIO
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 from PIL import Image
 import numpy as np
 import yaml
 
-from multi_camera import (CameraFault, CameraRig, capture_image_shape, image_keys,
+from multi_camera import (AVFoundationCamera, CameraFault, CameraRig, OBSSourceCamera,
+                          capture_image_shape, image_keys,
                           load_config, obs_websocket_password, verify_source)
 from compare_camera_previews import flatten
 from preview_cameras import write_request_timeline
@@ -149,6 +151,102 @@ class MultiCameraTests(unittest.TestCase):
         self.assertEqual(capture_image_shape(three), (240, 320, 3))
         self.assertEqual(type(CameraRig(three).cameras['wrist']).__name__, 'AVFoundationCamera')
 
+    def test_avfoundation_transient_stale_waits_for_new_fresh_frame(self):
+        camera = AVFoundationCamera('wrist', {'unique_id': 'synthetic'}, {},
+                                    image_shape=(2, 2, 3))
+        old = np.zeros((2, 2, 3), dtype=np.uint8)
+        fresh = np.ones((2, 2, 3), dtype=np.uint8)
+        with camera.lock:
+            camera.frame = old
+            camera.timestamp = time.perf_counter() - .110
+            camera.last_changed = camera.timestamp
+
+        def publish_fresh():
+            time.sleep(.01)
+            with camera.lock:
+                camera.frame = fresh
+                camera.timestamp = time.perf_counter()
+                camera.last_changed = camera.timestamp
+
+        publisher = threading.Thread(target=publish_fresh)
+        publisher.start()
+        frame, stamp = camera.sample(transient_wait_s=.05)
+        publisher.join()
+        np.testing.assert_array_equal(frame, fresh)
+        self.assertLess(time.perf_counter()-stamp, .1)
+
+    def test_avfoundation_persistent_stale_never_returns_old_frame(self):
+        camera = AVFoundationCamera('wrist', {'unique_id': 'synthetic'}, {},
+                                    image_shape=(2, 2, 3))
+        with camera.lock:
+            camera.frame = np.zeros((2, 2, 3), dtype=np.uint8)
+            camera.timestamp = time.perf_counter() - .110
+            camera.last_changed = camera.timestamp
+        with self.assertRaisesRegex(CameraFault, 'stale frame.*after waiting'):
+            camera.sample(transient_wait_s=.005)
+
+    def test_obs_transient_stale_waits_for_changed_fresh_frame(self):
+        camera = OBSSourceCamera('side', spec('side', 1), {}, collect_timings=True,
+                                 image_shape=(2, 2, 3))
+        old = np.zeros((2, 2, 3), dtype=np.uint8)
+        fresh = np.ones((2, 2, 3), dtype=np.uint8)
+        with camera.lock:
+            camera.frame = old
+            camera.timestamp = time.perf_counter() - .141
+            camera.last_changed = camera.timestamp
+
+        def publish_fresh():
+            time.sleep(.01)
+            with camera.lock:
+                camera.frame = fresh
+                camera.timestamp = time.perf_counter()
+                camera.last_changed = camera.timestamp
+
+        publisher = threading.Thread(target=publish_fresh)
+        publisher.start()
+        started = time.perf_counter()
+        frame, stamp = camera.sample(transient_wait_s=.05)
+        elapsed = time.perf_counter() - started
+        publisher.join()
+        np.testing.assert_array_equal(frame, fresh)
+        self.assertLess(elapsed, .05)
+        self.assertLess(time.perf_counter()-stamp, .1)
+
+    def test_obs_identical_screenshot_does_not_advance_freshness(self):
+        camera = OBSSourceCamera('side', spec('side', 1), {}, collect_timings=True,
+                                 image_shape=(2, 2, 3))
+        image = Image.new('RGB', (2, 2), (1, 2, 3))
+        encoded = BytesIO()
+        image.save(encoded, format='JPEG')
+        payload = 'data:image/jpeg;base64,' + base64.b64encode(encoded.getvalue()).decode()
+        camera.client = Mock()
+        camera.client.request.return_value = {'imageData': payload}
+        camera._fetch()
+        first_timestamp = camera.timestamp
+        time.sleep(.002)
+        camera._fetch()
+        self.assertEqual(camera.timestamp, first_timestamp)
+        self.assertFalse(camera.fetch_timings[-1]['content_changed'])
+
+    def test_obs_persistent_stale_never_returns_old_frame(self):
+        camera = OBSSourceCamera('side', spec('side', 1), {}, image_shape=(2, 2, 3))
+        with camera.lock:
+            camera.frame = np.zeros((2, 2, 3), dtype=np.uint8)
+            camera.timestamp = time.perf_counter() - .141
+            camera.last_changed = camera.timestamp
+        with self.assertRaisesRegex(CameraFault, 'stale or reused frame.*changed fresh frame'):
+            camera.sample(transient_wait_s=.005)
+
+    def test_obs_same_published_frame_is_not_sampled_twice(self):
+        camera = OBSSourceCamera('side', spec('side', 1), {}, image_shape=(2, 2, 3))
+        with camera.lock:
+            camera.frame = np.zeros((2, 2, 3), dtype=np.uint8)
+            camera.timestamp = time.perf_counter()
+            camera.last_changed = camera.timestamp
+        camera.sample(transient_wait_s=0)
+        with self.assertRaisesRegex(CameraFault, 'stale or reused frame'):
+            camera.sample(transient_wait_s=.005)
+
     def test_independent_samples_and_identity(self):
         cfg = self.make_config(2)
         with patch('multi_camera.OBSClient', FakeOBS):
@@ -197,8 +295,8 @@ class MultiCameraTests(unittest.TestCase):
                 self.assertEqual(FakeOBS.screenshot_requests[0]['imageHeight'], 336)
                 with rig.cameras['overhead'].lock:
                     rig.cameras['overhead'].timestamp = time.perf_counter() - .101
-                with self.assertRaisesRegex(CameraFault, 'stale frame'):
-                    rig.cameras['overhead'].sample()
+                with self.assertRaisesRegex(CameraFault, 'stale or reused frame'):
+                    rig.cameras['overhead'].sample(transient_wait_s=0)
             finally:
                 rig.disconnect()
 
@@ -245,7 +343,7 @@ class MultiCameraTests(unittest.TestCase):
                 with cam.lock:
                     cam.timestamp = time.perf_counter() - 1
                 with self.assertRaisesRegex(CameraFault, 'stale'):
-                    cam.sample()
+                    cam.sample(transient_wait_s=0)
             finally:
                 rig.disconnect()
 
