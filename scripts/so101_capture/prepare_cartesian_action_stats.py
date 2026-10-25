@@ -8,19 +8,20 @@ it is NOT strict train-only normalization for all features.
 from __future__ import annotations
 import argparse
 import json
+import random
 from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-def prepare(source: Path, candidate: Path):
+def prepare(source: Path, candidate: Path, seed: int = 20261102, validation_fraction: float = 0.15):
     source, candidate = source.resolve(), candidate.resolve()
     src_stats = source / "meta/stats.json"
     dest = candidate / "meta/stats.json"
     split_path = candidate / "episode_split.json"
     if not src_stats.is_file():
         raise FileNotFoundError(f"Source stats unavailable: {src_stats}")
-    if not split_path.is_file():
-        raise FileNotFoundError(f"Split manifest unavailable: {split_path}")
+    if not 0 < validation_fraction < 1:
+        raise ValueError("validation_fraction must be between 0 and 1")
     if not (candidate / "NOT_TRAINING_READY").is_file():
         raise ValueError("Expected NOT_TRAINING_READY marker")
     if dest.exists():
@@ -32,11 +33,31 @@ def prepare(source: Path, candidate: Path):
         info["features"]["action"]["shape"] != [7] or
         original_info["features"]["action"]["shape"] != [6]):
         raise ValueError("Unexpected Dataset schema")
-    split = json.loads(split_path.read_text())
+    split_source = "candidate"
+    if split_path.is_file():
+        split = json.loads(split_path.read_text())
+    elif (source / "episode_split.json").is_file():
+        split = json.loads((source / "episode_split.json").read_text())
+        split_source = "original_dataset"
+    else:
+        shuffled = list(range(53))
+        random.Random(seed).shuffle(shuffled)
+        n_val = max(1, round(53 * validation_fraction))
+        val_ids = sorted(shuffled[:n_val])
+        split = {
+            "seed": seed, "validation_fraction": validation_fraction,
+            "train_episode_indices": [i for i in range(53) if i not in set(val_ids)],
+            "validation_episode_indices": val_ids,
+            "rule": "deterministic episode-level shuffle; no frame crosses splits",
+        }
+        split_source = "new_deterministic_20261102"
+    # Only persist after both split and Dataset metadata checks pass below.
     train = list(map(int, split["train_episode_indices"]))
     valid = list(map(int, split["validation_episode_indices"]))
     if not train or not valid or set(train) & set(valid) or set(train) | set(valid) != set(range(53)):
         raise ValueError("Invalid train/validation split")
+    if not split_path.exists():
+        split_path.write_text(json.dumps(split, indent=2) + "\\n")
     stats = json.loads(src_stats.read_text())
     if "observation.state" not in stats:
         raise ValueError("Source state stats missing")
@@ -71,6 +92,7 @@ def prepare(source: Path, candidate: Path):
             raise AssertionError("Wrong action stats dimensionality")
     dest.write_text(json.dumps(stats, ensure_ascii=False, indent=2) + "\n")
     report = {
+        "split_source": split_source,
         "train_episodes": train,
         "validation_episodes": valid,
         "train_action_frames": len(x),
@@ -87,7 +109,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", required=True, type=Path)
     p.add_argument("--candidate", required=True, type=Path)
+    p.add_argument("--seed", type=int, default=20261102)
+    p.add_argument("--validation-fraction", type=float, default=0.15)
     a = p.parse_args()
-    print(json.dumps(prepare(a.source,a.candidate), indent=2))
+    print(json.dumps(prepare(a.source,a.candidate,a.seed,a.validation_fraction), indent=2))
 if __name__ == "__main__":
     main()
