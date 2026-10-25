@@ -57,6 +57,46 @@ class FakeOBS:
 
 
 class MultiCameraTests(unittest.TestCase):
+    class PairCamera:
+        def __init__(self, timestamps):
+            self.timestamps = list(timestamps)
+            self.calls = 0
+
+        def sample(self, transient_wait_s=.05, newer_than=None, **_):
+            self.calls += 1
+            for stamp in self.timestamps:
+                if newer_than is None or stamp > newer_than:
+                    self.timestamps.remove(stamp)
+                    return np.zeros((1, 1, 3), dtype=np.uint8), stamp
+            raise CameraFault('no newer frame within bounded wait')
+
+    def make_pair_rig(self, side, wrist):
+        rig = CameraRig.__new__(CameraRig)
+        rig.cameras = {'side': self.PairCamera(side), 'wrist': self.PairCamera(wrist)}
+        return rig
+
+    def test_pairing_accepts_initial_pair_within_75ms(self):
+        now = time.perf_counter()
+        rig = self.make_pair_rig([now-.030], [now-.080])
+        _, stamps = rig.sample_all()
+        self.assertLessEqual(max(stamps.values())-min(stamps.values()), .075)
+        self.assertEqual(rig.cameras['side'].calls, 1)
+        self.assertEqual(rig.cameras['wrist'].calls, 1)
+
+    def test_pairing_refreshes_only_older_camera_and_recovers(self):
+        now = time.perf_counter()
+        rig = self.make_pair_rig([now-.005], [now-.090, now-.020])
+        _, stamps = rig.sample_all()
+        self.assertLessEqual(max(stamps.values())-min(stamps.values()), .075)
+        self.assertEqual(rig.cameras['side'].calls, 1)
+        self.assertEqual(rig.cameras['wrist'].calls, 2)
+
+    def test_pairing_fails_when_older_camera_never_updates(self):
+        now = time.perf_counter()
+        rig = self.make_pair_rig([now-.005], [now-.090])
+        with self.assertRaisesRegex(CameraFault, 'no newer frame|availability pairing'):
+            rig.sample_all(pairing_wait_s=.005)
+
     def test_request_timeline_written_after_preview_with_utc(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'requests.csv'

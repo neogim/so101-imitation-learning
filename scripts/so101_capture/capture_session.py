@@ -587,7 +587,7 @@ class Session:
             self.sink.submit('frame', frame)
             self.frame_timings.append(dict(episode_index=len(self.outcomes), frame_index=self.frames,
                 observed_at=observed_at, sent_at=sent_at,
-                image_captured_at=image_times, image_enqueued_at=time.perf_counter()))
+                image_available_at=image_times, image_enqueued_at=time.perf_counter()))
             self.frames += 1
 
     def _validate_images(self, images, image_times):
@@ -793,7 +793,8 @@ def main():
             cameras=None if camera_cfg is None else
                 ({name: cam.identity for name, cam in camera.cameras.items()}
                  if camera is not None else {name: None for name in image_names}),
-            image_shape=list(image_shape), image_captured_at_clock='time.perf_counter response time',
+            image_shape=list(image_shape),
+            image_available_at_clock='time.perf_counter host response/receipt time; not device capture time',
             limits=session.limits, slew=a.slew,
             rotary_slew=session.rotary_slew, gripper_slew=session.gripper_slew,
             gripper_display=a.gripper_display,gripper_display_hz=a.gripper_display_hz,

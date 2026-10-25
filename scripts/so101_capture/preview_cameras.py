@@ -109,7 +109,7 @@ def main():
                 failed_samples += 1
                 if first_failed_sample is None:
                     first_failed_sample = reason
-                if args.diagnose_stale and ('stale frame' in reason or 'capture-time skew' in reason):
+                if args.diagnose_stale and ('stale frame' in reason or 'availability pairing' in reason):
                     iteration += 1
                     continue
                 fault = reason

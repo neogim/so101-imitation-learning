@@ -268,7 +268,8 @@ class OBSSourceCamera:
                 return
             self.stop_event.wait(max(0, .04 - (time.perf_counter() - started)))
 
-    def sample(self, max_age_s=.10, freeze_timeout_s=10.0, transient_wait_s=.05):
+    def sample(self, max_age_s=.10, freeze_timeout_s=10.0, transient_wait_s=.05,
+               newer_than=None):
         """Wait briefly for a changed, fresh OBS frame; never reuse the stale one."""
         deadline = time.perf_counter() + transient_wait_s
         while True:
@@ -281,7 +282,8 @@ class OBSSourceCamera:
                 raise CameraFault(f"{self.name}: {error or 'no frame'}")
             now = time.perf_counter()
             age = now - timestamp
-            unused = timestamp != self.last_sampled_timestamp
+            unused = (timestamp != self.last_sampled_timestamp
+                      and (newer_than is None or timestamp > newer_than))
             if age <= max_age_s and unused:
                 if last_changed is not None and now-last_changed > freeze_timeout_s:
                     raise CameraFault(
@@ -443,7 +445,8 @@ class AVFoundationCamera(OBSSourceCamera):
                 })
         return True
 
-    def sample(self, max_age_s=.10, freeze_timeout_s=10.0, transient_wait_s=.05):
+    def sample(self, max_age_s=.10, freeze_timeout_s=10.0, transient_wait_s=.05,
+               newer_than=None):
         """Wait briefly for a fresh direct-capture frame; never return the stale one."""
         deadline = time.perf_counter() + transient_wait_s
         while True:
@@ -456,7 +459,7 @@ class AVFoundationCamera(OBSSourceCamera):
                 raise CameraFault(f"{self.name}: {error or 'no frame'}")
             now = time.perf_counter()
             age = now - timestamp
-            if age <= max_age_s:
+            if age <= max_age_s and (newer_than is None or timestamp > newer_than):
                 if last_changed is not None and now-last_changed > freeze_timeout_s:
                     raise CameraFault(
                         f"{self.name}: repeated identical screenshot for {freeze_timeout_s}s"
@@ -519,12 +522,34 @@ class CameraRig:
                 camera.disconnect()
             raise
 
-    def sample_all(self):
-        samples = {name: camera.sample() for name, camera in self.cameras.items()}
-        times = {name: stamp for name, (_, stamp) in samples.items()}
-        if max(times.values())-min(times.values()) > .075:
-            raise CameraFault(f"Camera capture-time skew >75ms: {times}")
-        return {name: frame for name, (frame, _) in samples.items()}, times
+    def sample_all(self, pairing_wait_s=.05):
+        """Build one bounded pair using comparable host-availability times.
+
+        OBS exposes no device capture timestamp, so pairing it with AVFoundation's
+        device callback time would mix clock semantics. Both camera adapters publish
+        the host receipt/response time here. This bounds availability skew, not true
+        optical capture skew.
+        """
+        deadline = time.perf_counter() + pairing_wait_s
+        samples = {}
+        for name, camera in self.cameras.items():
+            samples[name] = camera.sample(
+                transient_wait_s=max(0., deadline-time.perf_counter()))
+        while True:
+            times = {name: stamp for name, (_, stamp) in samples.items()}
+            now = time.perf_counter()
+            max_age = max(now-stamp for stamp in times.values())
+            skew = max(times.values())-min(times.values())
+            if max_age <= .100 and skew <= .075:
+                return {name: frame for name, (frame, _) in samples.items()}, times
+            older = min(times, key=times.get)
+            remaining = deadline-time.perf_counter()
+            if remaining <= 0:
+                raise CameraFault(
+                    f"Camera host-availability pairing failed within {pairing_wait_s:.3f}s; "
+                    f"max_age={max_age:.3f}s, skew={skew:.3f}s, timestamps={times}")
+            samples[older] = self.cameras[older].sample(
+                transient_wait_s=remaining, newer_than=times[older])
 
     def timing_brief(self):
         """Small, image-free snapshot for control-cycle fault diagnostics."""
