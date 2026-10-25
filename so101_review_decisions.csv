@@ -1,0 +1,12 @@
+episode_id,source,episode_index,decision,reason,review_basis
+SO101-0013,~/workspace/so101-data/muhi-session-031,2,adopt,投入後、透明容器内にボトルが見える,320x240 5fps video and 8-frame contact sheet
+SO101-0045,~/workspace/so101-data/muhi-session-20261019-233932,3,exclude,終了時にボトルが透明容器の外側にある,320x240 5fps video and 8-frame contact sheet
+SO101-0066,~/workspace/so101-data/no-object-test-002,0,exclude,no-object-testセッションであり、通常のPick & Place成功データとして扱えない,320x240 5fps video and 8-frame contact sheet
+SO101-0067,~/workspace/so101-data/pick-place-003,0,exclude,終了時にボトルが容器の外に残る,320x240 5fps video and 8-frame contact sheet
+SO101-0070,~/workspace/so101-yaw-experiment/20261021_213348_yaw0_28A3235A,2,adopt,終了時に容器内に白いボトル上部が見え、投入成功と判断,320x240 5fps video and 8-frame contact sheet
+SO101-0071,~/workspace/so101-yaw-experiment/20261021_213918_yaw0_29A29997,0,exclude,終了前に人の手でボトルを戻しており、自律的な成功デモとして不適切,320x240 5fps video and 8-frame contact sheet
+SO101-0098,~/workspace/so101-yaw-experiment/20261021_222133_yaw45_44D7C62B,0,exclude,終了時にボトルが容器外に横倒しで残る,320x240 5fps video and 8-frame contact sheet
+SO101-0114,~/workspace/so101-yaw-experiment/20261021_223823_yaw45_A634078A,0,exclude,終了時に透明容器が空に見える,320x240 5fps video and 8-frame contact sheet
+SO101-0130,~/workspace/so101-yaw-experiment/20261021_230220_yaw135_F7F23596,3,exclude,終了時にボトルが透明容器の外側に残る,320x240 5fps video and 8-frame contact sheet
+SO101-0141,~/workspace/so101-yaw-experiment/20261021_233203_yaw90_63B89BE7,0,exclude,終了時に透明容器が空に見える,320x240 5fps video and 8-frame contact sheet
+SO101-0161,~/workspace/so101-upright-xy-experiment/20261022_000907_left_3cm_B9A9C0DB,1,adopt,終了時に透明容器内にボトルが見える,320x240 5fps video and 8-frame contact sheet

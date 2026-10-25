@@ -1,0 +1,26 @@
+obs:
+  host: 127.0.0.1
+  port: 4455
+  timeout_s: 2.0
+cameras:
+  overhead:
+    enabled: true
+    provider: obs_source
+    source_name: iPad_Overhead
+    source_uuid: 00000000-0000-0000-0000-000000000001
+    expected_settings:
+      cur_dev_ip: REPLACE_WITH_IPAD_IP
+  side:
+    enabled: true
+    provider: obs_source
+    source_name: iPhone6_Fixed
+    source_uuid: 00000000-0000-0000-0000-000000000002
+    expected_settings:
+      cur_dev_ip: REPLACE_WITH_IPHONE_IP
+  wrist:
+    enabled: false
+    provider: obs_source
+    source_name: InnoMaker_Wrist
+    source_uuid: 00000000-0000-0000-0000-000000000003
+    expected_settings:
+      device: REPLACE_WITH_USB_DEVICE_UNIQUE_ID

@@ -1,0 +1,61 @@
+.DS_Store
+.env
+.venv/
+.uv-cache/
+.local/
+.ruff_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+
+# Downloaded datasets and generated artifacts are managed outside Git.
+data/
+artifacts/
+outputs/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Docker / tooling
+docker-compose.override.yml
+*.log
+.colima/
+
+# Build / packaging
+dist/
+build/
+*.egg-info/
+pip-wheel-metadata/
+.cache/
+.mypy_cache/
+
+# Database / temp
+*.sqlite3
+
+# Environment files
+.env.*
+!.env.example
+scripts/so101_capture/cameras.local.yaml
+scripts/so101_capture/cameras.obs-wrist-compare.local.yaml
+scripts/so101_capture/cameras.side-jpeg70.local.yaml
+scripts/so101_capture/*.local.yaml
+
+# Machine-specific robot state and credentials
+calibration/
+**/calibration/
+*.pem
+*.key
+
+# Local experiment media and archived implementation snapshots
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.bak
+scripts/so101_capture/validation/
+scripts/so101_capture/**/validation/
+
+# Executed notebooks
+executed*.ipynb

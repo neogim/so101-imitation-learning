@@ -1,0 +1,2 @@
+# Isolated project-local install; does not alter the lerobot Conda environment.
+websocket-client==1.8.0

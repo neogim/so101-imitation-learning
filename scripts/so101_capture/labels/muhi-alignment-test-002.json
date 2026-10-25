@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "source": "~/workspace/so101-data/muhi-alignment-test-002",
+  "source_info_sha256": "358dafe230960392940a5c7e8081416126b8a0fd6bfcb1241a1d24871104b5c0",
+  "source_outcomes_sha256": "cbcbf4711aaaa699a9917b55577bcdf532d7951a8921503213bcc5c2ccde8614",
+  "labels": [
+    {
+      "episode_index": 0,
+      "frames": 549,
+      "end_reason": "manual",
+      "pick": "success",
+      "place": "success",
+      "overall": "success",
+      "adopt": true,
+      "notes": ""
+    }
+  ]
+}

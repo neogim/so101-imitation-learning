@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "source": "~/workspace/so101-data/muhi-session-20261019-233144",
+  "source_info_sha256": "db550c35e7c840b0ddf3e9a0534f67e064cb90549fc004a4109e526c2cf30daf",
+  "source_outcomes_sha256": "0dd274160595672426c570ed4889556b0106216087449295f9cf0b3665ad20b2",
+  "labels": [
+    {
+      "episode_index": 0,
+      "frames": 511,
+      "end_reason": "manual",
+      "pick": "success",
+      "place": "success",
+      "overall": "success",
+      "adopt": true,
+      "notes": "Original session outcome: success and adopted."
+    },
+    {
+      "episode_index": 1,
+      "frames": 512,
+      "end_reason": "manual",
+      "pick": "success",
+      "place": "success",
+      "overall": "success",
+      "adopt": true,
+      "notes": "Original session outcome: success and adopted."
+    },
+    {
+      "episode_index": 2,
+      "frames": 594,
+      "end_reason": "manual",
+      "pick": "success",
+      "place": "success",
+      "overall": "success",
+      "adopt": true,
+      "notes": "Original session outcome: success and adopted."
+    },
+    {
+      "episode_index": 3,
+      "frames": 536,
+      "end_reason": "manual",
+      "pick": "success",
+      "place": "success",
+      "overall": "success",
+      "adopt": true,
+      "notes": "Operator confirmed Pick & Place success; recording ended manually before later TELEOP_RESET communication fault."
+    }
+  ]
+}
