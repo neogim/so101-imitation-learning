@@ -107,11 +107,22 @@ def export(root: Path, output: Path, urdf: Path, frame: str, expected_episodes: 
     if expected_episodes is not None and info.get("total_episodes") != expected_episodes:
         raise ValueError("Unexpected episode count")
 
-    solver = RobotKinematics(
-        urdf_path=str(urdf), target_frame_name=frame, joint_names=list(JOINT_NAMES)
-    )
-    # Probe to fail early before processing: frame existence and joint names.
-    solver.forward_kinematics(np.zeros(5))
+    robot = placo.RobotWrapper(str(urdf))
+    available = set(robot.joint_names())
+    missing = set(JOINT_NAMES) - available
+    if missing:
+        raise ValueError(f"URDF joints missing: {sorted(missing)}; available: {sorted(available)}")
+
+    def forward_kinematics(joint_deg):
+        joints = np.asarray(joint_deg, dtype=float)
+        if joints.shape != (5,):
+            raise ValueError("Expected five arm joints")
+        for name, degrees in zip(JOINT_NAMES, joints, strict=True):
+            robot.set_joint(name, float(np.deg2rad(degrees)))
+        robot.update_kinematics()
+        return np.asarray(robot.get_T_world_frame(frame), dtype=float)
+
+    forward_kinematics(np.zeros(5))
     converted = []
     counters = {}
     max_pos = 0.
