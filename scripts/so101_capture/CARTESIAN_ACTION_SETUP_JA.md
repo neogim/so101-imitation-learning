@@ -28,10 +28,10 @@ TCPの差分（3次元位置・3次元回転）とグリッパ目標値を**別�
 既存 `lerobot` 環境ではNumPyを戻した後もPlacoの依存競合が残る場合がある。
 `pip check` が警告を出した事実を隠さない。
 
-重要：**現在のエクスポータは `from lerobot.model.kinematics import RobotKinematics` を使用する。**
-そのため、**PlacoとPyArrowだけの新環境ではまだ動かない**。
+重要：**エクスポータはPlacoを直接利用する方式に変更済み。LeRobotのインストールは不要。**
+そのため、**PlacoとPyArrowを入れた専用環境で実行する。**
 また、LeRobot 0.6.2のパッケージ要件とPlacoの依存要件は矛盾するため、
-**新環境での完全な依存解決を本資料では保証できない**。
+**専用環境で `python -m pip check` とFK実測照合が必要**。
 以下では安全に専用環境を作り、必要な機能をチェックするところまでを案内する。
 組合せが未解決なら元環境を改変せず、依存を切り離す実装変更を先に行う。
 
@@ -61,14 +61,14 @@ python -c 'import numpy, placo, pyarrow; print("NumPy:", numpy.__version__); pri
 python -m pip check
 ```
 
-この時点では、変換スクリプトに必要なLeRobotが**まだ不足する場合がある**。
-次の確認を実施する。
+変換スクリプトにLeRobotは不要になった。
+次のPlaco読み込み確認を実施する。
 
 ```bash
-python -c 'from lerobot.model.kinematics import RobotKinematics; print("RobotKinematics import OK")'
+python -c 'import placo; print("Placo import OK")'
 ```
 
-`ModuleNotFoundError: lerobot` 等になった場合は**そこで停止**する。
+`ModuleNotFoundError: placo` 等になった場合は**そこで停止**する。
 `pip install lerobot` を無条件に実行しない（依存競合の可能性）。
 この問題を解決するには、エクスポータをPlaco直接利用に改修するか、
 検証済みの分離構成を別途用意する必要がある。
@@ -124,7 +124,7 @@ URDFがメッシュを参照している場合、FKライブラリによって�
 
 ## 6. 53エピソードのCartesian Actionを生成
 
-**実行条件**：専用環境で `RobotKinematics` のimportが成功し、
+**実行条件**：専用環境でPlacoのimportが成功し、
 URDFの関節名・基準座標・FK結果が独立解析と一致することを確認済み。
 
 ```bash
@@ -205,7 +205,7 @@ ACTを使ってそのまま学習・推論する機能は含まれない。
 | 症状 | 確認すること |
 | --- | --- |
 | `ModuleNotFoundError: placo` | `conda activate so101-ik` とインストール状況 |
-| `ModuleNotFoundError: lerobot` | 現行変換コードにLeRobot依存あり。**無条件インストールしない** |
+| `ModuleNotFoundError: lerobot` | 古いブランチ上のコードの可能性がある。`git pull` と import 行を確認 |
 | `pip check` NumPy競合 | `lerobot` と `so101-ik` の混在を解消する |
 | URDF file not found | ファイル名・パス・curl実行結果 |
 | FK frame / joint error | URDFの関節名と`gripper_frame_link`、基準座標を照合 |
@@ -222,7 +222,7 @@ PR #2が検証完了するまでは、`main`へのマージを急がない。
 
 ## 11. 今後必要な別実装
 
-1. LeRobotの依存から分離したPlaco直接FK、または検証済みの互換環境。
+1. Placo直接FKによる53エピソード変換の実行と独立FK照合。
 2. 実機キャリブレーションとURDFのFK一致検証。
 3. side／wrist画像の時系列対応を保持した**新しい7D Action Dataset**の作成。
 4. 7D ACTの学習・検証、IKデコーダ、shadow modeの構築。
