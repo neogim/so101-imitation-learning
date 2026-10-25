@@ -57,7 +57,7 @@ def prepare(source: Path, candidate: Path, seed: int = 20261102, validation_frac
     if not train or not valid or set(train) & set(valid) or set(train) | set(valid) != set(range(53)):
         raise ValueError("Invalid train/validation split")
     if not split_path.exists():
-        split_path.write_text(json.dumps(split, indent=2) + "\\n")
+        split_path.write_text(json.dumps(split, indent=2) + "\n")
     stats = json.loads(src_stats.read_text())
     if "observation.state" not in stats:
         raise ValueError("Source state stats missing")
