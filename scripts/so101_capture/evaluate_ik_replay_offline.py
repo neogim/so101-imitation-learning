@@ -27,14 +27,17 @@ def rows_for(root,episode,stride,max_frames):
     if not matches:raise ValueError("No matching frames")
     return matches
 
-def compute(dataset,urdf,output,episode,stride,max_frames,orientation_weight,regularization):
-    for p in (dataset,urdf): 
+def compute(dataset,split_dataset,urdf,output,episode,stride,max_frames,orientation_weight,regularization):
+    for p in (dataset,split_dataset,urdf): 
         if not p.exists():raise FileNotFoundError(p)
     dataset,output=dataset.resolve(),output.resolve()
     if output.exists():raise FileExistsError(output)
     if dataset==output or dataset in output.parents:raise ValueError("Output inside Dataset")
     if orientation_weight<0 or regularization<0:raise ValueError("weights must be nonnegative")
-    split=json.loads((dataset/"episode_split.json").read_text())
+    info=json.loads((dataset/"meta/info.json").read_text())
+    if info["features"]["action"]["shape"]!=[6]:
+        raise ValueError("MUST use original 6D joint-action Dataset, not Cartesian 7D candidate")
+    split=json.loads((split_dataset/"episode_split.json").read_text())
     if episode not in split["train_episode_indices"]:
         raise ValueError("Select TRAIN episode; keep validation data untouched")
     robot=placo.RobotWrapper(str(urdf))
@@ -96,6 +99,7 @@ def compute(dataset,urdf,output,episode,stride,max_frames,orientation_weight,reg
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset",required=True,type=Path)
+    p.add_argument("--split-dataset",required=True,type=Path,help="Cartesian candidate with episode_split.json")
     p.add_argument("--urdf",required=True,type=Path)
     p.add_argument("--output",required=True,type=Path)
     p.add_argument("--episode",type=int,default=0)
@@ -105,5 +109,5 @@ def main():
     p.add_argument("--regularization",type=float,default=0.0,help="Penalty for deviation from observed pose")
     a=p.parse_args()
     if a.stride<1 or a.max_frames<1:raise ValueError("Positive stride/max-frames required")
-    compute(a.dataset,a.urdf,a.output,a.episode,a.stride,a.max_frames,a.orientation_weight,a.regularization)
+    compute(a.dataset,a.split_dataset,a.urdf,a.output,a.episode,a.stride,a.max_frames,a.orientation_weight,a.regularization)
 if __name__=="__main__":main()
