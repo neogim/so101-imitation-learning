@@ -87,6 +87,30 @@ def evaluate(root:Path, checkpoint:Path, output:Path, stride:int, limit:int):
             "rmse":{n:float(v) for n,v in zip(NAMES,np.sqrt(np.square(errors).mean(axis=0)))},
             "gripper_gt_over25":int(sum(r["gt_gripper"]>25 for r in rows)),
             "gripper_pred_over25":int(sum(r["pred_gripper"]>25 for r in rows))}
+    gt=np.array([r["gt_gripper"] for r in rows],dtype=float)
+    pred=np.array([r["pred_gripper"] for r in rows],dtype=float)
+    gripper_error=pred-gt
+    # Independent physical-unit gripper metrics; not the ACT training objective.
+    report["gripper_diagnostics"]={
+        "mae":float(np.abs(gripper_error).mean()),
+        "mse":float(np.square(gripper_error).mean()),
+        "rmse":float(np.sqrt(np.square(gripper_error).mean())),
+        "bias_pred_minus_gt":float(gripper_error.mean()),
+        "gt_mean":float(gt.mean()),
+        "pred_mean":float(pred.mean()),
+        "gt_std":float(gt.std()),
+        "pred_std":float(pred.std()),
+        "gt_over25_count":int((gt>25).sum()),
+        "pred_over25_count":int((pred>25).sum()),
+        "over25_recall":float(((pred>25)&(gt>25)).sum()/(gt>25).sum()) if (gt>25).any() else None,
+        "mae_on_gt_over25":float(np.abs(gripper_error[gt>25]).mean()) if (gt>25).any() else None,
+        "mae_on_gt_at_most25":float(np.abs(gripper_error[gt<=25]).mean()) if (gt<=25).any() else None,
+        "normalized_mse_by_train_std":None,
+        "note":"Metrics on sampled validation predictions; not independent ACT training loss. Use separate training-forward audit for true loss decomposition."
+    }
+    st=np.asarray(ds.meta.stats["action"]["std"],dtype=float).reshape(-1)
+    if st.shape==(7,) and st[6]>0:
+        report["gripper_diagnostics"]["normalized_mse_by_train_std"]=float(np.square(gripper_error/st[6]).mean())
     (output/"metrics.json").write_text(json.dumps(report,indent=2)+"\n")
     try:
         import matplotlib
