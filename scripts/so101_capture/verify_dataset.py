@@ -22,9 +22,13 @@ def main():
 
     info = json.loads((a.root / "meta/info.json").read_text())
     features = info["features"]
-    required = ["observation.state", "action", "observation.images.iphone"]
+    image_keys = sorted(k for k, value in features.items()
+                        if k.startswith("observation.images.") and value.get("dtype") == "video")
+    required = ["observation.state", "action"]
     missing = [k for k in required if k not in features]
-    if missing:
+    if missing or not image_keys:
+        if not image_keys:
+            missing.append("observation.images.<camera>")
         raise ValueError(f"Missing features: {missing}")
     ds = LeRobotDataset("local/so101_probe", root=a.root.resolve(), video_backend="pyav")
     expected = [n + ".pos" for n in ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]]
@@ -32,23 +36,32 @@ def main():
     for key in required[:2]:
         if features[key].get("names") != expected:
             errors.append(f"Unexpected joint names/order: {key}")
-    duplicates, last = 0, None
+    duplicates = dict.fromkeys(image_keys, 0)
+    last = dict.fromkeys(image_keys)
     for i in range(len(ds)):
         item = ds[i]  # Decode EVERY image: missing/corrupt videos must fail validation.
         state = np.asarray(item["observation.state"])
         action = np.asarray(item["action"])
-        image = np.asarray(item[required[2]])
         if state.shape != (6,) or action.shape != (6,):
             raise ValueError(f"Wrong joint shape at frame {i}")
-        if not all(np.isfinite(v).all() for v in [state, action, image]):
+        if not all(np.isfinite(v).all() for v in [state, action]):
             raise ValueError(f"Nonfinite values at frame {i}")
-        if image.shape != (3,480,640):
-            raise ValueError(f"Wrong image shape at frame {i}: {image.shape}")
-        if image.min() < 0 or image.max() > 1:
-            raise ValueError(f"Expected decoded RGB float [0,1] at frame {i}")
-        rgb = (image.transpose(1, 2, 0) * 255).round().astype(np.uint8)
-        duplicates += int(last is not None and np.array_equal(last, rgb))
-        last = rgb
+        images = {}
+        for image_key in image_keys:
+            image = np.asarray(item[image_key])
+            height, width, channels = features[image_key]["shape"]
+            expected_shape = (channels, height, width)
+            if image.shape != expected_shape:
+                raise ValueError(f"Wrong {image_key} shape at frame {i}: {image.shape}")
+            if not np.isfinite(image).all() or image.min() < 0 or image.max() > 1:
+                raise ValueError(f"Expected decoded {image_key} RGB float [0,1] at frame {i}")
+            rgb = (image.transpose(1, 2, 0) * 255).round().astype(np.uint8)
+            duplicates[image_key] += int(
+                last[image_key] is not None and np.array_equal(last[image_key], rgb)
+            )
+            last[image_key] = rgb
+            images[image_key] = rgb
+        rgb = images[image_keys[0]]
         thumb = Image.fromarray(rgb)
         thumb.thumbnail((480, 360))
         buf = io.BytesIO()
@@ -86,28 +99,34 @@ def main():
     import pyarrow.parquet as pq
     video_pts = {}
     for path in sorted((a.root/'videos').rglob('*.mp4')):
+        relative = str(path.relative_to(a.root))
+        image_key = next((key for key in image_keys
+                          if relative.startswith(f'videos/{key}/')), None)
         with av.open(str(path)) as container:
             stream = container.streams.video[0]
-            if (stream.height, stream.width) != (480,640):
+            expected_hw = None if image_key is None else tuple(features[image_key]['shape'][:2])
+            if expected_hw is None or (stream.height, stream.width) != expected_hw:
                 errors.append(f"Invalid video dimensions: {path}")
             pts = [float(f.pts*f.time_base) for f in container.decode(video=0)]
-        video_pts[str(path.relative_to(a.root))] = np.array(pts)
+        video_pts[relative] = np.array(pts)
     meta_rows = []
     for path in sorted((a.root/'meta/episodes').rglob('*.parquet')):
         meta_rows.extend(pq.read_table(path).to_pylist())
-    video_counts = {}
-    prefix = 'videos/observation.images.iphone'
-    for meta in meta_rows:
-        ep = int(meta['episode_index'])
-        chunk, file = int(meta[prefix+'/chunk_index']), int(meta[prefix+'/file_index'])
-        path = f'{prefix}/chunk-{chunk:03d}/file-{file:03d}.mp4'
-        pts = video_pts.get(path, np.array([]))
-        start, stop = meta[prefix+'/from_timestamp'], meta[prefix+'/to_timestamp']
-        count = int(((pts >= start-1e-5) & (pts < stop-1e-5)).sum())
-        video_counts[str(ep)] = count
-        if count != periods.get(str(ep), {}).get('frames') or int(meta['length']) != count:
-            errors.append(f'Video/Parquet/metadata length mismatch: episode {ep}')
-    if len(meta_rows) != len(episodes) or sum(len(v) for v in video_pts.values()) != len(rows):
+    video_counts = {key: {} for key in image_keys}
+    for image_key in image_keys:
+        prefix = f'videos/{image_key}'
+        for meta in meta_rows:
+            ep = int(meta['episode_index'])
+            chunk, file = int(meta[prefix+'/chunk_index']), int(meta[prefix+'/file_index'])
+            path = f'{prefix}/chunk-{chunk:03d}/file-{file:03d}.mp4'
+            pts = video_pts.get(path, np.array([]))
+            start, stop = meta[prefix+'/from_timestamp'], meta[prefix+'/to_timestamp']
+            count = int(((pts >= start-1e-5) & (pts < stop-1e-5)).sum())
+            video_counts[image_key][str(ep)] = count
+            if count != periods.get(str(ep), {}).get('frames') or int(meta['length']) != count:
+                errors.append(f'Video/Parquet/metadata length mismatch: {image_key} episode {ep}')
+    if (len(meta_rows) != len(episodes)
+            or sum(len(v) for v in video_pts.values()) != len(rows) * len(image_keys)):
         errors.append('Video total or episode metadata count mismatch')
     # Verify physical Parquet global index and optional raw Leader action.
     raw = []
@@ -128,13 +147,17 @@ def main():
         for row in outcomes:
             if row['frames'] != periods.get(str(row['episode_index']), {}).get('frames'):
                 errors.append(f"Outcome frame mismatch: {row['episode_index']}")
-    if duplicates:
-        warnings.append(f"{duplicates} identical adjacent images; static scene or repeated camera frames")
+    for image_key, count in duplicates.items():
+        if count:
+            warnings.append(
+                f"{image_key}: {count} identical adjacent images; static scene or repeated camera frames"
+            )
     warnings.append("Real capture cadence, image/state skew and Wi-Fi latency cannot be recovered from nominal dataset timestamps")
     if a.body_unit == "unknown":
         warnings.append("Units cannot be inferred from numbers; retain recording config")
     report = dict(errors=errors, warnings=warnings, episodes=episodes, frames=len(rows),
-                  fps=info["fps"], periods=periods, ranges=ranges, video_frames=video_counts,
+                  fps=info["fps"], image_keys=image_keys, periods=periods, ranges=ranges,
+                  video_frames=video_counts,
                   body_unit_from_user=a.body_unit, gripper_unit="normalized 0..100 (SO-101 source)")
     a.output.mkdir(parents=True, exist_ok=False)
     (a.output / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))

@@ -18,6 +18,7 @@ class GuardedIO:
         self.history = deque(maxlen=256)
         self.cycles = deque(maxlen=128)
         self.failures = []
+        self.transient_recoveries = []
         self.last_success = {}
         self.summary = {}
         self.start = clock()
@@ -64,12 +65,24 @@ class GuardedIO:
             stats['duration_sum_s'] += record['duration_s']
             stats['duration_max_s'] = max(stats['duration_max_s'],record['duration_s'])
 
-    def _read(self, callback, register, role='follower'):
+    def _read(self, callback, register, role='follower', transient_retries=0):
         if self.latched:
             raise CommunicationFault('Communication fault latched; no further control reads or sends')
         try:
             return self._attempt(callback,register,role,False)
         except Exception as exc:
+            # Only callers in a non-recording mode may opt into this bounded
+            # read-only retry. No Goal can be sent until the retry succeeds.
+            if transient_retries:
+                first_failure = dict(self.history[-1])
+                try:
+                    value = self._attempt(callback,register,role,False)
+                except Exception:
+                    pass
+                else:
+                    self.transient_recoveries.append(dict(
+                        first_failure=first_failure, recovery=dict(self.history[-1])))
+                    return value
             # Latch BEFORE any optional diagnostic access. Never clear on recovery.
             self.latched = True
             failure = dict(failure=dict(self.history[-1]), utc=datetime.now(timezone.utc).isoformat(),
@@ -89,7 +102,11 @@ class GuardedIO:
         return self._read(self.io.torque_ok,'Torque_Enable')
 
     def request(self):
-        return self._read(self.io.request,'Present_Position','leader')
+        # Episode video encoding runs concurrently in TELEOP_RESET and can
+        # briefly starve the USB read. RECORDING and SAFE_RESET retain their
+        # first-failure latch behavior.
+        retries = 1 if self.context.get('mode') == 'TELEOP_RESET' else 0
+        return self._read(self.io.request,'Present_Position','leader',retries)
 
     def j6_telemetry(self):
         # Same control thread and bus as state/torque/action; a failed read latches
@@ -129,6 +146,8 @@ class GuardedIO:
 
     def report(self):
         return dict(latched=self.latched, automatic_resume=False, diagnostic_retry_limit=1,
+                    teleop_reset_leader_read_retries=1,
                     read_history=list(self.history), cycle_history=list(self.cycles),
                     summary=self.summary, failures=self.failures,
+                    transient_recoveries=self.transient_recoveries,
                     warning='No new goals after communication fault. Servo may continue toward/hold its last goal. Physical stopping and holding are NOT guaranteed.')

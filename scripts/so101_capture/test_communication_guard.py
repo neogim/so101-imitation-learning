@@ -52,6 +52,41 @@ class CommunicationTests(unittest.TestCase):
     def test_torque_persistent(self):self.run_failure('Torque_Enable',False)
     def test_recording_preservation(self):self.run_failure('Present_Position',True,True)
 
+    def test_teleop_reset_leader_transient_gets_one_read_only_retry(self):
+        io=SimulationIO();g=GuardedIO(io)
+        g.context={'mode':'TELEOP_RESET','cycle':7}
+        expected=io.request()
+        io.request=Mock(side_effect=[ConnectionError('temporary timeout'),expected])
+        self.assertEqual(g.request(),expected)
+        self.assertFalse(g.latched)
+        self.assertEqual(io.request.call_count,2)
+        self.assertEqual(io.sent,[])
+        report=g.report()
+        self.assertEqual(len(report['transient_recoveries']),1)
+        self.assertFalse(report['transient_recoveries'][0]['first_failure']['ok'])
+        self.assertTrue(report['transient_recoveries'][0]['recovery']['ok'])
+
+    def test_teleop_reset_leader_persistent_fault_latches_before_diagnostic(self):
+        io=SimulationIO();g=GuardedIO(io)
+        g.context={'mode':'TELEOP_RESET','cycle':8}
+        io.request=Mock(side_effect=ConnectionError('no status packet'))
+        with self.assertRaises(CommunicationFault):g.request()
+        self.assertTrue(g.latched)
+        # Initial read, bounded control retry, then discarded diagnostic read.
+        self.assertEqual(io.request.call_count,3)
+        self.assertEqual(io.sent,[])
+
+    def test_recording_leader_transient_still_latches_on_first_failure(self):
+        io=SimulationIO();g=GuardedIO(io)
+        g.context={'mode':'RECORDING','cycle':9}
+        expected=io.request()
+        io.request=Mock(side_effect=[ConnectionError('temporary timeout'),expected])
+        with self.assertRaises(CommunicationFault):g.request()
+        self.assertTrue(g.latched)
+        # Second call is diagnostic only; its recovered value is never used.
+        self.assertEqual(io.request.call_count,2)
+        self.assertEqual(io.sent,[])
+
     def test_latched_before_diagnostic_attempt(self):
         io=SimulationIO();g=GuardedIO(io);calls=[]
         def fail_then_check():
