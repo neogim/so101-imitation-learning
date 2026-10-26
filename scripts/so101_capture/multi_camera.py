@@ -522,8 +522,8 @@ class CameraRig:
                 camera.disconnect()
             raise
 
-    def sample_all(self, pairing_wait_s=.05):
-        """Build one bounded pair using comparable host-availability times.
+    def sample_all(self, pairing_wait_s=.12):
+        """Build one bounded pair using comparable host-availability times.\n\n        The extra wait absorbs transient scheduling jitter; it does not relax\n        the 100ms freshness bound, 75ms skew, or reused-frame rejection.
 
         OBS exposes no device capture timestamp, so pairing it with AVFoundation's
         device callback time would mix clock semantics. Both camera adapters publish
