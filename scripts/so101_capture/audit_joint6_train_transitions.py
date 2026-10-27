@@ -45,7 +45,7 @@ def main():
     fis=np.asarray(ds.hf_dataset["frame_index"],dtype=int)
     if set(eps)!=set(range(53)):raise ValueError("Episode count mismatch")
     # parquet-backed Arrow avoids expensive video decode during transition search.
-    actions=np.asarray(ds.hf_dataset["action"].to_pylist(),dtype=np.float64)
+    actions=np.asarray(ds.hf_dataset["action"],dtype=np.float64)
     if actions.shape!=(len(ds),6):raise ValueError("Unexpected 6D actions")
     if not np.isfinite(actions).all():raise ValueError("Nonfinite actions")
     a.output.mkdir(parents=True)
