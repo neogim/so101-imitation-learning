@@ -6,7 +6,7 @@ Produces paired URDF 3D direction views and a physical verification checklist.
 Does NOT run collision detection or prove physical zero/sign alignment.
 """
 from __future__ import annotations
-import argparse,csv,json
+import argparse,csv,json,math
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -38,7 +38,41 @@ def main():
               if frozenset((x,y)) not in parent_pairs]
  joint_names=[x["joint"] for x in summary["joint_results"]]
  # Report measured joint angle differences and URDF skeleton-predicted displacement.
- from audit_joint_zero_direction_episode import parse_urdf,fk_origins
+ # Local, dependency-light kinematics helpers: no OpenCV/video decoding needed.
+ def rpy_matrix(v):
+  r,p,y=v
+  cr,sr,cp,sp,cy,sy=math.cos(r),math.sin(r),math.cos(p),math.sin(p),math.cos(y),math.sin(y)
+  return np.array([[cy*cp,cy*sp*sr-sy*cr,cy*sp*cr+sy*sr],
+                   [sy*cp,sy*sp*sr+cy*cr,sy*sp*cr-cy*sr],
+                   [-sp,cp*sr,cp*cr]])
+ def axis_angle(axis,angle):
+  axis=np.asarray(axis,float);axis=axis/np.linalg.norm(axis)
+  x,y,z=axis;c=math.cos(angle);s=math.sin(angle);t=1-c
+  return np.array([[t*x*x+c,t*x*y-s*z,t*x*z+s*y],
+                   [t*x*y+s*z,t*y*y+c,t*y*z-s*x],
+                   [t*x*z-s*y,t*y*z+s*x,t*z*z+c]])
+ def parse_urdf(path):
+  root=ET.parse(path).getroot()
+  joints={j.get("name"):j for j in root.findall("joint")}
+  names=("shoulder_pan","shoulder_lift","elbow_flex","wrist_flex","wrist_roll")
+  out=[]
+  for name in names:
+   j=joints[name];origin=j.find("origin");axis=j.find("axis")
+   out.append({"origin_xyz":[float(x) for x in origin.get("xyz","0 0 0").split()],
+    "origin_rpy":[float(x) for x in origin.get("rpy","0 0 0").split()],
+    "axis_local":[float(x) for x in axis.get("xyz","1 0 0").split()]})
+  return out
+ def fk_origins(specs,qdeg):
+  T=np.eye(4);points=[T[:3,3].copy()];axes=[]
+  for spec,deg in zip(specs,qdeg):
+   O=np.eye(4);O[:3,:3]=rpy_matrix(spec["origin_rpy"]);O[:3,3]=spec["origin_xyz"]
+   T=T@O
+   axis=np.asarray(spec["axis_local"],float)
+   axes.append(T[:3,:3]@axis);points.append(T[:3,3].copy())
+   R=np.eye(4);R[:3,:3]=axis_angle(axis,math.radians(float(deg)))
+   T=T@R
+  points.append(T[:3,3]+T[:3,:3]@np.array([0.,-.08,0.]))
+  return np.asarray(points),np.asarray(axes)
  specs=parse_urdf(a.urdf)
  import matplotlib
  matplotlib.use("Agg")
@@ -59,7 +93,6 @@ def main():
   ax.set_title(f"{result['joint']}  delta={pair['delta_target_deg']:+.2f} deg\nURDF model prediction, NOT camera registration")
   ax.legend()
   path=f"urdf_direction_{result['joint']}.png"
-  fig.savefig(a.output.parent / ("_"+path) if False else "/dev/null") if False else None
   figures.append((fig,path))
   result["predicted_tool_displacement_mm"]=float(np.linalg.norm(pa[-1]-pb[-1])*1000)
  a.output.mkdir(parents=True)
