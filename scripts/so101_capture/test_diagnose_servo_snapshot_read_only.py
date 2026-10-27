@@ -15,17 +15,19 @@ class FakeBus:
 
 class ServoSnapshotDiagnosticTests(unittest.TestCase):
     def test_records_order_and_threshold_without_writes(self):
-        ticks = iter([0, .010, .020, .020, .040, .040, .060, .060, .110])
+        ticks = iter([0, .010, .020, .021, .021, .040, .041,
+                      .041, .060, .061, .061, .109, .110])
         row = measure_once(FakeBus(), clock=lambda: next(ticks))
         self.assertEqual(row["result"], "ok")
         self.assertTrue(row["threshold_exceeded"])
         self.assertAlmostEqual(row["total_duration_ms"], 110)
+        self.assertAlmostEqual(row["register_reads"][0]["python_processing_ms"], 1)
         self.assertEqual([x["register"] for x in row["register_reads"]],
                          ["Present_Position", "Goal_Position", "Torque_Enable", "Status"])
         self.assertEqual(summarize([row])["over_100ms"], 1)
 
     def test_failed_register_is_distinguished(self):
-        ticks = iter([0, .01, .02, .02, .03])
+        ticks = iter([0, .01, .02, .021, .03, .04])
         row = measure_once(FakeBus("Goal_Position"), clock=lambda: next(ticks))
         self.assertEqual(row["result"], "error")
         self.assertEqual(row["failed_register"], "Goal_Position")

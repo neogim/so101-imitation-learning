@@ -326,9 +326,11 @@ class HardwareAdapter:
     def snapshot(self):
         bus = self.follower.bus
         start = time.perf_counter()
-        diagnostic = dict(started_at_monotonic=start, register_reads=[], result='pending')
+        diagnostic = dict(snapshot_call_started_at_monotonic=start,
+                          register_reads=[], result='pending')
         def read(register, *, normalize=True):
             read_start = time.perf_counter()
+            previous = diagnostic['register_reads'][-1] if diagnostic['register_reads'] else None
             try:
                 value = bus.sync_read(register, normalize=normalize, num_retry=0)
             except BaseException as exc:
@@ -343,12 +345,20 @@ class HardwareAdapter:
                 self.snapshot_diagnostics.append(diagnostic)
                 self.snapshot_diagnostics[:] = self.snapshot_diagnostics[-2000:]
                 raise
+            returned = time.perf_counter()
+            transformed = keyed(value)
             done = time.perf_counter()
             diagnostic['register_reads'].append(dict(
                 register=register, started_at_monotonic=read_start,
-                completed_at_monotonic=done, duration_ms=(done-read_start)*1000,
+                sync_read_returned_at_monotonic=returned,
+                completed_at_monotonic=done,
+                inter_register_gap_ms=(None if previous is None else
+                                       (read_start-previous['completed_at_monotonic'])*1000),
+                sync_read_ms=(returned-read_start)*1000,
+                python_transform_ms=(done-returned)*1000,
+                duration_ms=(done-read_start)*1000,
                 result='ok'))
-            return keyed(value)
+            return transformed
         present = read('Present_Position')
         goal = read('Goal_Position')
         torque = read('Torque_Enable', normalize=False)
@@ -477,13 +487,18 @@ class HandoffController:
         return self.io.image(), time.perf_counter(), dict(index=None, backend=None, device_name=None)
 
     def _check_snapshot(self, snap):
+        validation_started = time.perf_counter()
+        validation_queue_ms = ((validation_started-snap['sample_completed_at'])*1000
+                               if snap.get('sample_completed_at') is not None else None)
         if not math.isfinite(snap['sample_age_s']) or not 0 <= snap['sample_age_s'] <= .10:
             self._record('snapshot_rejected', threshold_ms=100.0,
                          sample_age_ms=snap['sample_age_s']*1000,
+                         snapshot_to_validation_ms=validation_queue_ms,
                          sampled_at=snap.get('sampled_at'),
                          sample_completed_at=snap.get('sample_completed_at'),
                          register_read_ms=snap.get('register_read_ms'))
             raise HandoffFault('stale six-axis register snapshot')
+        snap['snapshot_to_validation_ms'] = validation_queue_ms
         return snap
 
     def _trial_prediction(self, prediction, snap):
