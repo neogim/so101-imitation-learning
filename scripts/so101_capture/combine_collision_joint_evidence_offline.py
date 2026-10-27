@@ -74,9 +74,6 @@ def main():
   points.append(T[:3,3]+T[:3,:3]@np.array([0.,-.08,0.]))
   return np.asarray(points),np.asarray(axes)
  specs=parse_urdf(a.urdf)
- import matplotlib
- matplotlib.use("Agg")
- import matplotlib.pyplot as plt
  figures=[]
  for result,pair in zip(summary["joint_results"],summary["direction_pairs"]):
   if result["joint"]!=pair["joint"]:raise ValueError("Joint ordering mismatch")
@@ -84,21 +81,13 @@ def main():
   qb=np.asarray(pair["state_b_deg"],dtype=float)
   pa,_=fk_origins(specs,qa); pb,_=fk_origins(specs,qb)
   # Points from fk_origins are origins, not physical measured joint centers.
-  fig=plt.figure(figsize=(9,5))
-  ax=fig.add_subplot(111,projection="3d")
-  ax.plot(pa[:,0],pa[:,1],pa[:,2],"o-",label=f"frame {pair['frame_a']}")
-  ax.plot(pb[:,0],pb[:,1],pb[:,2],"o-",label=f"frame {pair['frame_b']}")
-  ax.set_xlim(-.35,.20);ax.set_ylim(-.25,.25);ax.set_zlim(-.15,.35)
-  ax.set_xlabel("base X (m)");ax.set_ylabel("base Y (m)");ax.set_zlabel("base Z (m)")
-  ax.set_title(f"{result['joint']}  delta={pair['delta_target_deg']:+.2f} deg\nURDF model prediction, NOT camera registration")
-  ax.legend()
-  path=f"urdf_direction_{result['joint']}.png"
-  figures.append((fig,path))
+  # Store model coordinates for later visualization; no plotting dependency.
+  figures.append({"joint":result["joint"],"frame_a":pair["frame_a"],
+                  "frame_b":pair["frame_b"],"points_a_m":pa.tolist(),
+                  "points_b_m":pb.tolist()})
   result["predicted_tool_displacement_mm"]=float(np.linalg.norm(pa[-1]-pb[-1])*1000)
  a.output.mkdir(parents=True)
- for fig,path in figures:
-  fig.savefig(a.output/path,dpi=130,bbox_inches="tight")
-  plt.close(fig)
+ (a.output/"urdf_direction_coordinates.json").write_text(json.dumps(figures,indent=2)+"\n")
  report={"source_summary":str(a.codex_summary),"collision_mesh_links":mesh_links,
          "neutral_warning_pairs":classes,"unexamined_nonadjacent_mesh_pairs":nonadjacent,
          "joint_comparisons":[{"joint":x["joint"],"frame_pair":x["direction_pair_frames"],
@@ -120,11 +109,11 @@ def main():
   "|---|---|---:|---:|---|"]
  for x in report["joint_comparisons"]:
   lines.append(f"|{x['joint']}|{x['frame_pair'][0]} -> {x['frame_pair'][1]}|{x['delta_deg']:+.2f}|{x['zero_candidate_deg']:+.2f}|UNVERIFIED|")
- lines.extend(["","## Files","- urdf_direction_<joint>.png: model-predicted 3D poses at recorded frames, not camera registered.",
+ lines.extend(["","## Files","- urdf_direction_coordinates.json: model-predicted 3D joint points at recorded frames; no camera registration.",
                "- combined_audit.json: every collision pair and all diagnostic metadata.",
                "","## Safety gate","Do not write IK results to motors until physical zero, sign, collision pairs and joint dynamics are validated."])
  (a.output/"report.md").write_text("\n".join(lines)+"\n")
  print(json.dumps({"output":str(a.output),"warning_pairs_adjacent":len(classes),
        "nonadjacent_pairs_awaiting_collision_check":len(nonadjacent),
-       "physical_zero_and_sign_verified":False,"plots":len(figures)},indent=2))
+       "physical_zero_and_sign_verified":False,"joint_coordinate_pairs":len(figures)},indent=2))
 if __name__=="__main__":main()
