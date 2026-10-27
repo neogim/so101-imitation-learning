@@ -95,6 +95,37 @@ class FakeReadOnlyPreflight:
 
 
 class ControllerTests(unittest.TestCase):
+    def test_hardware_snapshot_records_each_register_duration_without_relaxing_gate(self):
+        class Bus:
+            def sync_read(self, register, normalize=True, num_retry=0):
+                self.calls.append((register, normalize, num_retry))
+                return dict.fromkeys([n.removesuffix('.pos') for n in NAMES], 1)
+        adapter = HardwareAdapter()
+        bus = Bus(); bus.calls = []
+        adapter.follower = Mock(bus=bus)
+        snap = adapter.snapshot()
+        self.assertEqual([x[0] for x in bus.calls],
+                         ['Present_Position', 'Goal_Position', 'Torque_Enable', 'Status'])
+        self.assertEqual(set(snap['register_read_ms']), set(x[0] for x in bus.calls))
+        self.assertEqual(adapter.snapshot_diagnostics[-1]['result'], 'ok')
+        self.assertEqual(adapter.snapshot_diagnostics[-1]['threshold_ms'], 100.0)
+        self.assertGreaterEqual(snap['sample_completed_at'], snap['sampled_at'])
+
+    def test_stale_snapshot_records_measurements_and_keeps_100ms_fault(self):
+        io, policy = FakeIO(), FakePredictor()
+        ctl = HandoffController(io, policy)
+        stale = io.snapshot()
+        stale.update(sample_age_s=.101, sample_completed_at=12.3,
+                     register_read_ms={'Present_Position': 60, 'Goal_Position': 20,
+                                       'Torque_Enable': 10, 'Status': 11})
+        with self.assertRaisesRegex(HandoffFault, 'stale six-axis register snapshot'):
+            ctl._check_snapshot(stale)
+        event = ctl.events[-1]
+        self.assertEqual(event['event'], 'snapshot_rejected')
+        self.assertEqual(event['threshold_ms'], 100.0)
+        self.assertAlmostEqual(event['sample_age_ms'], 101.0)
+        self.assertEqual(event['register_read_ms']['Present_Position'], 60)
+
     def test_continuous_act_moves_six_axes_and_operator_stop_closes_writer(self):
         io, policy = FakeIO(), FakePredictor()
         policy.predict = lambda state, image: (np.asarray([25.0] * 5 + [45.0]), True)

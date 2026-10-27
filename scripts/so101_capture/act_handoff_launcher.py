@@ -99,6 +99,13 @@ def finalize_handoff_run(args, io, session, cycle_rows, hashes, primary_error=No
             from observe_act_read_only import CHECKPOINT as checkpoint
         except BaseException as exc:
             cleanup_errors.append(f'default_checkpoint: {type(exc).__name__}: {exc}')
+    snapshot_diagnostics = getattr(io, 'snapshot_diagnostics', ())
+    if not isinstance(snapshot_diagnostics, (list, tuple)):
+        snapshot_diagnostics = ()  # test doubles and older adapters have no list
+    camera_identity_diagnostics = None
+    camera = getattr(io, 'camera', None)
+    if isinstance(io, HardwareAdapter) and camera is not None and hasattr(camera, 'identity_snapshot'):
+        camera_identity_diagnostics = camera.identity_snapshot()
     report = {'mode':'hardware','observe_only':args.observe_only,
               'checkpoint':None if checkpoint is None else str(Path(checkpoint).resolve()),
               'first_motion_trial':args.first_motion_trial,
@@ -128,6 +135,8 @@ def finalize_handoff_run(args, io, session, cycle_rows, hashes, primary_error=No
               'cycle_over_50ms':sum(r['work_ms']>50 for r in cycle_rows),
               'cycle_interval_over_50ms':sum(r['interval_ms'] is not None and r['interval_ms']>50 for r in cycle_rows),
               'cycle_interval_over_60ms':sum(r['interval_ms'] is not None and r['interval_ms']>60 for r in cycle_rows),
+              'servo_snapshot_diagnostics':list(snapshot_diagnostics),
+              'camera_identity_diagnostics':camera_identity_diagnostics,
               'image_artifacts_error':image_artifacts_error,
               'warning':'Software stop sends no new Goal or torque command; servos may retain holding torque. Support arm and use independent servo-power cutoff if needed.'}
     try:
@@ -276,6 +285,7 @@ class HardwareAdapter:
         self.camera_cfg = camera_cfg
         self.goal_writes = 0
         self.startup_checkpoints = []
+        self.snapshot_diagnostics = []
 
     def open(self):
         from record_episode import make_hardware, start_hardware
@@ -316,12 +326,45 @@ class HardwareAdapter:
     def snapshot(self):
         bus = self.follower.bus
         start = time.perf_counter()
-        present = keyed(bus.sync_read('Present_Position', num_retry=0))
-        goal = keyed(bus.sync_read('Goal_Position', num_retry=0))
-        torque = keyed(bus.sync_read('Torque_Enable', normalize=False, num_retry=0))
-        status = keyed(bus.sync_read('Status', normalize=False, num_retry=0))
+        diagnostic = dict(started_at_monotonic=start, register_reads=[], result='pending')
+        def read(register, *, normalize=True):
+            read_start = time.perf_counter()
+            try:
+                value = bus.sync_read(register, normalize=normalize, num_retry=0)
+            except BaseException as exc:
+                done = time.perf_counter()
+                diagnostic['register_reads'].append(dict(
+                    register=register, started_at_monotonic=read_start,
+                    completed_at_monotonic=done, duration_ms=(done-read_start)*1000,
+                    result='error', error=f'{type(exc).__name__}: {exc}'))
+                diagnostic.update(result='error', failed_register=register,
+                                  completed_at_monotonic=done,
+                                  total_duration_ms=(done-start)*1000)
+                self.snapshot_diagnostics.append(diagnostic)
+                self.snapshot_diagnostics[:] = self.snapshot_diagnostics[-2000:]
+                raise
+            done = time.perf_counter()
+            diagnostic['register_reads'].append(dict(
+                register=register, started_at_monotonic=read_start,
+                completed_at_monotonic=done, duration_ms=(done-read_start)*1000,
+                result='ok'))
+            return keyed(value)
+        present = read('Present_Position')
+        goal = read('Goal_Position')
+        torque = read('Torque_Enable', normalize=False)
+        status = read('Status', normalize=False)
+        completed = time.perf_counter()
+        age = completed-start
+        diagnostic.update(result='ok', completed_at_monotonic=completed,
+                          total_duration_ms=age*1000,
+                          threshold_ms=100.0, threshold_exceeded=age > .10)
+        self.snapshot_diagnostics.append(diagnostic)
+        self.snapshot_diagnostics[:] = self.snapshot_diagnostics[-2000:]
         return dict(present=present, goal=goal, torque=torque, status=status,
-                    sampled_at=start, sample_age_s=time.perf_counter()-start)
+                    sampled_at=start, sample_completed_at=completed,
+                    sample_age_s=age,
+                    register_read_ms={row['register']:row['duration_ms']
+                                      for row in diagnostic['register_reads']})
 
     def image(self):
         if self.camera_cfg is not None:
@@ -435,6 +478,11 @@ class HandoffController:
 
     def _check_snapshot(self, snap):
         if not math.isfinite(snap['sample_age_s']) or not 0 <= snap['sample_age_s'] <= .10:
+            self._record('snapshot_rejected', threshold_ms=100.0,
+                         sample_age_ms=snap['sample_age_s']*1000,
+                         sampled_at=snap.get('sampled_at'),
+                         sample_completed_at=snap.get('sample_completed_at'),
+                         register_read_ms=snap.get('register_read_ms'))
             raise HandoffFault('stale six-axis register snapshot')
         return snap
 

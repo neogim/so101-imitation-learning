@@ -191,6 +191,16 @@ class MultiCameraTests(unittest.TestCase):
         self.assertEqual(capture_image_shape(three), (240, 320, 3))
         self.assertEqual(type(CameraRig(three).cameras['wrist']).__name__, 'AVFoundationCamera')
 
+    def test_identity_snapshot_preserves_native_device_evidence(self):
+        rig = CameraRig.__new__(CameraRig)
+        camera = SimpleNamespace(lock=threading.Lock(),
+            identity={'logical_name': 'wrist', 'unique_id': 'usb-id'},
+            native_diagnostics=['SO101_AVFOUNDATION_DIAGNOSTIC {"event":"selected"}'])
+        rig.cameras = {'wrist': camera}
+        result = rig.identity_snapshot()
+        self.assertEqual(result['wrist']['identity']['unique_id'], 'usb-id')
+        self.assertIn('selected', result['wrist']['native_diagnostics'][0])
+
     def test_avfoundation_transient_stale_waits_for_new_fresh_frame(self):
         camera = AVFoundationCamera('wrist', {'unique_id': 'synthetic'}, {},
                                     image_shape=(2, 2, 3))
