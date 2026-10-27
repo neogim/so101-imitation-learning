@@ -112,6 +112,8 @@ class OBSClient:
             import websocket
         except ImportError as exc:
             raise RuntimeError("Install websocket-client into isolated .local/camera-deps") from exc
+        self.timeout_s = timeout_s
+        self.websocket = websocket
         self.ws = websocket.create_connection(
             f"ws://{host}:{port}", timeout=timeout_s, http_proxy_host=None)
         try:
@@ -137,13 +139,31 @@ class OBSClient:
         request_id = uuid.uuid4().hex
         self.ws.send(json.dumps({"op": 6, "d": {"requestType": kind,
             "requestId": request_id, "requestData": data or {}}}))
-        response = json.loads(self.ws.recv())
-        result = response.get("d", {})
-        if response.get("op") != 7 or result.get("requestId") != request_id:
-            raise CameraFault(f"Unexpected OBS response for {kind}")
-        if not result.get("requestStatus", {}).get("result"):
-            raise CameraFault(f"OBS {kind}: {result.get('requestStatus')}")
-        return result.get("responseData", {})
+        # OBS can interleave asynchronous events with request responses.
+        # Ignore only event messages; never accept a response for another request.
+        deadline = time.monotonic() + self.timeout_s
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CameraFault(f"OBS {kind}: timed out waiting for response")
+                self.ws.settimeout(remaining)
+                try:
+                    response = json.loads(self.ws.recv())
+                except self.websocket.WebSocketTimeoutException as exc:
+                    raise CameraFault(f"OBS {kind}: timed out waiting for response") from exc
+                if response.get("op") == 5:
+                    continue  # Event; not the response to this request.
+                result = response.get("d", {})
+                if response.get("op") != 7 or result.get("requestId") != request_id:
+                    raise CameraFault(
+                        f"Unexpected OBS response for {kind}: "
+                        f"op={response.get('op')}, requestId={result.get('requestId')}")
+                if not result.get("requestStatus", {}).get("result"):
+                    raise CameraFault(f"OBS {kind}: {result.get('requestStatus')}")
+                return result.get("responseData", {})
+        finally:
+            self.ws.settimeout(self.timeout_s)
 
     def close(self):
         self.ws.close()
