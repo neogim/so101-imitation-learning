@@ -7,7 +7,7 @@ changes. This tests numerical equivalence, NOT physical zero, sign, TCP calibrat
 collision-free IK, or safe control.
 """
 from __future__ import annotations
-import argparse,csv,json
+import argparse,csv,json,tempfile
 from pathlib import Path
 import numpy as np
 import placo
@@ -24,7 +24,21 @@ def main():
  a=p.parse_args()
  if a.output.exists():p.error("Output already exists")
  if a.stride<1:p.error("Stride must be positive")
- robots=[placo.RobotWrapper(str(v)) for v in (a.original,a.experiment)]
+ # Resolve mesh paths relative to the original URDF's directory.
+ # Temporary experimental copy is removed afterwards; original is untouched.
+ a.original=a.original.resolve()
+ a.experiment=a.experiment.resolve()
+ if a.original==a.experiment:raise ValueError("URDF paths must be different")
+ with tempfile.NamedTemporaryFile(mode="wb",suffix=".urdf",prefix=".fk_compare_",dir=a.original.parent,delete=False) as fp:
+  temporary=Path(fp.name)
+  fp.write(a.experiment.read_bytes())
+ try:
+  robots=[placo.RobotWrapper(str(v)) for v in (a.original,temporary)]
+  compare_fk(robots,a)
+ finally:
+  temporary.unlink(missing_ok=True)
+
+def compare_fk(robots,a):
  for robot in robots:
   if not set(JOINT_NAMES).issubset(robot.joint_names()):raise ValueError("URDF missing arm joint")
  # Read only fixed train episode 0 for a quick deterministic FK equivalence test.
