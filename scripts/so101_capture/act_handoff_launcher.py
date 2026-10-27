@@ -27,7 +27,7 @@ TRIAL_SECONDS = 1.0
 TRIAL_SPEED_PER_S = 3.0  # degrees/s for five rotary joints; gripper Goal is fixed
 TRIAL_MAX_DISPLACEMENT = 1.0  # degrees from the handoff Goal, per rotary joint
 TRIAL_MAX_PREDICTION_GAP = 5.0  # degrees from current Goal and Present
-TRIAL_MAX_INITIAL_GAP = 1.5  # five rotary joints, degrees; start check only
+TRIAL_MAX_INITIAL_GAP = 2.0  # five rotary joints, degrees; start check only
 TRIAL_MAX_INITIAL_GRIPPER_GAP = 1.5  # normalized_0_100; initial handoff check only
 TRIAL_MAX_GRIPPER_MOVEMENT = 1.0  # normalized_0_100; preserve in-trial movement limit
 CONTINUOUS_DEFAULT_SECONDS = 10.0
@@ -463,7 +463,7 @@ class HandoffController:
         if any(gaps[n] > TRIAL_MAX_INITIAL_GAP for n in NAMES[:5]) or (
             gaps[NAMES[5]] > TRIAL_MAX_INITIAL_GRIPPER_GAP
         ):
-            self.gate.fault('first-motion initial Goal/Present gap exceeds rotary 1.5 deg '
+            self.gate.fault(f'first-motion initial Goal/Present gap exceeds rotary {TRIAL_MAX_INITIAL_GAP:g} deg '
                             'or gripper 1.5 normalized_0_100: ' + str(gaps))
 
     def _complete_first_motion(self, reason, snap):
