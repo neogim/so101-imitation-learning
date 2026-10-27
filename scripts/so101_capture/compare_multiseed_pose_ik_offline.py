@@ -47,6 +47,7 @@ def main():
  p.add_argument("--orientation-weight",type=float,default=0.2,help="Residual mm per radian after multiplying radians by 1000. 0.2 means 200mm/rad.")
  p.add_argument("--continuity-weight",type=float,default=0.2,help="Joint change penalty, mm/radian")
  p.add_argument("--max-nfev",type=int,default=150)
+ p.add_argument("--disable-oracle",action="store_true",help="Do not use recorded action as IK seed; target still comes from recorded action FK")
  a=p.parse_args()
  if a.output.exists():p.error("Output directory exists")
  if a.stride<1 or a.max_frames<1 or a.max_nfev<1:p.error("Positive stride/frame/iterations required")
@@ -78,7 +79,9 @@ def main():
     anchor=state if prev is None else prev
     # The recorded action is an oracle seed for diagnostics; do not use it as
     # an available seed when evaluating a real learned policy at runtime.
-    seeds=[("previous",anchor),("observation",state),("recorded_oracle",action)]
+    seeds=[("previous",anchor),("observation",state)]
+    if not a.disable_oracle:
+     seeds.append(("recorded_oracle",action))
     fits=[]
     for seed_name,seed in seeds:
      x0=np.clip(seed,low+1e-8,high-1e-8)
@@ -127,8 +130,8 @@ def main():
     "orientation_max_deg":float(max(r["orientation_error_deg"] for r in subset)),
     "max_sampled_jump_deg":float(max((r["max_delta_from_previous_sample_deg"] or 0) for r in subset)),
     "seed_counts":{n:sum(r["selected_seed"]==n for r in subset) for n in ("previous","observation","recorded_oracle")}}
-  summary["parameters"]={"orientation_weight":a.orientation_weight,"continuity_weight":a.continuity_weight,"stride":a.stride}
-  summary["limitations"]=["Recorded action is included as an ORACLE seed; optimistic offline upper bound, not a deployable IK policy",
+  summary["parameters"]={"orientation_weight":a.orientation_weight,"continuity_weight":a.continuity_weight,"stride":a.stride,"disable_oracle":a.disable_oracle}
+  summary["limitations"]=["Recorded action is used to derive FK targets, and may be an oracle seed unless --disable-oracle is set",
    "Targets use FK of recorded action; no independent measured ground truth",
    "Joint bounds are URDF-only and do not prove physical safety",
    "No collisions, velocities, acceleration or actual 20fps trajectory safety checks"]
