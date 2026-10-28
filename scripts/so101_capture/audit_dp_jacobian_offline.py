@@ -34,16 +34,24 @@ def svd_metrics(j):
             "condition_number":float(s[0]/s[-1]) if s[-1] > 1e-10 else None,
             "near_singular_numeric":bool(s[-1] < 1e-5)}
 
+def filter_selected_path(rows, mapping, method, direction, start, end):
+    selected=sorted([x for x in rows if x["mapping"]==mapping and
+                     x["method"]==method and x["direction"]==direction and
+                     start <= int(x["frame"]) <= end], key=lambda x:int(x["frame"]))
+    actual=[int(x["frame"]) for x in selected]
+    expected=list(range(start,end+1))
+    if actual != expected:
+        missing=sorted(set(expected)-set(actual))
+        duplicate=sorted({v for v in actual if actual.count(v)>1})
+        raise ValueError(f"Missing/duplicate frames for {direction}: missing={missing[:12]}, duplicate={duplicate[:12]}")
+    return selected
+
+
 def run(args):
     if args.output.exists():raise ValueError("Output exists")
     if args.start > args.end:raise ValueError("Invalid frame window")
     rows=json.loads(args.paths.read_text())
-    selected=sorted([x for x in rows if x["mapping"]==args.mapping and
-                     x["method"]==args.method and x["direction"]==args.direction and args.start <= int(x["frame"]) <= args.end],
-                    key=lambda x:int(x["frame"]))
-    if not selected:raise ValueError("No selected path found")
-    if [x["frame"] for x in selected] != list(range(args.start,args.end+1)):
-        raise ValueError("Missing or duplicate frames in requested window")
+    selected=filter_selected_path(rows,args.mapping,args.method,args.direction,args.start,args.end)
     signs=HYPOTHESES[args.mapping]
     robot=placo.RobotWrapper(str(args.urdf.resolve()))
     def fk(q):
