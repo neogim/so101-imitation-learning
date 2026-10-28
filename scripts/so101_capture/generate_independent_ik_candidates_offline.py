@@ -58,8 +58,12 @@ def run(args: argparse.Namespace) -> dict:
     actions = np.array([x["action"][:5] for x in rows], dtype=float)
     if not np.isfinite(actions).all() or not np.isfinite(timestamps).all() or np.any(np.diff(timestamps) <= 0):
         raise ValueError("Invalid Action / timestamps")
-    if not np.allclose(np.diff(timestamps), 0.05, atol=2e-6):
-        raise ValueError("Expected recorded 20 Hz timestamps")
+    dt = np.diff(timestamps)
+    timestamp_diagnostics = {
+        "dt_min_s": float(dt.min()), "dt_median_s": float(np.median(dt)),
+        "dt_max_s": float(dt.max()),
+        "non_50ms_steps": int(np.sum(~np.isclose(dt, 0.05, atol=2e-6))),
+    }
     lower, upper = joint_limits(args.urdf)
     robot = placo.RobotWrapper(str(args.urdf.resolve()))
 
@@ -114,7 +118,7 @@ def run(args: argparse.Namespace) -> dict:
         "classification": "CONDITIONAL_NUMERICAL_SENSITIVITY",
         "seed_family": "independent recorded-clipped; shoulder/elbow +/-2,+/-5 degrees; NO previous-witness seed",
         "episode": args.episode, "frames": [int(frames[0]), int(frames[-1])],
-        "hypotheses": summary,
+        "hypotheses": summary, "timestamp_diagnostics": timestamp_diagnostics,
         "warnings": [
             "No physical sign/offset mapping validated.",
             "Finite multistart search cannot prove a target unreachable.",
