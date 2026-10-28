@@ -76,18 +76,18 @@ def run(args):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     for entry in results:
-        fig,axes=plt.subplots(2,2,figsize=(12,10))
-        labels=list(HYPOTHESES)
-        for a,(label,points) in zip(axes.flat,entry["fk_hypotheses"].items()):
+        fig,axes=plt.subplots(4,2,figsize=(12,17))
+        for row,(label,points) in enumerate(entry["fk_hypotheses"].items()):
             xyz=np.array([points[link] for link in LINKS],dtype=float)
-            a.plot(xyz[:,0],xyz[:,2],"-o",label="XZ")
-            a.plot(xyz[:,1],xyz[:,2],"--s",label="YZ")
-            for joint,coord in zip(("base","J1","J2","J3","J4","J5","TCP"),xyz,strict=True):
-                a.annotate(joint,(coord[0],coord[2]),fontsize=8)
-            a.set_title(label)
-            a.set_xlabel("x / y URDF world [m] (solid XZ, dashed YZ)")
-            a.set_ylabel("z URDF world [m]")
-            a.axis("equal");a.grid(True);a.legend(loc="best")
+            for col,axis_idx in enumerate((0,1)):
+                a=axes[row,col]
+                a.plot(xyz[:,axis_idx],xyz[:,2],"-o")
+                for joint,coord in zip(("base","J1","J2","J3","J4","J5","TCP"),xyz,strict=True):
+                    a.annotate(joint,(coord[axis_idx],coord[2]),fontsize=8)
+                a.set_title(f"{label} | {'XZ' if col==0 else 'YZ'}")
+                a.set_xlabel(("x" if col==0 else "y")+" URDF world [m]")
+                a.set_ylabel("z URDF world [m]")
+                a.axis("equal");a.grid(True)
         fig.suptitle(f"Episode {args.episode} frame {entry['frame']} | observation.state | signs only, offset=0")
         fig.tight_layout()
         fig.savefig(args.output/f"frame_{entry['frame']:04d}_fk.png",dpi=140)
