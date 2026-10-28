@@ -100,7 +100,7 @@ def convert_dataset(source,output,urdf,mapping_label,j2_offset,j3_offset):
         prepared_stats = json.loads(source_stats.read_text())
         if not isinstance(prepared_stats,dict):
             raise ValueError("Unexpected statistics JSON")
-        prepared_stats["action"] = reshape_stat(prepared_stats.get("action"),action_values)\n
+        prepared_stats["action"] = reshape_stat(prepared_stats.get("action"),action_values)
     # Copy everything, preserving video references and parquet partition paths.
     # No hardlinks: source and output are independent even if one is edited.
     shutil.copytree(source,output)
