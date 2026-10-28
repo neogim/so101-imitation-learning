@@ -93,7 +93,15 @@ def convert_dataset(source,output,urdf,mapping_label,j2_offset,j3_offset):
     action_values=np.asarray(action_values)
     if not np.isfinite(action_values).all():raise ValueError("Nonfinite Cartesian actions")
 
-    # Validate statistics BEFORE creating the destination or copying videos.\n    prepared_stats = None\n    source_stats = source/"meta/stats.json"\n    if source_stats.exists():\n        prepared_stats = json.loads(source_stats.read_text())\n        if not isinstance(prepared_stats,dict):\n            raise ValueError("Unexpected statistics JSON")\n        prepared_stats["action"] = reshape_stat(prepared_stats.get("action"),action_values)\n\n    # Copy everything, preserving video references and parquet partition paths.
+    # Validate statistics BEFORE creating the destination or copying videos.
+    prepared_stats = None
+    source_stats = source/"meta/stats.json"
+    if source_stats.exists():
+        prepared_stats = json.loads(source_stats.read_text())
+        if not isinstance(prepared_stats,dict):
+            raise ValueError("Unexpected statistics JSON")
+        prepared_stats["action"] = reshape_stat(prepared_stats.get("action"),action_values)\n
+    # Copy everything, preserving video references and parquet partition paths.
     # No hardlinks: source and output are independent even if one is edited.
     shutil.copytree(source,output)
     for relative,table in converted.items():
