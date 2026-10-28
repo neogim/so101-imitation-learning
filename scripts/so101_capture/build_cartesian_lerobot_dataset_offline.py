@@ -37,7 +37,7 @@ def reshape_stat(old,values):
     result=dict(old)
     for key,vec in stats.items():
         prior=old.get(key)
-        data=vec.tolist()
+        data=vec.tolist() if hasattr(vec, "tolist") else list(vec)
         # LeRobot metadata generally serializes statistics as nested lists.
         if key!="count" and isinstance(prior,list) and prior and isinstance(prior[0],list):
             data=[data]
@@ -93,7 +93,7 @@ def convert_dataset(source,output,urdf,mapping_label,j2_offset,j3_offset):
     action_values=np.asarray(action_values)
     if not np.isfinite(action_values).all():raise ValueError("Nonfinite Cartesian actions")
 
-    # Copy everything, preserving video references and parquet partition paths.
+    # Validate statistics BEFORE creating the destination or copying videos.\n    prepared_stats = None\n    source_stats = source/"meta/stats.json"\n    if source_stats.exists():\n        prepared_stats = json.loads(source_stats.read_text())\n        if not isinstance(prepared_stats,dict):\n            raise ValueError("Unexpected statistics JSON")\n        prepared_stats["action"] = reshape_stat(prepared_stats.get("action"),action_values)\n\n    # Copy everything, preserving video references and parquet partition paths.
     # No hardlinks: source and output are independent even if one is edited.
     shutil.copytree(source,output)
     for relative,table in converted.items():
@@ -106,13 +106,10 @@ def convert_dataset(source,output,urdf,mapping_label,j2_offset,j3_offset):
     new_features["action"]=action_feature
     updated["features"]=new_features
     (output/"meta/info.json").write_text(json.dumps(updated,ensure_ascii=False,indent=2)+"\n")
-    # Stats are model-normalizer inputs: stale 6D values must never remain.
+    # Never preserve stale 6D action statistics.
     stats_path=output/"meta/stats.json"
-    if stats_path.exists():
-        stats=json.loads(stats_path.read_text())
-        if not isinstance(stats,dict):raise ValueError("Unexpected statistics JSON")
-        stats["action"]=reshape_stat(stats.get("action"),action_values)
-        stats_path.write_text(json.dumps(stats,ensure_ascii=False,indent=2)+"\n")
+    if prepared_stats is not None:
+        stats_path.write_text(json.dumps(prepared_stats,ensure_ascii=False,indent=2)+"\n")
 
     manifest={
         "status":"EXPERIMENTAL_CARTESIAN_ACTION_COPY_NOT_HARDWARE_APPROVED",
