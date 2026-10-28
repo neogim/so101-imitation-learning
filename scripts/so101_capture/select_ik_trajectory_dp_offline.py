@@ -159,6 +159,12 @@ def path_metrics(selected: list[dict], actions: np.ndarray, timestamps: np.ndarr
     return metrics
 
 
+def window_quality_pass(coverage: int, expected_frames: int, segment_metrics: list[dict]) -> bool:
+    """Window-aware gate; never assume the historic 31-frame interval."""
+    return bool(coverage == expected_frames and segment_metrics
+                and all(metric["quality_pass"] for metric in segment_metrics))
+
+
 def run(args: argparse.Namespace) -> dict:
     raw = json.loads(args.candidates.read_text())
     required = {"mapping", "direction", "frame", "candidate_motor_deg", "position_residual_mm",
@@ -205,7 +211,7 @@ def run(args: argparse.Namespace) -> dict:
                     "coverage": coverage, "full_coverage": coverage == len(frames),
                     "segments": [[int(frames[a]), int(frames[b - 1])] for a, b in segments],
                     "total_cost": float(sum(costs)), "segment_metrics": segment_metrics,
-                    "quality_pass": coverage == len(frames) and all(metric["quality_pass"] for metric in segment_metrics),
+                    "quality_pass": window_quality_pass(coverage, len(frames), segment_metrics),
                 }
                 for focus in (571, 572):
                     matches = np.flatnonzero(frames == focus)
