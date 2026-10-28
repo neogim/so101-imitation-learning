@@ -43,7 +43,7 @@ def fk_points(robot,motor,signs):
             for name in LINKS}
 
 def run(args):
-    if args.output.exists():raise FileExistsError(f"Output already exists: {args.output}")
+    if args.output.exists() and not args.output.is_dir():raise FileExistsError(f"Output is a file: {args.output}")
     if args.output.resolve()==args.dataset.resolve() or args.dataset.resolve() in args.output.resolve().parents:
         raise ValueError("Output must be outside source dataset")
     frames=sorted(set(args.frames))
@@ -62,7 +62,15 @@ def run(args):
         for label,signs in HYPOTHESES.items():
             entry["fk_hypotheses"][label]=fk_points(robot,state,signs)
         results.append(entry)
-    args.output.mkdir(parents=True)
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("Plotting requires matplotlib in the active so101-ik environment: python -m pip install matplotlib") from exc
+    args.output.mkdir(parents=True, exist_ok=True)
+    if any(args.output.iterdir()) and any((args.output / f"frame_{ix:04d}_fk.png").exists() for ix in frames):
+        raise FileExistsError("Existing plot files found; use a new --output directory")
     (args.output/"fk_comparison.json").write_text(json.dumps({
         "classification":"HYPOTHESIS_COMPARISON_NOT_PHYSICAL_VALIDATION",
         "episode":args.episode,"source":"observation.state (not action)",
@@ -72,9 +80,6 @@ def run(args):
                        "URDF link frame origins are not the exact motor pivot centers",
                        "Cannot infer physical mapping from these model plots alone"],
         "rows":results},indent=2,ensure_ascii=False)+"\n")
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
     for entry in results:
         fig,axes=plt.subplots(4,2,figsize=(12,17))
         for row,(label,points) in enumerate(entry["fk_hypotheses"].items()):
