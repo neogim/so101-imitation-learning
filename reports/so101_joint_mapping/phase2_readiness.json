@@ -1,0 +1,77 @@
+{
+  "phase": 2,
+  "stage": "A",
+  "mode": "offline_read_only",
+  "hardware_access": false,
+  "overall_status": "not_ready_to_fit_unverified",
+  "inventory": {
+    "dataset_state_available": true,
+    "side_video_available": true,
+    "wrist_video_available": true,
+    "urdf_available": true,
+    "cad_artifact_count": 31,
+    "camera_intrinsics_available": false,
+    "camera_extrinsics_available": false,
+    "physical_angle_fixture_evidence_available": false,
+    "independent_joint_angle_measurements_available": false
+  },
+  "candidate_stationary_poses": [
+    {
+      "observation_id": "existing-episode-0-frame-338",
+      "frame": 338,
+      "window": [334, 343],
+      "window_duration_seconds": 0.5,
+      "max_arm_joint_span_degrees": 0.0,
+      "shoulder_lift_state_degrees": 38.769,
+      "elbow_flex_state_degrees": -19.56,
+      "side_view_available": true,
+      "wrist_view_available": true,
+      "independent_urdf_angle_available": false
+    },
+    {
+      "observation_id": "existing-episode-0-frame-625",
+      "frame": 625,
+      "window": [621, 630],
+      "window_duration_seconds": 0.5,
+      "max_arm_joint_span_degrees": 0.0,
+      "shoulder_lift_state_degrees": -101.978,
+      "elbow_flex_state_degrees": 96.484,
+      "side_view_available": true,
+      "wrist_view_available": true,
+      "independent_urdf_angle_available": false
+    }
+  ],
+  "priority_joints": {
+    "shoulder_lift": {
+      "lerobot_state_available": true,
+      "candidate_pose_separation_degrees": 140.747,
+      "independent_correspondence_count": 0,
+      "sign": null,
+      "offset_degrees": null,
+      "status": "unverified"
+    },
+    "elbow_flex": {
+      "lerobot_state_available": true,
+      "candidate_pose_separation_degrees": 116.044,
+      "independent_correspondence_count": 0,
+      "sign": null,
+      "offset_degrees": null,
+      "status": "unverified"
+    }
+  },
+  "blockers": [
+    "No independently measured child-relative-to-parent physical joint angle.",
+    "No calibrated image projection or camera-to-robot extrinsics.",
+    "No visible reference registered to the URDF parent and child link frames.",
+    "No measurement uncertainty or same-pose external angle provenance."
+  ],
+  "next_safe_stage": {
+    "requires_separate_authorization": true,
+    "minimum_poses_per_joint": 2,
+    "preferred_poses_per_joint": 3,
+    "target_minimum_separation_degrees": 15,
+    "method": "stationary supported arm; independently referenced parent/child fiducials or inclinometers; same-pose measured State; documented uncertainty",
+    "motion_authorized_by_this_report": false
+  },
+  "sanitization": "No images, video, raw dataset, device identifiers, calibration values, usernames, or absolute paths included."
+}
