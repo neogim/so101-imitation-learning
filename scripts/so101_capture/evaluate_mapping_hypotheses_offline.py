@@ -181,6 +181,12 @@ def evaluate(args: argparse.Namespace) -> dict:
                 screen = np.asarray(successes) & (residuals <= args.max_position_error_mm) & (np.max(np.abs(deviation), axis=1) <= args.max_deviation_deg)
                 near_bound = np.any((np.abs(candidates - motor_lower) <= 1e-3) | (np.abs(candidates - motor_upper) <= 1e-3), axis=1)
                 outside_cal = np.any((candidates < cal_low) | (candidates > cal_high), axis=1)
+                active_bound_joints = [
+                    [JOINT_NAMES[j] for j in range(5)
+                     if abs(candidates[i, j] - motor_lower[j]) <= 1e-3
+                     or abs(candidates[i, j] - motor_upper[j]) <= 1e-3]
+                    for i in range(len(frames))
+                ]
                 metrics = {
                     "optimizer_successes": int(sum(successes)), "screen_passes": int(screen.sum()),
                     "position_residual_mm": distribution(residuals),
@@ -213,6 +219,8 @@ def evaluate(args: argparse.Namespace) -> dict:
                     "position_residual_mm": float(residuals[i]),
                     "max_motor_deviation_deg": float(np.max(np.abs(deviation[i]))),
                     "tool_orientation_change_deg": float(orientations[i]),
+                    "candidate_motor_deg": candidates[i].tolist(),
+                    "active_bound_joints": active_bound_joints[i],
                 } for i in range(len(frames)))
         results[mapping] = mapping_result
 

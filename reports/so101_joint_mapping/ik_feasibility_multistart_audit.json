@@ -1,0 +1,40 @@
+{
+  "classification": "CONDITIONAL_NUMERICAL_SENSITIVITY",
+  "run": {"episode": 0, "train_split": true, "frame_start": 565, "frame_end": 595, "frames": 31, "directions": 6, "offset_mm": 3.0, "residual_threshold_mm": 2.0},
+  "seeds": "recorded clipped; previous witness; shoulder/elbow motor coordinate +/-2 and +/-5 degrees",
+  "results": {
+    "shoulder+_elbow+": {"seed_attempts": 1188, "optimizer_successes": 400, "witness_targets": 186, "not_found_targets": 0, "branch_sensitive_targets": 186, "max_selected_residual_mm": 0.476481, "max_deviation_deg": 52.898582, "max_jump_deg": 19.600951, "max_velocity_deg_s": 392.010047, "max_acceleration_deg_s2": 7868.456142, "max_orientation_deg": 25.730361},
+    "shoulder-_elbow+": {"seed_attempts": 1188, "optimizer_successes": 946, "witness_targets": 149, "not_found_targets": 37, "branch_sensitive_targets": 51, "max_selected_residual_mm": 4.114299, "max_deviation_deg": 91.383841, "max_jump_deg": 82.128226, "max_velocity_deg_s": 1642.526919, "max_acceleration_deg_s2": 34358.942396, "max_orientation_deg": 149.679058},
+    "shoulder+_elbow-": {"seed_attempts": 1188, "optimizer_successes": 1005, "witness_targets": 46, "not_found_targets": 140, "branch_sensitive_targets": 43, "max_selected_residual_mm": 10.139816, "max_deviation_deg": 5.663732, "max_jump_deg": 3.715771, "max_velocity_deg_s": 74.313727, "max_acceleration_deg_s2": 1789.030944, "max_orientation_deg": 3.710089},
+    "shoulder-_elbow-": {"seed_attempts": 1188, "optimizer_successes": 425, "witness_targets": 186, "not_found_targets": 0, "branch_sensitive_targets": 184, "max_selected_residual_mm": 0.171298, "max_deviation_deg": 49.146493, "max_jump_deg": 12.039477, "max_velocity_deg_s": 240.784025, "max_acceleration_deg_s2": 7014.824214, "max_orientation_deg": 35.852692}
+  },
+  "frame_572_feasible_directions": {
+    "shoulder+_elbow+": ["x+", "x-", "y+", "y-", "z+", "z-"],
+    "shoulder-_elbow+": ["x+", "y+", "y-", "z-"],
+    "shoulder+_elbow-": ["x-", "y-", "z+"],
+    "shoulder-_elbow-": ["x+", "x-", "y+", "y-", "z+", "z-"]
+  },
+  "frame_572_not_found_directions": {
+    "shoulder+_elbow+": [],
+    "shoulder-_elbow+": ["x-", "z+"],
+    "shoulder+_elbow-": ["x+", "y+", "z-"],
+    "shoulder-_elbow-": []
+  },
+  "prior_bound_discrepancy": {
+    "seed_clips_per_mapping": 144,
+    "final_bound_contacts_per_mapping": 145,
+    "extra_contacts": {
+      "shoulder+_elbow+": {"direction": "x+", "frame": 571, "joint": "shoulder_lift"},
+      "shoulder-_elbow+": {"direction": "z+", "frame": 571, "joint": "elbow_flex"},
+      "shoulder+_elbow-": {"direction": "x+", "frame": 571, "joint": "shoulder_lift"},
+      "shoulder-_elbow-": {"direction": "z-", "frame": 571, "joint": "shoulder_lift"}
+    }
+  },
+  "max_roundtrip_residual_difference_mm": 1.5e-13,
+  "gate": {"all_targets_have_witness": false, "temporal_thresholds_pass": false, "decision": "STOP", "full_648_frames_run": false},
+  "tests": {"unit_tests_passed": 6, "bytecode_compile": "passed"},
+  "hardware_access": false,
+  "urdf_modified": false,
+  "act_training_data_generated": false,
+  "physical_mapping_verified": false
+}
