@@ -70,7 +70,8 @@ def run(args: argparse.Namespace) -> dict:
         return np.asarray(robot.get_T_world_frame("gripper_frame_link"), dtype=float).copy()
 
     details, summary = [], {}
-    for mapping, signs in HYPOTHESES.items():
+    for mapping in args.mappings:
+        signs = HYPOTHESES[mapping]
         reference = np.array([fk(np.deg2rad(motor_to_urdf_degrees(motor, signs))) for motor in actions])
         motor_low, motor_high = urdf_limits_in_motor_degrees(lower, upper, signs)
         summary[mapping] = {}
@@ -137,6 +138,8 @@ def main() -> None:
     p.add_argument("--offset-mm", type=float, default=3.0)
     p.add_argument("--feasible-residual-mm", type=float, default=2.0)
     p.add_argument("--max-nfev", type=int, default=100)
+    p.add_argument("--mappings", nargs="+", choices=tuple(HYPOTHESES), default=list(HYPOTHESES),
+                   help="Limit expensive multistart search to specified hypothetical mappings")
     a = p.parse_args()
     if a.frame_start < 0 or a.frame_end < a.frame_start or a.offset_mm <= 0 or a.max_nfev < 1:
         p.error("Invalid arguments")
