@@ -165,7 +165,7 @@ def run(args: argparse.Namespace) -> dict:
                 "feasible_witness", "orientation_change_deg", "active_bound_joints", "seed"}
     if any(not required.issubset(row) for row in raw):
         raise ValueError("Candidate schema mismatch")
-    rows = load_frames(args.dataset, args.episode, 565, 595)
+    rows = load_frames(args.dataset, args.episode, args.frame_start, args.frame_end)
     frames = np.array([row["frame_index"] for row in rows]); timestamps = np.array([row["timestamp"] for row in rows])
     actions = np.array([row["action"][:5] for row in rows], dtype=float)
     if not np.allclose(np.diff(timestamps), .05, atol=2e-6):
@@ -202,13 +202,15 @@ def run(args: argparse.Namespace) -> dict:
                     segment_metrics.append(path_metrics(selected, actions[start:end], timestamps[start:end], frames[start:end], cal_low, cal_high))
                 coverage = sum(item is not None for item in selected_all)
                 aggregate = {
-                    "coverage": coverage, "full_coverage": coverage == 31,
+                    "coverage": coverage, "full_coverage": coverage == len(frames),
                     "segments": [[int(frames[a]), int(frames[b - 1])] for a, b in segments],
                     "total_cost": float(sum(costs)), "segment_metrics": segment_metrics,
                     "quality_pass": coverage == 31 and all(metric["quality_pass"] for metric in segment_metrics),
                 }
                 for focus in (571, 572):
-                    index = int(np.flatnonzero(frames == focus)[0]); item = selected_all[index]
+                    matches = np.flatnonzero(frames == focus)
+                    index = int(matches[0]) if len(matches) else None
+                    item = selected_all[index] if index is not None else None
                     aggregate[f"frame_{focus}"] = None if item is None else {
                         "seed": item["seed"], "motor_deg": item["motor"],
                         "residual_mm": item["position_residual_mm"], "active_bound_joints": item["active_bound_joints"],
@@ -228,11 +230,11 @@ def run(args: argparse.Namespace) -> dict:
             }
     summary = {
         "classification": "CONDITIONAL_NUMERICAL_SENSITIVITY",
-        "candidate_source": str(args.candidates), "episode": args.episode, "frames": [565, 595], "fps": 20,
+        "candidate_source": str(args.candidates), "episode": args.episode, "frames": [int(frames[0]), int(frames[-1])], "fps": 20,
         "dedup_tolerance_deg": 1e-6, "cost_scales": SCALES, "cost_weights": WEIGHTS,
         "results": results,
         "warnings": [
-            "DP is optimal only within the cached finite candidate set, whose previous-witness seeds were greedy-dependent.",
+            "DP is optimal only within the supplied finite candidate set; verify candidate seed provenance separately.",
             "No missing layer is filled and no transition crosses a feasibility gap.",
             "Thresholds are research diagnostics, not physical safety limits.",
             "Physical mapping, orientation constraint, collision, torque, ACT generation and hardware replay remain unverified/out of scope.",
@@ -251,7 +253,13 @@ def main() -> None:
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--episode", type=int, default=0)
+    parser.add_argument("--frame-start", type=int, default=565)
+    parser.add_argument("--frame-end", type=int, default=595)
     args = parser.parse_args()
+    if args.frame_start < 0 or args.frame_end < args.frame_start:
+        parser.error("Invalid frame interval")
+    if not args.calibration.is_file():
+        parser.error("--calibration must refer to an existing JSON file; set FOLLOWER_CALIBRATION_JSON")
     if args.output.exists(): parser.error("output exists")
     print(json.dumps(run(args), indent=2))
 
