@@ -39,7 +39,7 @@ def run(args):
     if args.start > args.end:raise ValueError("Invalid frame window")
     rows=json.loads(args.paths.read_text())
     selected=sorted([x for x in rows if x["mapping"]==args.mapping and
-                     x["method"]==args.method and args.start <= int(x["frame"]) <= args.end],
+                     x["method"]==args.method and x["direction"]==args.direction and args.start <= int(x["frame"]) <= args.end],
                     key=lambda x:int(x["frame"]))
     if not selected:raise ValueError("No selected path found")
     if [x["frame"] for x in selected] != list(range(args.start,args.end+1)):
@@ -91,12 +91,6 @@ def main():
     p.add_argument("--start",type=int,default=50)
     p.add_argument("--end",type=int,default=100)
     a=p.parse_args()
-    # Only requested direction; reject unexpected entries before computing.
-    raw=json.loads(a.paths.read_text())
-    from tempfile import TemporaryDirectory
-    # Do not modify the original input; keep direction filtering in run via in-memory wrapper.
-    original=json.loads
-    # The run() filter is authoritative.
     run(a)
 
 if __name__=="__main__":
