@@ -1,0 +1,43 @@
+{
+  "visual": {
+    "classification": "VISUAL_SCREENING",
+    "status": "inconclusive_no_gross_rejection",
+    "episode": 0,
+    "train_split_confirmed": true,
+    "frames": [114, 252, 338, 451, 508, 625],
+    "hypotheses": ["shoulder+_elbow+", "shoulder-_elbow+", "shoulder+_elbow-", "shoulder-_elbow-"],
+    "virtual_camera_calibrated_to_video": false,
+    "local_output": "outputs/so101-ik-visual-sanity-20261028",
+    "physical_angles_extracted_from_pixels": false
+  },
+  "ik_smoke": {
+    "classification": "CONDITIONAL_NUMERICAL_SENSITIVITY",
+    "status": "unstable_not_expanded",
+    "frame_start": 565,
+    "frame_end": 595,
+    "frames": 31,
+    "directions": 6,
+    "offset_mm": 3.0,
+    "screen": {"max_position_residual_mm": 2.0, "max_motor_deviation_deg": 15.0},
+    "local_output": "outputs/so101-mapping-ik-smoke-20261028-v2",
+    "results": {
+      "shoulder+_elbow+": {"successes": 87, "passes": 2, "max_residual_mm": 0.250846, "max_motor_deviation_deg": 66.393020, "max_velocity_deg_s": 842.238024, "max_acceleration_deg_s2": 16500.483611, "seed_clips": 0},
+      "shoulder-_elbow+": {"successes": 145, "passes": 90, "max_residual_mm": 4.114299, "max_motor_deviation_deg": 91.466038, "max_velocity_deg_s": 1535.640799, "max_acceleration_deg_s2": 30712.891586, "seed_clips": 102},
+      "shoulder+_elbow-": {"successes": 153, "passes": 8, "max_residual_mm": 10.139816, "max_motor_deviation_deg": 67.584568, "max_velocity_deg_s": 1451.688180, "max_acceleration_deg_s2": 56398.186660, "seed_clips": 124},
+      "shoulder-_elbow-": {"successes": 149, "passes": 8, "max_residual_mm": 0.315364, "max_motor_deviation_deg": 54.162614, "max_velocity_deg_s": 326.884070, "max_acceleration_deg_s2": 6548.754192, "seed_clips": 0}
+    },
+    "full_648_frames_run": false,
+    "full_run_stop_reason": "Smoke interval was strongly hypothesis, seed, bound and direction dependent."
+  },
+  "frame_572": {
+    "recorded_shoulder_motor_deg": -100.923080,
+    "urdf_abs_bound_deg": 100.000043,
+    "calibrated_motor_abs_bound_deg": 105.230769,
+    "physical_limit_crossing_proven": false
+  },
+  "decision": "Do not continue dataset augmentation with the current underdetermined position-only setup; mapping remains unverified.",
+  "tests": {"unit_tests_passed": 3, "bytecode_compile": "passed"},
+  "hardware_access": false,
+  "act_training_data_generated": false,
+  "media_committed": false
+}
