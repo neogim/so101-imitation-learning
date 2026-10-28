@@ -1,0 +1,41 @@
+{
+  "classification": "CONDITIONAL_NUMERICAL_SENSITIVITY",
+  "run": {"episode": 0, "train_split": true, "frame_start": 565, "frame_end": 595, "frames": 31, "directions": 6, "offset_mm": 3.0},
+  "settings": {"recorded_weight": 0.05, "previous_weight": 0.01, "max_nfev": 80, "common_seed": "per-frame recorded Action clipped to URDF bounds"},
+  "original_action_peaks": {"jump_deg": 2.0, "velocity_deg_s": 40.000610, "acceleration_deg_s2": 676.902822},
+  "gate_thresholds": {"jump_deg": 5.0, "velocity_deg_s": 100.0, "acceleration_deg_s2": 2000.0, "tool_orientation_change_deg": 15.0, "position_residual_mm": 2.0, "motor_deviation_deg": 15.0},
+  "results": {
+    "shoulder+_elbow+": {
+      "unregularized": {"successes": 18, "passes": 15, "max_residual_mm": 0.712683, "max_deviation_deg": 24.045172, "max_jump_deg": 26.476721, "max_velocity_deg_s": 529.542509, "max_acceleration_deg_s2": 17840.893443, "max_orientation_deg": 24.568725},
+      "regularized": {"successes": 186, "passes": 186, "max_residual_mm": 0.062584, "max_deviation_deg": 6.391846, "max_jump_deg": 3.693640, "max_velocity_deg_s": 73.871113, "max_acceleration_deg_s2": 2312.495550, "max_orientation_deg": 1.625805},
+      "gate": "fail"
+    },
+    "shoulder-_elbow+": {
+      "unregularized": {"successes": 146, "passes": 90, "max_residual_mm": 4.114299, "max_deviation_deg": 92.065419, "max_jump_deg": 158.749862, "max_velocity_deg_s": 3175.045689, "max_acceleration_deg_s2": 114498.186176, "max_orientation_deg": 149.679058},
+      "regularized": {"successes": 186, "passes": 138, "max_residual_mm": 4.114348, "max_deviation_deg": 37.420381, "max_jump_deg": 57.806552, "max_velocity_deg_s": 1156.104583, "max_acceleration_deg_s2": 25978.832627, "max_orientation_deg": 42.985807},
+      "gate": "fail"
+    },
+    "shoulder+_elbow-": {
+      "unregularized": {"successes": 159, "passes": 16, "max_residual_mm": 10.139816, "max_deviation_deg": 25.309887, "max_jump_deg": 37.668170, "max_velocity_deg_s": 753.346161, "max_acceleration_deg_s2": 14900.746229, "max_orientation_deg": 25.202873},
+      "regularized": {"successes": 186, "passes": 46, "max_residual_mm": 10.139842, "max_deviation_deg": 5.623851, "max_jump_deg": 4.000581, "max_velocity_deg_s": 80.009795, "max_acceleration_deg_s2": 1645.788004, "max_orientation_deg": 3.527346},
+      "gate": "fail"
+    },
+    "shoulder-_elbow-": {
+      "unregularized": {"successes": 29, "passes": 20, "max_residual_mm": 0.410223, "max_deviation_deg": 37.437392, "max_jump_deg": 54.394034, "max_velocity_deg_s": 1087.855791, "max_acceleration_deg_s2": 36885.922593, "max_orientation_deg": 37.189406},
+      "regularized": {"successes": 186, "passes": 186, "max_residual_mm": 0.011747, "max_deviation_deg": 4.811776, "max_jump_deg": 2.066492, "max_velocity_deg_s": 41.330470, "max_acceleration_deg_s2": 1048.594202, "max_orientation_deg": 1.948049},
+      "gate": "fail"
+    }
+  },
+  "frame_572": {
+    "recorded_shoulder_motor_deg": -100.923080,
+    "urdf_abs_bound_deg": 100.000043,
+    "calibrated_motor_abs_bound_deg": 105.230769,
+    "all_directions_bound_active": true,
+    "physical_limit_crossing_proven": false
+  },
+  "gate": {"overall_go": false, "decision": "STOP_AT_31", "full_648_frames_run": false},
+  "tests": {"unit_tests_passed": 6, "bytecode_compile": "passed"},
+  "hardware_access": false,
+  "act_training_data_generated": false,
+  "physical_mapping_verified": false
+}

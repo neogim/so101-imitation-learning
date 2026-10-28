@@ -32,6 +32,29 @@ class MappingCoordinateTests(unittest.TestCase):
         self.assertAlmostEqual(velocity[2, 0], 4.0)
         self.assertAlmostEqual(acceleration[2, 0], 4.0)
 
+    def test_sign_aware_regularization_is_computed_in_motor_coordinates(self):
+        signs = np.array([1.0, -1.0])
+        q_urdf = np.deg2rad(np.array([10.0, -20.0]))
+        terms = MODULE.regularization_terms(
+            q_urdf, signs, np.array([8.0, 18.0]), np.array([9.0, 19.0]), .05, .01
+        )
+        np.testing.assert_allclose(terms, [.1, .1, .01, .01], atol=1e-12)
+
+    def test_peak_reports_frame_and_joint(self):
+        values = np.array([[np.nan, np.nan], [1.0, -4.0], [3.0, 2.0]])
+        old_names = MODULE.JOINT_NAMES
+        MODULE.JOINT_NAMES = ("a", "b")
+        try:
+            self.assertEqual(MODULE.peak(values, np.array([5, 6, 7]), skip=1),
+                             {"value": 4.0, "frame": 6, "joint": "b"})
+        finally:
+            MODULE.JOINT_NAMES = old_names
+
+    def test_small_deterministic_regularized_position_ik(self):
+        fit = MODULE.least_squares(lambda q: np.array([q[0] - 1.0, .1 * q[0]]), np.array([0.0]))
+        self.assertTrue(fit.success)
+        self.assertAlmostEqual(fit.x[0], 1.0 / 1.01, places=7)
+
 
 if __name__ == "__main__":
     unittest.main()
