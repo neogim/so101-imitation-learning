@@ -174,8 +174,14 @@ def run(args: argparse.Namespace) -> dict:
     rows = load_frames(args.dataset, args.episode, args.frame_start, args.frame_end)
     frames = np.array([row["frame_index"] for row in rows]); timestamps = np.array([row["timestamp"] for row in rows])
     actions = np.array([row["action"][:5] for row in rows], dtype=float)
-    if not np.allclose(np.diff(timestamps), .05, atol=2e-6):
-        raise ValueError("Expected consecutive 20 Hz timestamps")
+    dt = np.diff(timestamps)
+    if not np.isfinite(timestamps).all() or np.any(dt <= 0):
+        raise ValueError("Timestamps must be finite and strictly increasing")
+    timestamp_diagnostics = {
+        "dt_min_s": float(dt.min()), "dt_median_s": float(np.median(dt)),
+        "dt_max_s": float(dt.max()),
+        "non_50ms_steps": int(np.sum(~np.isclose(dt, 0.05, atol=2e-6))),
+    }
     calibration = json.loads(args.calibration.read_text()); cal_low = np.empty(5); cal_high = np.empty(5)
     for i, name in enumerate(JOINT_NAMES):
         span = (calibration[name]["range_max"] - calibration[name]["range_min"]) * 180 / 4095
@@ -237,7 +243,7 @@ def run(args: argparse.Namespace) -> dict:
     summary = {
         "classification": "CONDITIONAL_NUMERICAL_SENSITIVITY",
         "candidate_source": str(args.candidates), "episode": args.episode, "frames": [int(frames[0]), int(frames[-1])], "fps": 20,
-        "dedup_tolerance_deg": 1e-6, "cost_scales": SCALES, "cost_weights": WEIGHTS,
+        "timestamp_diagnostics": timestamp_diagnostics, "dedup_tolerance_deg": 1e-6, "cost_scales": SCALES, "cost_weights": WEIGHTS,
         "results": results,
         "warnings": [
             "DP is optimal only within the supplied finite candidate set; verify candidate seed provenance separately.",
