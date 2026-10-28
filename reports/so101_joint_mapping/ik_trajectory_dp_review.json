@@ -1,0 +1,41 @@
+{
+  "classification": "CONDITIONAL_NUMERICAL_SENSITIVITY",
+  "candidate_source": "outputs/so101-ik-multistart-565-595-20261028-v2/per_seed.json",
+  "scope": {"episode": 0, "frames": [565, 595], "fps": 20, "directions": 6},
+  "methods": ["greedy", "dp_first_order", "dp_second_order"],
+  "thresholds": {"residual_mm": 2, "deviation_deg": 15, "jump_deg": 5, "velocity_deg_s": 100, "acceleration_deg_s2": 2000, "orientation_deg": 15},
+  "results": {
+    "shoulder+_elbow+": {
+      "greedy": {"coverage": 186, "passing_directions": 1, "max_jump_deg": 6.413215, "max_velocity_deg_s": 128.266262, "max_acceleration_deg_s2": 2859.975023},
+      "dp_first_order": {"coverage": 186, "passing_directions": 4, "max_jump_deg": 6.849630, "max_velocity_deg_s": 136.989464, "max_acceleration_deg_s2": 2285.855037},
+      "dp_second_order": {"coverage": 186, "passing_directions": 6, "max_residual_mm": 0.510891, "max_deviation_deg": 9.253451, "max_jump_deg": 4.499864, "max_velocity_deg_s": 89.995225, "max_acceleration_deg_s2": 1661.349822, "max_orientation_deg": 4.393057}
+    },
+    "shoulder-_elbow+": {
+      "greedy": {"coverage": 149, "passing_directions": 1},
+      "dp_first_order": {"coverage": 149, "passing_directions": 1},
+      "dp_second_order": {"coverage": 149, "passing_directions": 1, "max_jump_deg": 70.770550, "max_velocity_deg_s": 1415.378614, "max_acceleration_deg_s2": 28307.320824}
+    },
+    "shoulder+_elbow-": {
+      "greedy": {"coverage": 46, "passing_directions": 0},
+      "dp_first_order": {"coverage": 46, "passing_directions": 0},
+      "dp_second_order": {"coverage": 46, "passing_directions": 0, "max_jump_deg": 2.805672, "max_velocity_deg_s": 56.114304, "max_acceleration_deg_s2": 1062.342064}
+    },
+    "shoulder-_elbow-": {
+      "greedy": {"coverage": 186, "passing_directions": 6, "max_jump_deg": 2.073277, "max_velocity_deg_s": 41.466176, "max_acceleration_deg_s2": 984.696605},
+      "dp_first_order": {"coverage": 186, "passing_directions": 6, "max_jump_deg": 2.214767, "max_velocity_deg_s": 44.294323, "max_acceleration_deg_s2": 1305.904807},
+      "dp_second_order": {"coverage": 186, "passing_directions": 6, "max_residual_mm": 0.341238, "max_deviation_deg": 6.254466, "max_jump_deg": 2.214767, "max_velocity_deg_s": 44.294323, "max_acceleration_deg_s2": 811.461004, "max_orientation_deg": 2.311365}
+    }
+  },
+  "max_jump_571_to_572_deg": {
+    "shoulder+_elbow+": {"greedy": 4.096824, "dp_first_order": 3.367237, "dp_second_order": 3.367237},
+    "shoulder-_elbow+": {"greedy": 2.413339, "dp_first_order": 2.006212, "dp_second_order": 2.005485},
+    "shoulder+_elbow-": {"greedy": 2.770679, "dp_first_order": 2.770679, "dp_second_order": 2.770679},
+    "shoulder-_elbow-": {"greedy": 1.601719, "dp_first_order": 1.496653, "dp_second_order": 1.496653}
+  },
+  "best_method": "dp_second_order",
+  "decision": "Continue only offline candidate-lattice research for ++/--; do not select physical mapping, expand to 648, generate ACT data, or replay hardware.",
+  "tests": {"unit_tests_passed": 6, "bytecode_compile": "passed"},
+  "hardware_access": false,
+  "act_training_data_generated": false,
+  "physical_mapping_verified": false
+}
