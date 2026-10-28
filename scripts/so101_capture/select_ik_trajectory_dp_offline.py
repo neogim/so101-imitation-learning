@@ -205,7 +205,7 @@ def run(args: argparse.Namespace) -> dict:
                     "coverage": coverage, "full_coverage": coverage == len(frames),
                     "segments": [[int(frames[a]), int(frames[b - 1])] for a, b in segments],
                     "total_cost": float(sum(costs)), "segment_metrics": segment_metrics,
-                    "quality_pass": coverage == 31 and all(metric["quality_pass"] for metric in segment_metrics),
+                    "quality_pass": coverage == len(frames) and all(metric["quality_pass"] for metric in segment_metrics),
                 }
                 for focus in (571, 572):
                     matches = np.flatnonzero(frames == focus)
