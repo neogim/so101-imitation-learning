@@ -244,5 +244,21 @@ class TeleopSafetyTests(unittest.TestCase):
             teleop_tick(follower, leader, sent, joint_bounds=bounds)
         follower.send_action.assert_called_once()
 
+
+    def test_teleop_locked_goals_override_leader_request(self):
+        follower, leader = self.devices()
+        follower.bus.present = dict.fromkeys(MOTORS, 0)
+        follower.bus.torque = dict.fromkeys(MOTORS, 1)
+        follower.send_action = Mock(side_effect=lambda action: action.copy())
+        leader.get_action = Mock(return_value=dict.fromkeys(NAMES, 40.0))
+        inactive = {n: 0.0 for n in NAMES if n != "elbow_flex.pos"}
+        result = teleop_tick(follower, leader, dict.fromkeys(NAMES, 0.0),
+                             locked_goals=inactive,
+                             joint_bounds={"elbow_flex.pos": (-2.0, 2.0)})
+        self.assertEqual(result["elbow_flex.pos"], 1.5)
+        for name in inactive:
+            self.assertEqual(result[name], 0.0)
+        follower.send_action.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()
