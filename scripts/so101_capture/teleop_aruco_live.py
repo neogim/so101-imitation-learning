@@ -61,7 +61,7 @@ class CameraReader:
                         direction = xy[1] - xy[0]
                         deg = math.degrees(math.atan2(float(direction[1]), float(direction[0])))
                         lengths = [float(np.linalg.norm(xy[(i+1)%4]-xy[i])) for i in range(4)]
-                        observed[ident] = dict(angle_image_deg=deg, min_side_px=min(lengths),
+                        observed[ident] = dict(angle_image_deg=deg, center_px=xy.mean(axis=0).round(3).tolist(), min_side_px=min(lengths),
                                                corners_px=xy.round(2).tolist())
                 with self.lock:
                     self.latest = (stamp, observed)
@@ -95,6 +95,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--camera-only", action="store_true", help="Verify the configured side camera without connecting to robot")
     ap.add_argument("--execute", action="store_true", help="Explicit approval for active teleoperation")
+    ap.add_argument("--active-joint", choices=("j2","j3"), help="Only this joint follows Leader; all others hold starting goals")
     ap.add_argument("--camera-config", type=Path, default=Path("scripts/so101_capture/cameras.local.yaml"))
     ap.add_argument("--seconds", type=int, default=30)
     ap.add_argument("--out-dir", type=Path, default=Path("outputs/so101-aruco-live"))
@@ -116,7 +117,7 @@ def main():
         finally:
             camera.close()
         return
-    if not a.execute or not 1 <= a.seconds <= 300 or not 0 < a.max_frame_age_ms <= 200 or not 0 < a.max_joint_excursion_deg <= 10:
+    if not a.execute or a.active_joint not in ("j2","j3") or not 1 <= a.seconds <= 300 or not 0 < a.max_frame_age_ms <= 200 or not 0 < a.max_joint_excursion_deg <= 10:
         ap.error("Require --execute, --seconds 1..300, max frame age <=200ms, joint excursion 0..10deg")
     if a.out_dir.exists():
         ap.error(f"Output exists, refusing overwrite: {a.out_dir}")
@@ -125,7 +126,7 @@ def main():
     (a.out_dir / "metadata.json").write_text(json.dumps({
         "camera_source": "side", "camera_config": str(a.camera_config), "seconds": a.seconds,
         "units": "degrees for five joints, gripper normalized_0_100",
-        "joint_excursion_limit_degrees": a.max_joint_excursion_deg,
+        "joint_excursion_limit_degrees": a.max_joint_excursion_deg, "active_joint": a.active_joint,
         "warning": "Image angles are only 2D. No calibrated 3D marker pose or joint-zero proof.",
     }, indent=2))
     camera = CameraReader(a.camera_config, (0,1,2))
@@ -142,7 +143,7 @@ def main():
     fields = ["sample_perf_counter_s", "camera_perf_counter_s", "camera_age_ms",
               "j2_follower_deg", "j3_follower_deg", "j2_goal_deg", "j3_goal_deg"]
     for marker in (0,1,2):
-        fields += [f"id{marker}_angle_image_deg",f"id{marker}_min_side_px",f"id{marker}_corners_json"]
+        fields += [f"id{marker}_angle_image_deg",f"id{marker}_center_x_px",f"id{marker}_center_y_px",f"id{marker}_min_side_px",f"id{marker}_corners_json"]
     fields += ["j2_image_relative_deg","j3_image_relative_deg"]
     try:
         camera.start()
@@ -187,7 +188,10 @@ def main():
                         raise RuntimeError(f"Excursion limit reached for {name}; refusing further Goal writes")
                 bounds = {name: (baseline[name]-a.max_joint_excursion_deg, baseline[name]+a.max_joint_excursion_deg)
                           for name in ("shoulder_lift.pos", "elbow_flex.pos")}
-                last_sent = teleop_tick(follower,leader,last_sent,joint_bounds=bounds)
+                active = "elbow_flex.pos" if a.active_joint == "j3" else "shoulder_lift.pos"
+                locked = {name: baseline[name] for name in NAMES if name != active}
+                last_sent = teleop_tick(follower,leader,last_sent,joint_bounds=bounds,
+                                        locked_goals=locked)
                 now = time.perf_counter()
                 follower_state = {name+".pos":v for name,v in follower.bus.sync_read("Present_Position",num_retry=0).items()}
                 if set(follower_state)!=set(NAMES) or not all(math.isfinite(v) for v in follower_state.values()):
@@ -203,6 +207,8 @@ def main():
                     data = markers.get(i)
                     row[f"id{i}_angle_image_deg"]=data["angle_image_deg"] if data else ""
                     row[f"id{i}_min_side_px"]=round(data["min_side_px"],2) if data else ""
+                    row[f"id{i}_center_x_px"]=data["center_px"][0] if data else ""
+                    row[f"id{i}_center_y_px"]=data["center_px"][1] if data else ""
                     row[f"id{i}_corners_json"]=json.dumps(data["corners_px"]) if data else ""
                 def relative(first,second):
                     if first not in markers or second not in markers:
