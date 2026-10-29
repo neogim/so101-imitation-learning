@@ -153,7 +153,7 @@ def main():
             time.sleep(.03)
         follower, leader = make_hardware(None)
         follower.cameras = {}
-        start_hardware(follower, leader, guarded_teleop_start=True)
+        start_hardware(follower, leader, guarded_teleop_start=True, max_initial_pose_difference=2.0)
         configured = True
         last_sent = {name + ".pos": v for name,v in follower.bus.sync_read("Goal_Position").items()}
         if set(last_sent)!=set(NAMES) or not all(math.isfinite(v) for v in last_sent.values()):
@@ -185,7 +185,7 @@ def main():
                 for name in ("shoulder_lift.pos","elbow_flex.pos"):
                     if abs(measured_before[name] - baseline[name]) >= a.max_joint_excursion_deg:
                         raise RuntimeError(f"Excursion limit reached for {name}; refusing further Goal writes")
-                last_sent = teleop_tick(follower,leader,last_sent)
+                bounds = {name: (baseline[name]-a.max_joint_excursion_deg, baseline[name]+a.max_joint_excursion_deg)\n                          for name in ("shoulder_lift.pos", "elbow_flex.pos")}\n                last_sent = teleop_tick(follower,leader,last_sent,joint_bounds=bounds)
                 now = time.perf_counter()
                 follower_state = {name+".pos":v for name,v in follower.bus.sync_read("Present_Position",num_retry=0).items()}
                 if set(follower_state)!=set(NAMES) or not all(math.isfinite(v) for v in follower_state.values()):
