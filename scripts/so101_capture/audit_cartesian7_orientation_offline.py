@@ -41,7 +41,7 @@ def main():
         r=rows[frame]; c=cand[frame]
         state=np.array([float(r[f"state_{i}"]) for i in range(5)])
         q=np.array(c["candidate_motor_deg"],float)
-        pred=np.array([float(r[f"pred_d{x}_rad"]) for x in "xyz"])
+        pred=np.array([float(r[f"pred_dr{x}_rad"]) for x in "xyz"])
         delta_xyz=np.array([float(r[f"pred_d{x}_m"]) for x in "xyz"])
         if not np.isfinite(np.r_[state,q,pred,delta_xyz]).all():raise ValueError(f"Nonfinite: {frame}")
         t0=fk(state); t=fk(q)
