@@ -185,7 +185,9 @@ def main():
                 for name in ("shoulder_lift.pos","elbow_flex.pos"):
                     if abs(measured_before[name] - baseline[name]) >= a.max_joint_excursion_deg:
                         raise RuntimeError(f"Excursion limit reached for {name}; refusing further Goal writes")
-                bounds = {name: (baseline[name]-a.max_joint_excursion_deg, baseline[name]+a.max_joint_excursion_deg)\n                          for name in ("shoulder_lift.pos", "elbow_flex.pos")}\n                last_sent = teleop_tick(follower,leader,last_sent,joint_bounds=bounds)
+                bounds = {name: (baseline[name]-a.max_joint_excursion_deg, baseline[name]+a.max_joint_excursion_deg)
+                          for name in ("shoulder_lift.pos", "elbow_flex.pos")}
+                last_sent = teleop_tick(follower,leader,last_sent,joint_bounds=bounds)
                 now = time.perf_counter()
                 follower_state = {name+".pos":v for name,v in follower.bus.sync_read("Present_Position",num_retry=0).items()}
                 if set(follower_state)!=set(NAMES) or not all(math.isfinite(v) for v in follower_state.values()):
