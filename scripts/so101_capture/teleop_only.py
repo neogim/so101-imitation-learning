@@ -9,7 +9,7 @@ import time
 from record_episode import hardware_preflight, make_hardware, start_hardware, close_hardware, NAMES
 
 
-def teleop_tick(follower, leader, last_sent):
+def teleop_tick(follower, leader, last_sent, *, joint_bounds=None):
     """One monitored control cycle; any failed read prevents the next Goal write."""
     state = {n + '.pos': v for n, v in follower.bus.sync_read('Present_Position', num_retry=0).items()}
     torque = follower.bus.sync_read('Torque_Enable', normalize=False, num_retry=0)
@@ -29,6 +29,16 @@ def teleop_tick(follower, leader, last_sent):
         raise ValueError('Nonfinite action; stopping')
     step = 30 * .05
     command = {n: last_sent[n]+max(-step, min(step, action[n]-last_sent[n])) for n in NAMES}
+    if joint_bounds is not None:
+        for name, (lower, upper) in joint_bounds.items():
+            if name not in command or not all(math.isfinite(v) for v in (lower, upper)):
+                raise RuntimeError("Invalid joint command bounds")
+            if not lower < upper:
+                raise RuntimeError("Invalid joint bound order")
+            if not lower <= state[name] <= upper:
+                raise RuntimeError(f"Measured joint outside allowed interval: {name}")
+            # Never issue an Action outside the excursion envelope.
+            command[name] = max(lower, min(upper, command[name]))
     sent = follower.send_action(command)
     if set(sent) != set(NAMES) or not all(math.isfinite(sent[n]) for n in NAMES):
         raise RuntimeError('Invalid sent Action; stopping')
