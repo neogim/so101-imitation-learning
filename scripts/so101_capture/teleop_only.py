@@ -9,7 +9,7 @@ import time
 from record_episode import hardware_preflight, make_hardware, start_hardware, close_hardware, NAMES
 
 
-def teleop_tick(follower, leader, last_sent, *, joint_bounds=None):
+def teleop_tick(follower, leader, last_sent, *, joint_bounds=None, locked_goals=None):
     """One monitored control cycle; any failed read prevents the next Goal write."""
     state = {n + '.pos': v for n, v in follower.bus.sync_read('Present_Position', num_retry=0).items()}
     torque = follower.bus.sync_read('Torque_Enable', normalize=False, num_retry=0)
@@ -29,6 +29,11 @@ def teleop_tick(follower, leader, last_sent, *, joint_bounds=None):
         raise ValueError('Nonfinite action; stopping')
     step = 30 * .05
     command = {n: last_sent[n]+max(-step, min(step, action[n]-last_sent[n])) for n in NAMES}
+    if locked_goals is not None:
+        for name, fixed_goal in locked_goals.items():
+            if name not in command or not math.isfinite(fixed_goal):
+                raise RuntimeError("Invalid locked joint")
+            command[name] = fixed_goal
     if joint_bounds is not None:
         for name, (lower, upper) in joint_bounds.items():
             if name not in command or not all(math.isfinite(v) for v in (lower, upper)):
