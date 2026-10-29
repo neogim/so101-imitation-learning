@@ -45,10 +45,10 @@ def main():
     p.add_argument("--output",type=Path,default=Path("outputs/so101-act-comparison-trainonly-stats-v1.json"))
     p.add_argument("--image-samples",type=int,default=128)
     p.add_argument("--seed",type=int,default=1000)
-    a=p.parse_args()
-    if a.output.exists():raise FileExistsError(a.output)
-    if not 16<=a.image_samples<=1024:raise ValueError("image-samples must be 16..1024")
-    plan=json.loads(a.plan.read_text())
+    args=p.parse_args()
+    if args.output.exists():raise FileExistsError(args.output)
+    if not 16<=args.image_samples<=1024:raise ValueError("image-samples must be 16..1024")
+    plan=json.loads(args.plan.read_text())
     if plan["status"]!="COMPARISON_PLAN_ONLY_NOT_TRAINED" or not plan["same_recorded_observations"]:
         raise ValueError("Comparison audit not passed")
     train=set(map(int,plan["train_episode_indices"]))
@@ -68,8 +68,8 @@ def main():
     eps=np.asarray(ds.hf_dataset["episode_index"],dtype=int)
     selected=np.flatnonzero(np.isin(eps,list(train)))
     if len(selected)!=n6:raise ValueError("LeRobot frame order mismatch")
-    rng=np.random.default_rng(a.seed)
-    ix=rng.choice(selected,size=min(a.image_samples,len(selected)),replace=False)
+    rng=np.random.default_rng(args.seed)
+    ix=rng.choice(selected,size=min(args.image_samples,len(selected)),replace=False)
     # Read camera resolution from dataset metadata, not a fixed 168x224 recipe.
     # Accumulate pixel moments in float64; do not retain hundreds of decoded images.
     accum={key:{"sum":np.zeros(3),"sum_sq":np.zeros(3),
@@ -85,15 +85,15 @@ def main():
             if ar.ndim!=3 or ar.shape[0]!=3 or tuple(ar.shape)!=expected:
                 raise ValueError(f"Image shape mismatch {key}: got CHW {ar.shape}, declared {declared}, expected {expected}")
             if not np.isfinite(ar).all():raise ValueError(f"Nonfinite image {key}")
-            a=accum[key]
-            if a["shape"] is None:a["shape"]=list(ar.shape)
-            if a["shape"]!=list(ar.shape):raise ValueError(f"Inconsistent camera shape {key}")
+            image_buffer=accum[key]
+            if image_buffer["shape"] is None:image_buffer["shape"]=list(ar.shape)
+            if image_buffer["shape"]!=list(ar.shape):raise ValueError(f"Inconsistent camera shape {key}")
             x=ar.astype(np.float64,copy=False).reshape(3,-1)
-            a["sum"]+=x.sum(axis=1)
-            a["sum_sq"]+=np.square(x).sum(axis=1)
-            a["min"]=np.minimum(a["min"],x.min(axis=1))
-            a["max"]=np.maximum(a["max"],x.max(axis=1))
-            a["pixels"]+=x.shape[1]
+            image_buffer["sum"]+=x.sum(axis=1)
+            image_buffer["sum_sq"]+=np.square(x).sum(axis=1)
+            image_buffer["min"]=np.minimum(a["min"],x.min(axis=1))
+            image_buffer["max"]=np.maximum(a["max"],x.max(axis=1))
+            image_buffer["pixels"]+=x.shape[1]
     shared={}
     image_shapes={}
     for key, image_accum in accum.items():
@@ -110,11 +110,11 @@ def main():
     s6.update(shared);s7.update(shared)
     out=dict(status="TRAIN_ONLY_STATS_AUDITED_NOT_APPLIED",train_episode_indices=sorted(train),
       validation_episode_indices=sorted(val),train_frames=n6,image_sample_frames=len(ix),
-      image_seed=a.seed,image_stats_shared=True,image_shapes=image_shapes,
+      image_seed=args.seed,image_stats_shared=True,image_shapes=image_shapes,
       joint_stats=s6,cartesian_stats=s7,
       note="Read-only. Must explicitly validate training loader episode IDs before training.")
-    a.output.parent.mkdir(parents=True,exist_ok=True)
-    a.output.write_text(json.dumps(out,indent=2)+"\n")
+    args.output.parent.mkdir(parents=True,exist_ok=True)
+    args.output.write_text(json.dumps(out,indent=2)+"\n")
     print(json.dumps({k:out[k] for k in ("status","train_frames","image_sample_frames","image_stats_shared")},indent=2))
-    print("Saved:",a.output)
+    print("Saved:",args.output)
 if __name__=="__main__":main()
