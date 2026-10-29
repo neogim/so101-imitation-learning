@@ -70,19 +70,45 @@ def main():
     if len(selected)!=n6:raise ValueError("LeRobot frame order mismatch")
     rng=np.random.default_rng(a.seed)
     ix=rng.choice(selected,size=min(a.image_samples,len(selected)),replace=False)
-    img={key:[] for key in IMAGES}
+    # Read camera resolution from dataset metadata, not a fixed 168x224 recipe.
+    # Accumulate pixel moments in float64; do not retain hundreds of decoded images.
+    accum={key:{"sum":np.zeros(3),"sum_sq":np.zeros(3),
+                 "min":np.full(3,np.inf),"max":np.full(3,-np.inf),
+                 "pixels":0,"shape":None} for key in IMAGES}
     for i in ix:
         sample=ds[int(i)]
         for key in IMAGES:
-            ar=sample[key].cpu().numpy()
-            if ar.shape!=(3,168,224):raise ValueError(f"Unexpected image {key}: {ar.shape}")
-            img[key].append(ar.transpose(1,2,0).reshape(-1,3))
-    shared={key:stats(np.concatenate(img[key]),images=True) for key in IMAGES}
-    for key in IMAGES:shared[key]["count"]=[len(ix)]
+            ar=sample[key].detach().cpu().numpy()
+            declared=tuple(ds.features[key]["shape"])
+            if ar.ndim!=3 or ar.shape[0]!=3 or tuple(ar.shape)!=declared:
+                raise ValueError(f"Image shape mismatch {key}: got {ar.shape}, declared {declared}")
+            if not np.isfinite(ar).all():raise ValueError(f"Nonfinite image {key}")
+            a=accum[key]
+            if a["shape"] is None:a["shape"]=list(ar.shape)
+            if a["shape"]!=list(ar.shape):raise ValueError(f"Inconsistent camera shape {key}")
+            x=ar.astype(np.float64,copy=False).reshape(3,-1)
+            a["sum"]+=x.sum(axis=1)
+            a["sum_sq"]+=np.square(x).sum(axis=1)
+            a["min"]=np.minimum(a["min"],x.min(axis=1))
+            a["max"]=np.maximum(a["max"],x.max(axis=1))
+            a["pixels"]+=x.shape[1]
+    shared={}
+    image_shapes={}
+    for key,a in accum.items():
+        mean=a["sum"]/a["pixels"]
+        std=np.sqrt(np.maximum(0,a["sum_sq"]/a["pixels"]-mean*mean))
+        if np.any(std<=0):raise ValueError(f"Zero variance in {key}")
+        shared[key]={
+            "mean":mean.reshape(3,1,1).tolist(),
+            "std":std.reshape(3,1,1).tolist(),
+            "min":a["min"].reshape(3,1,1).tolist(),
+            "max":a["max"].reshape(3,1,1).tolist(),
+            "count":[len(ix)]}
+        image_shapes[key]=a["shape"]
     s6.update(shared);s7.update(shared)
     out=dict(status="TRAIN_ONLY_STATS_AUDITED_NOT_APPLIED",train_episode_indices=sorted(train),
       validation_episode_indices=sorted(val),train_frames=n6,image_sample_frames=len(ix),
-      image_seed=a.seed,image_stats_shared=True,
+      image_seed=a.seed,image_stats_shared=True,image_shapes=image_shapes,
       joint_stats=s6,cartesian_stats=s7,
       note="Read-only. Must explicitly validate training loader episode IDs before training.")
     a.output.parent.mkdir(parents=True,exist_ok=True)
