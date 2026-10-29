@@ -98,7 +98,8 @@ def main():
     ap.add_argument("--camera-config", type=Path, default=Path("scripts/so101_capture/cameras.local.yaml"))
     ap.add_argument("--seconds", type=int, default=30)
     ap.add_argument("--out-dir", type=Path, default=Path("outputs/so101-aruco-live"))
-    ap.add_argument("--max-frame-age-ms", type=float, default=500)
+    ap.add_argument("--max-frame-age-ms", type=float, default=100)
+    ap.add_argument("--max-joint-excursion-deg", type=float, default=5.0, help="J2/J3 limit from initial measured position; abort on excess")
     a = ap.parse_args()
     if a.camera_only:
         camera = CameraReader(a.camera_config, (0, 1, 2))
@@ -115,8 +116,8 @@ def main():
         finally:
             camera.close()
         return
-    if not a.execute or not 1 <= a.seconds <= 300 or a.max_frame_age_ms <= 0:
-        ap.error("Use --execute --camera-index N --seconds 1..300 (positive max age)")
+    if not a.execute or not 1 <= a.seconds <= 300 or not 0 < a.max_frame_age_ms <= 200 or not 0 < a.max_joint_excursion_deg <= 10:
+        ap.error("Require --execute, --seconds 1..300, max frame age <=200ms, joint excursion 0..10deg")
     if a.out_dir.exists():
         ap.error(f"Output exists, refusing overwrite: {a.out_dir}")
     hashes = hardware_preflight(a.out_dir)
@@ -124,6 +125,7 @@ def main():
     (a.out_dir / "metadata.json").write_text(json.dumps({
         "camera_source": "side", "camera_config": str(a.camera_config), "seconds": a.seconds,
         "units": "degrees for five joints, gripper normalized_0_100",
+        "joint_excursion_limit_degrees": a.max_joint_excursion_deg,
         "warning": "Image angles are only 2D. No calibrated 3D marker pose or joint-zero proof.",
     }, indent=2))
     camera = CameraReader(a.camera_config, (0,1,2))
@@ -156,7 +158,12 @@ def main():
         last_sent = {name + ".pos": v for name,v in follower.bus.sync_read("Goal_Position").items()}
         if set(last_sent)!=set(NAMES) or not all(math.isfinite(v) for v in last_sent.values()):
             raise RuntimeError("Invalid initial Goal; no action sent")
-        print("TELEOP ACTIVE. Support arm, move ONLY small J2/J3 increments, stop with Ctrl-C.", flush=True)
+        baseline = {name+".pos": value for name,value in follower.bus.sync_read("Present_Position",num_retry=0).items()}
+        if set(baseline) != set(NAMES) or not all(math.isfinite(v) for v in baseline.values()):
+            raise RuntimeError("Invalid baseline positions")
+        print("BASELINE J2={:.3f}, J3={:.3f}. Maximum excursion: {:.1f} deg".format(
+            baseline["shoulder_lift.pos"], baseline["elbow_flex.pos"], a.max_joint_excursion_deg), flush=True)
+        print("TELEOP ACTIVE; limited J2/J3 excursion. Support the arm and use Ctrl-C to stop.", flush=True)
         with csv_path.open("w",newline="",encoding="utf-8") as output:
             writer = csv.DictWriter(output,fieldnames=fields)
             writer.writeheader()
@@ -169,7 +176,15 @@ def main():
                 stamp, markers = image_sample
                 if (tick-stamp)*1000 > a.max_frame_age_ms:
                     raise RuntimeError("Stale camera frame: stopping before next Goal command")
-                # This is the only call allowed to access robot control.
+                # The existing teleop_tick owns all Goal writes and guards servo status.
+                # This pre-check is read-only and prevents further commands at the limit.
+                measured_before = {name+".pos": value for name,value in follower.bus.sync_read(
+                    "Present_Position",num_retry=0).items()}
+                if set(measured_before) != set(NAMES) or not all(math.isfinite(v) for v in measured_before.values()):
+                    raise RuntimeError("Incomplete follower joint snapshot")
+                for name in ("shoulder_lift.pos","elbow_flex.pos"):
+                    if abs(measured_before[name] - baseline[name]) >= a.max_joint_excursion_deg:
+                        raise RuntimeError(f"Excursion limit reached for {name}; refusing further Goal writes")
                 last_sent = teleop_tick(follower,leader,last_sent)
                 now = time.perf_counter()
                 follower_state = {name+".pos":v for name,v in follower.bus.sync_read("Present_Position",num_retry=0).items()}
