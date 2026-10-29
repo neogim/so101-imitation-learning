@@ -20,34 +20,37 @@ from teleop_only import teleop_tick
 
 
 class CameraReader:
-    def __init__(self, index, ids):
+    """Fetch the configured OBS 'side' source, never a numeric camera index."""
+    def __init__(self, config_path, ids):
+        from multi_camera import CameraRig, load_config
         import cv2
-        self.cv2 = cv2
+        cfg = load_config(config_path, enabled="side")
+        self.rig = CameraRig(cfg)
         self.ids = ids
-        self.cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Cannot open camera index {index}; check OBS Virtual Camera")
-        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-        params = cv2.aruco.DetectorParameters()
-        self.detector = cv2.aruco.ArucoDetector(dictionary, params)
+        self.detector = cv2.aruco.ArucoDetector(
+            cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),
+            cv2.aruco.DetectorParameters())
         self.lock = threading.Lock()
         self.latest = None
         self.error = None
         self.stopping = threading.Event()
-        self.thread = threading.Thread(target=self._loop, daemon=True, name="aruco-camera")
+        self.thread = threading.Thread(target=self._loop, daemon=True, name="aruco-obs-side")
 
     def start(self):
+        self.rig.connect()
+        if set(self.rig.cameras) != {"side"}:
+            self.rig.disconnect()
+            raise RuntimeError("Expected exactly one configured side camera")
         self.thread.start()
 
     def _loop(self):
         import numpy as np
         try:
             while not self.stopping.is_set():
-                ok, frame = self.cap.read()
-                if not ok:
-                    raise RuntimeError("Camera frame read failed")
-                stamp = time.perf_counter()
-                corners, ids, _ = self.detector.detectMarkers(frame)
+                frame, stamp = self.rig.cameras["side"].sample(
+                    max_age_s=.10, freeze_timeout_s=30.0, transient_wait_s=.10)
+                corners, ids, _ = self.detector.detectMarkers(
+                    self._to_bgr(frame))
                 observed = {}
                 if ids is not None:
                     for corners_one, id_one in zip(corners, ids):
@@ -62,9 +65,18 @@ class CameraReader:
                                                corners_px=xy.round(2).tolist())
                 with self.lock:
                     self.latest = (stamp, observed)
+                # A source screenshot is not a sensor exposure timestamp. Avoid CPU spin
+                # if the unchanged OBS frame is returned repeatedly.
+                self.stopping.wait(.02)
         except BaseException as exc:
-            with self.lock:
-                self.error = f"{type(exc).__name__}: {exc}"
+            if not self.stopping.is_set():
+                with self.lock:
+                    self.error = f"{type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _to_bgr(frame):
+        import cv2
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
     def snapshot(self):
         with self.lock:
@@ -74,41 +86,47 @@ class CameraReader:
 
     def close(self):
         self.stopping.set()
-        self.cap.release()
+        self.rig.disconnect()
         if self.thread.is_alive():
             self.thread.join(timeout=3)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--list-cameras", action="store_true", help="Enumerate camera indices without opening robot")
+    ap.add_argument("--camera-only", action="store_true", help="Verify the configured side camera without connecting to robot")
     ap.add_argument("--execute", action="store_true", help="Explicit approval for active teleoperation")
-    ap.add_argument("--camera-index", type=int, default=None)
+    ap.add_argument("--camera-config", type=Path, default=Path("scripts/so101_capture/cameras.local.yaml"))
     ap.add_argument("--seconds", type=int, default=30)
     ap.add_argument("--out-dir", type=Path, default=Path("outputs/so101-aruco-live"))
     ap.add_argument("--max-frame-age-ms", type=float, default=500)
     a = ap.parse_args()
-    if a.list_cameras:
-        import cv2
-        for index in range(12):
-            cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-            if cap.isOpened():
-                ok, frame = cap.read()
-                print(f"index={index}, readable={ok}, shape={None if not ok else frame.shape}", flush=True)
-            cap.release()
+    if a.camera_only:
+        camera = CameraReader(a.camera_config, (0, 1, 2))
+        try:
+            camera.start()
+            deadline = time.perf_counter() + 5
+            while camera.snapshot() is None and time.perf_counter() < deadline:
+                time.sleep(.03)
+            sample = camera.snapshot()
+            if sample is None:
+                raise RuntimeError("No side camera frames after 5 seconds")
+            print(json.dumps({"camera": "side", "source": str(a.camera_config),
+                              "marker_ids": sorted(sample[1]), "host_timestamp": sample[0]}))
+        finally:
+            camera.close()
         return
-    if not a.execute or a.camera_index is None or not 1 <= a.seconds <= 300 or a.max_frame_age_ms <= 0:
+    if not a.execute or not 1 <= a.seconds <= 300 or a.max_frame_age_ms <= 0:
         ap.error("Use --execute --camera-index N --seconds 1..300 (positive max age)")
     if a.out_dir.exists():
         ap.error(f"Output exists, refusing overwrite: {a.out_dir}")
     hashes = hardware_preflight(a.out_dir)
     a.out_dir.mkdir(parents=True)
     (a.out_dir / "metadata.json").write_text(json.dumps({
-        "camera_index": a.camera_index, "seconds": a.seconds,
+        "camera_source": "side", "camera_config": str(a.camera_config), "seconds": a.seconds,
         "units": "degrees for five joints, gripper normalized_0_100",
         "warning": "Image angles are only 2D. No calibrated 3D marker pose or joint-zero proof.",
     }, indent=2))
-    camera = CameraReader(a.camera_index, (0,1,2))
+    camera = CameraReader(a.camera_config, (0,1,2))
     follower = leader = None
     configured = False
     stop_requested = False
