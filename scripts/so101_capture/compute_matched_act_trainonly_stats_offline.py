@@ -91,8 +91,8 @@ def main():
             x=ar.astype(np.float64,copy=False).reshape(3,-1)
             image_buffer["sum"]+=x.sum(axis=1)
             image_buffer["sum_sq"]+=np.square(x).sum(axis=1)
-            image_buffer["min"]=np.minimum(a["min"],x.min(axis=1))
-            image_buffer["max"]=np.maximum(a["max"],x.max(axis=1))
+            image_buffer["min"]=np.minimum(image_buffer["min"],x.min(axis=1))
+            image_buffer["max"]=np.maximum(image_buffer["max"],x.max(axis=1))
             image_buffer["pixels"]+=x.shape[1]
     shared={}
     image_shapes={}
