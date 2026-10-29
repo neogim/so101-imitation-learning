@@ -96,17 +96,17 @@ def main():
             a["pixels"]+=x.shape[1]
     shared={}
     image_shapes={}
-    for key,a in accum.items():
-        mean=a["sum"]/a["pixels"]
-        std=np.sqrt(np.maximum(0,a["sum_sq"]/a["pixels"]-mean*mean))
+    for key, image_accum in accum.items():
+        mean=image_accum["sum"]/image_accum["pixels"]
+        std=np.sqrt(np.maximum(0,image_accum["sum_sq"]/image_accum["pixels"]-mean*mean))
         if np.any(std<=0):raise ValueError(f"Zero variance in {key}")
         shared[key]={
             "mean":mean.reshape(3,1,1).tolist(),
             "std":std.reshape(3,1,1).tolist(),
-            "min":a["min"].reshape(3,1,1).tolist(),
-            "max":a["max"].reshape(3,1,1).tolist(),
+            "min":image_accum["min"].reshape(3,1,1).tolist(),
+            "max":image_accum["max"].reshape(3,1,1).tolist(),
             "count":[len(ix)]}
-        image_shapes[key]=a["shape"]
+        image_shapes[key]=image_accum["shape"]
     s6.update(shared);s7.update(shared)
     out=dict(status="TRAIN_ONLY_STATS_AUDITED_NOT_APPLIED",train_episode_indices=sorted(train),
       validation_episode_indices=sorted(val),train_frames=n6,image_sample_frames=len(ix),
