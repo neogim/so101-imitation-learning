@@ -80,8 +80,10 @@ def main():
         for key in IMAGES:
             ar=sample[key].detach().cpu().numpy()
             declared=tuple(ds.features[key]["shape"])
-            if ar.ndim!=3 or ar.shape[0]!=3 or tuple(ar.shape)!=declared:
-                raise ValueError(f"Image shape mismatch {key}: got {ar.shape}, declared {declared}")
+            # LeRobot metadata declares HWC, but decoded tensors are CHW.
+            expected=(declared[2],declared[0],declared[1]) if len(declared)==3 and declared[2]==3 else declared
+            if ar.ndim!=3 or ar.shape[0]!=3 or tuple(ar.shape)!=expected:
+                raise ValueError(f"Image shape mismatch {key}: got CHW {ar.shape}, declared {declared}, expected {expected}")
             if not np.isfinite(ar).all():raise ValueError(f"Nonfinite image {key}")
             a=accum[key]
             if a["shape"] is None:a["shape"]=list(ar.shape)
