@@ -243,6 +243,13 @@ class ACTPredictor:
         self.policy, self.pre, self.post = load_policy(
             device, checkpoint=checkpoint, image_keys=self.image_keys)
         self.policy.config.n_action_steps = 5
+        shapes = {key: tuple(self.policy.config.input_features[key].shape)
+                  for key in self.image_keys}
+        if len(set(shapes.values())) != 1:
+            raise ValueError(f'Camera input shapes differ across keys: {shapes}')
+        channels, self.input_height, self.input_width = next(iter(shapes.values()))
+        if channels != 3:
+            raise ValueError(f'Expected RGB checkpoint images, got {shapes}')
         if self.policy.config.chunk_size != 50 or self.policy.config.temporal_ensemble_coeff is not None:
             raise ValueError('Unexpected ACT chunk contract')
         self.policy.reset()
@@ -262,7 +269,7 @@ class ACTPredictor:
         if set(state) != set(NAMES) or not all(math.isfinite(state[n]) for n in NAMES):
             raise ValueError('Invalid Follower state for ACT')
         small = {f'observation.images.{name}': np.array(
-            Image.fromarray(frame).resize((224, 168), Image.Resampling.BILINEAR), copy=True)
+            Image.fromarray(frame).resize((self.input_width, self.input_height), Image.Resampling.BILINEAR), copy=True)
             for name, frame in images.items()}
         obs = prepare_observation_for_inference({
             'observation.state': np.asarray([state[n] for n in NAMES], dtype=np.float32),
