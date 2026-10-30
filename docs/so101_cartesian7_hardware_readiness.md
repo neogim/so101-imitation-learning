@@ -1,0 +1,49 @@
+# SO-101 Cartesian7 → real-arm validation gate (2026-10-30)
+
+**Status: NO-GO for Cartesian7 motor commands.** These checks are offline and never move hardware.
+
+## 1. Verified against LeRobot upstream (not automatically the locally installed version)
+
+- SOFollower constructs J1–J5 as `MotorNormMode.DEGREES` when `config.use_degrees=True`, otherwise `MotorNormMode.RANGE_M100_100`; gripper uses `RANGE_0_100`.
+- Current upstream `SOFollowerRobotConfig.use_degrees` default is `True`, **but the trained dataset's actual mode and LeRobot revision must be verified**.
+- Motor bus normalization (current upstream):
+  - body `RANGE_M100_100`: `200 * clamp(raw,min,max)/(max-min) - 100` after subtracting min; inverted if `drive_mode=1`.
+  - body `DEGREES`: `(raw-(range_min+range_max)/2)*360/4095` (STS3215 nominal resolution), NOT an absolute URDF angle; `homing_offset` already applied in servo readout.
+  - gripper `RANGE_0_100`: `100*(raw-range_min)/(range_max-range_min)` (inverted if drive mode).
+  - normalization may clip raw values to calibration bounds in some modes. A value outside [-100,+100] is a hint about mode/data path, not evidence the servo exceeded its mechanical limits.
+- Sources: https://github.com/huggingface/lerobot/blob/main/src/lerobot/robots/so_follower/so_follower.py ; https://github.com/huggingface/lerobot/blob/main/src/lerobot/robots/so_follower/config_so_follower.py ; https://github.com/huggingface/lerobot/blob/main/src/lerobot/motors/motors_bus.py
+
+## 2. What existing results mean
+
+The existing Cartesian7 labels were constructed with `deg2rad(observation.state[:5])` and `deg2rad(action[:5])` plus the assumed URDF joint axes/sign/zero. Thus the training target is *internally* consistent with that chosen mathematical model, but it is NOT independently verified as a physical TCP displacement. An offline Cartesian7 vs Joint6 TCP error comparison remains a comparison **within that hypothesis**. The numerical IK fit, tiny FK residuals and zero URDF violations do not authorize real motor commands.
+
+Existing neutral model self-collision warnings are diagnostics. They neither prove real physical collisions nor certify the swept path; meshes, SRDF/ACM adjacent-link exclusion, padding and tool/workspace scene must be validated.
+
+## 3. Read-only audit
+
+The user's actual follower calibration must be supplied via local `--follower`; it is intentionally **not committed** to GitHub. Do not use Leader calibration for Follower.
+
+Choose the mode matching the *actual training recording configuration*, not a guessed mode:
+
+```bash
+python scripts/so101_capture/audit_so101_calibration_readiness.py \
+  --follower /path/to/my_follower_arm.json \
+  --predictions outputs/so101-cartesian7-continuous-pred-v1/predictions.csv \
+  --body-mode degrees \
+  --output outputs/so101-calibration-readiness-degrees
+```
+
+To evaluate alternative hypothesis use a **different** output directory and `--body-mode range_m100_100`. This is not evidence of which config was used.
+
+## 4. Mandatory gates before actuating the robot
+
+1. Pin and inspect installed LeRobot revision, `SOFollowerRobotConfig.use_degrees` and recorded dataset feature units. Ensure the follower calibration file matches the one used for collection. Verify that the motor hardware calibration matches the file with torque and operating mode procedures approved by the operator.
+2. Independently validate joint sign, offset and units with **known observed physical postures** (at least two non-collinear arm configurations), NOT by adjusting offsets until the URDF passes numeric limits. Validate J2 especially; the recorded −103.03 value is not sufficient to infer a 3.03° offset.
+3. Rebuild physical FK-grounded Cartesian labels and retrain or re-evaluate as required if the original URDF transform is wrong. DO NOT silently remap old Cartesian7 predictions and call them physical targets.
+4. Validate collision geometry against an actual known arm configuration and correctly exclude only expected adjacent/link-pair geometry. Use a real robot collision checker and test all candidate points **and continuous/interpolated segments** against self-collision and workcell obstacles. A static XML inventory is not collision detection.
+5. Add deterministic hard limits, max joint step/velocity/acceleration, tracking-error watchdog, E-stop behavior, camera timeouts, and a deliberate operator-enabled hardware gate. Test the same signed and timed trajectory offline before any low-speed robot motion.
+6. With workspace clear, tethered emergency stop and follower secured, do *observe-only* first; then carefully bounded single-joint tests under supervision, then no-object short trial, then short Cartesian7 model trials, and only then repeated pick-and-place Joint6 versus Cartesian7 at matched conditions. Never use the current generated IK candidate JSON directly as executable commands.
+
+## 5. Remaining evidence requests
+
+For GitHub-only follow-up: add static tests, pin actual dependencies, and evaluate any *committed* URDF. Local data/hardware required for the actual calibration verification and dynamic collisions. The next machine-side information needed is read-only `use_degrees`, installed LeRobot revision and model's `max_relative_target`, not a motor operation.
