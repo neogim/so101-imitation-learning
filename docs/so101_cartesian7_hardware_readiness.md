@@ -54,3 +54,19 @@ To evaluate alternative hypothesis use a **different** output directory and `--b
 ## 5. Remaining evidence requests
 
 For GitHub-only follow-up: add static tests, pin actual dependencies, and evaluate any *committed* URDF. Local data/hardware required for the actual calibration verification and dynamic collisions. The next machine-side information needed is read-only `use_degrees`, installed LeRobot revision and model's `max_relative_target`, not a motor operation.
+
+## 6. Local verification supplied 2026-10-30
+
+The installed local LeRobot repo was reported at `~/workspace/lerobot/src/lerobot`. Introspection gave `SOFollowerRobotConfig.use_degrees` dataclass default `True` (instantiating without `port` raises TypeError; field inspection avoids hardware and port). Repo searches confirm `use_degrees=True` explicitly in `scripts/so101_capture/record_episode.py`, `record_episode_backup.py`, `observe_act_read_only.py`, `first_motion_test.py`, and other acquisition scripts. The default plus these explicit settings make degree-mode likely for recorded datasets; capture provenance still needs verification for exactly which entrypoint generated the 53 episodes.
+
+Local audit with genuine Follower calibration `~/.cache/huggingface/lerobot/calibration/robots/so_follower/my_follower_arm.json` on 100 consecutive episode 5 states returned zero inverse-normalized encoder violations for all body joints:
+- J1 inferred 1714..1991, calibrated 733..3468
+- J2 inferred 801..842, calibrated 776..3170
+- J3 inferred 3084..3113, calibrated 907..3122
+- J4 inferred 2827..2941, calibrated 863..3250
+- J5 inferred 879..881, calibrated 0..4095
+
+Unit test run: `python -m unittest discover -s tests -p test_so101_calibration_readiness.py -v` passed all 5 tests. **This confirms only internal numeric normalization consistency**, not the physical kinematic mapping. J2 is merely near its calibrated raw lower endpoint (25-count minimum gap for the sampled frames), so **future motion directions require endpoint margin checks**, not a blind offset. Never extend URDF bounds to silence a limit warning.
+
+Status of items: (1) conversion implementation & degrees setting STRONGLY SUPPORTED, actual capture entrypoint still to verify; (2) 100-frame calibrated range numerical check DONE; (3) physical URDF sign/zero and TCP registration OPEN; (4) actual collision geometry overlap and swept-path evaluation OPEN.
+
