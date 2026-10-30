@@ -19,6 +19,13 @@ The existing Cartesian7 labels were constructed with `deg2rad(observation.state[
 
 Existing neutral model self-collision warnings are diagnostics. They neither prove real physical collisions nor certify the swept path; meshes, SRDF/ACM adjacent-link exclusion, padding and tool/workspace scene must be validated.
 
+
+## 2a. Measured Follower J2 calibration cross-check (supplied JSON and recorded range)
+
+Follower `shoulder_lift`: `range_min=776`, `range_max=3170`, `homing_offset=-1361`, `drive_mode=0`. If `use_degrees=True`, current LeRobot STS3215 `DEGREES` formula yields calibrated display limits ±105.230769°. Reported Episode 5 J2 State interval [−103.0329666°,−99.4285736°] inversely maps to **approximately 801 through 842 encoder counts** (using midpoint 1973 and 4095 counts/revolution), **entirely within [776,3170]**. This is stronger evidence that the recorded values are in the **degrees** mode than in normalized [-100,100] mode. In the latter case a value below −100 is outside its expected representable range. Still verify the exact installed configuration and whether any processing changed the recorded values.
+
+This result **does not mean URDF ±100° limit is wrong or safe to expand**: calibration's measured motor range and URDF mechanical/kinematic limits are independent, and the relation to URDF origin/sign has not been validated. Physical collision checking remains missing.
+
 ## 3. Read-only audit
 
 The user's actual follower calibration must be supplied via local `--follower`; it is intentionally **not committed** to GitHub. Do not use Leader calibration for Follower.
