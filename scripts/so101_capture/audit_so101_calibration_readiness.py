@@ -66,7 +66,7 @@ def analyze(follower,urdf,predictions,use_degrees):
         els=link.findall("collision")
         if els:
             collisions.append({"link":link.attrib.get("name"),"collision_geometries":len(els),
-                "types":[next((x.tag for x in list(el.find("geometry") or []) if isinstance(x.tag,str)),"none") for el in els]})
+                "types":[next((x.tag for x in (list(el.find("geometry")) if el.find("geometry") is not None else []) if isinstance(x.tag,str)),"none") for el in els]})
     return {"classification":"OFFLINE_DIAGNOSTIC_NOT_PHYSICAL_CALIBRATION",
         "follower":str(follower),"source_frames":len(rows),"body_mode_assumption":mode,
         "body_joints":res,"collision_geometry_inventory":collisions,
