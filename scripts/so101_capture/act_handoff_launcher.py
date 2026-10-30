@@ -15,6 +15,13 @@ from pathlib import Path
 import sys
 import time
 
+# Existing local dependencies should be importable in this script's process.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+for _deps in ('camera-deps', 'act-deps'):
+    _path = _PROJECT_ROOT / '.local' / _deps
+    if _path.is_dir() and str(_path) not in sys.path:
+        sys.path.insert(1, str(_path))
+
 import numpy as np
 
 from act_action_guard import NAMES
