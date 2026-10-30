@@ -29,7 +29,7 @@ mkdir -p "$ROOT/outputs"
 # Fail closed if this editable LeRobot revision has no augmentation interface.
 "$PY" - <<'PY'
 from dataclasses import fields
-from lerobot.datasets.transforms import ImageTransformsConfig
+from lerobot.transforms import ImageTransformsConfig
 names={f.name for f in fields(ImageTransformsConfig)}
 assert {"enable","max_num_transforms"}.issubset(names),names
 cfg=ImageTransformsConfig(enable=True,max_num_transforms=2)
