@@ -23,13 +23,12 @@ command -v "$PY" >/dev/null || { echo "Missing Python" >&2; exit 2; }
 for ds in "$JOINT" "$CART"; do
   test -f "$ds/meta/info.json" || { echo "Missing dataset: $ds" >&2; exit 2; }
 done
-test ! -e "$BASE-joint6" && test ! -e "$BASE-cartesian7" || { echo "Output directory exists: $BASE" >&2; exit 2; }
+test ! -e "$BASE-joint6" && test ! -e "$BASE-cartesian7" && test ! -e "$BASE-joint6.log" && test ! -e "$BASE-cartesian7.log" || { echo "Output/log already exists: $BASE" >&2; exit 2; }
+mkdir -p "$ROOT/outputs"
 
 # Fail closed if this editable LeRobot revision has no augmentation interface.
 "$PY" - <<'PY'
 from dataclasses import fields
-from lerobot.configs.train import TrainPipelineConfig
-from lerobot.configs.default import DatasetConfig
 from lerobot.datasets.transforms import ImageTransformsConfig
 names={f.name for f in fields(ImageTransformsConfig)}
 assert {"enable","max_num_transforms"}.issubset(names),names
