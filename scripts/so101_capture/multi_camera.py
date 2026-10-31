@@ -14,6 +14,7 @@ from pathlib import Path
 import select
 import struct
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -112,6 +113,8 @@ class OBSClient:
             import websocket
         except ImportError as exc:
             raise RuntimeError("Install websocket-client into isolated .local/camera-deps") from exc
+        self.timeout_s = timeout_s
+        self.websocket = websocket
         self.ws = websocket.create_connection(
             f"ws://{host}:{port}", timeout=timeout_s, http_proxy_host=None)
         try:
@@ -137,13 +140,31 @@ class OBSClient:
         request_id = uuid.uuid4().hex
         self.ws.send(json.dumps({"op": 6, "d": {"requestType": kind,
             "requestId": request_id, "requestData": data or {}}}))
-        response = json.loads(self.ws.recv())
-        result = response.get("d", {})
-        if response.get("op") != 7 or result.get("requestId") != request_id:
-            raise CameraFault(f"Unexpected OBS response for {kind}")
-        if not result.get("requestStatus", {}).get("result"):
-            raise CameraFault(f"OBS {kind}: {result.get('requestStatus')}")
-        return result.get("responseData", {})
+        # OBS can interleave asynchronous events with request responses.
+        # Ignore only event messages; never accept a response for another request.
+        deadline = time.monotonic() + self.timeout_s
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CameraFault(f"OBS {kind}: timed out waiting for response")
+                self.ws.settimeout(remaining)
+                try:
+                    response = json.loads(self.ws.recv())
+                except self.websocket.WebSocketTimeoutException as exc:
+                    raise CameraFault(f"OBS {kind}: timed out waiting for response") from exc
+                if response.get("op") == 5:
+                    continue  # Event; not the response to this request.
+                result = response.get("d", {})
+                if response.get("op") != 7 or result.get("requestId") != request_id:
+                    raise CameraFault(
+                        f"Unexpected OBS response for {kind}: "
+                        f"op={response.get('op')}, requestId={result.get('requestId')}")
+                if not result.get("requestStatus", {}).get("result"):
+                    raise CameraFault(f"OBS {kind}: {result.get('requestStatus')}")
+                return result.get("responseData", {})
+        finally:
+            self.ws.settimeout(self.timeout_s)
 
     def close(self):
         self.ws.close()
@@ -321,6 +342,17 @@ class AVFoundationCamera(OBSSourceCamera):
                  image_shape=(480, 640, 3)):
         super().__init__(name, spec, connection, collect_timings, image_shape)
         self.process = None
+        self.native_diagnostics = []
+        self.stderr_thread = None
+
+    def _collect_stderr(self):
+        for raw in iter(self.process.stderr.readline, b""):
+            text = raw.decode("utf-8", errors="replace").rstrip()
+            if not text:
+                continue
+            with self.lock:
+                self.native_diagnostics.append(text)
+            print(f"CAMERA {self.name} NATIVE: {text}", file=sys.stderr, flush=True)
 
     def connect(self):
         source = Path(__file__).with_name("avfoundation_wrist.swift")
@@ -333,14 +365,18 @@ class AVFoundationCamera(OBSSourceCamera):
                            env=env, check=True, capture_output=True)
         self.process = subprocess.Popen([str(binary), self.spec["unique_id"]],
                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, bufsize=0)
+                                        stderr=subprocess.PIPE, bufsize=0)
+        self.stderr_thread = threading.Thread(target=self._collect_stderr, daemon=True,
+                                              name=f"avfoundation-{self.name}-stderr")
+        self.stderr_thread.start()
         try:
             deadline = time.perf_counter() + 5.0
             while not self._fetch(initial=True):
                 if time.perf_counter() > deadline:
                     raise CameraFault(f"{self.name}: direct capture startup frames remained stale")
             self.identity = {"logical_name": self.name, "input_kind": "avfoundation_direct",
-                             "unique_id": self.spec["unique_id"]}
+                             "unique_id": self.spec["unique_id"],
+                             "native_diagnostics": self.native_diagnostics}
             self.thread = threading.Thread(target=self._run, daemon=True,
                                            name=f"avfoundation-{self.name}")
             self.thread.start()
@@ -496,6 +532,8 @@ class AVFoundationCamera(OBSSourceCamera):
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=3)
+        if self.stderr_thread:
+            self.stderr_thread.join(timeout=1)
 
 
 class CameraRig:
@@ -567,6 +605,16 @@ class CameraRig:
                     "last_fetch": None if camera.last_fetch_timing is None
                                   else dict(camera.last_fetch_timing),
                     "error": camera.error,
+                }
+        return result
+
+    def identity_snapshot(self):
+        result = {}
+        for name, camera in self.cameras.items():
+            with camera.lock:
+                result[name] = {
+                    "identity": None if camera.identity is None else dict(camera.identity),
+                    "native_diagnostics": list(getattr(camera, "native_diagnostics", ())),
                 }
         return result
 

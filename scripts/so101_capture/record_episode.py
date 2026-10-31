@@ -197,7 +197,7 @@ def synchronize_positions(follower, leader, target, *, timeout=60, tolerance=2.0
 
 def start_hardware(follower, leader, *, alignment_timeout=60, alignment_tolerance=2.0,
                    alignment_diagnostics_path=None, guarded_teleop_start=False,
-                   startup_checkpoints=None):
+                   startup_checkpoints=None, max_initial_pose_difference=None):
     # Avoid standard connect()'s automatic calibration path. No configure writes
     # occur until BOTH devices pass the existing read-only calibration check.
     phase('Opening Leader serial bus')
@@ -219,6 +219,15 @@ def start_hardware(follower, leader, *, alignment_timeout=60, alignment_toleranc
                 f'Initial pose mismatch exceeds alignment limit: {name}; '
                 f'Leader={target[name]:.3f}, Follower={current[name]:.3f}, '
                 f'difference={difference:.3f}, limit={limit} {unit}')
+    if max_initial_pose_difference is not None:
+        if not 0 < max_initial_pose_difference <= 2.0:
+            raise ValueError("max_initial_pose_difference must be in (0,2]")
+        deviations = {name: abs(current[name]-target[name]) for name in current}
+        offenders = {k: v for k, v in deviations.items() if v > max_initial_pose_difference}
+        if offenders:
+            raise RuntimeError(
+                "Startup alignment REJECTED before any torque/Goal/configuration writes: "
+                + str(offenders))
     phase('Configuring Leader')
     leader.configure()
     phase('Preparing Follower current-position hold')

@@ -1,0 +1,28 @@
+{
+  "scope": "offline_read_only_phase_1",
+  "model": "q_URDF_deg = sign * q_LeRobot_deg + offset_deg",
+  "source_versions": {
+    "lerobot": "0.6.2",
+    "dataset_codebase": "v3.0",
+    "dataset_episode": 0,
+    "dataset_episode_frames": 648
+  },
+  "mapping_results": {
+    "shoulder_pan": {"sign": null, "offset_deg": null, "status": "unverified"},
+    "shoulder_lift": {"sign": null, "offset_deg": null, "status": "unverified", "priority": true},
+    "elbow_flex": {"sign": null, "offset_deg": null, "status": "unverified", "priority": true},
+    "wrist_flex": {"sign": null, "offset_deg": null, "status": "unverified"},
+    "wrist_roll": {"sign": null, "offset_deg": null, "status": "unverified"}
+  },
+  "selected_trace_evidence": {
+    "episode": 0,
+    "frames": [565, 570, 575, 580],
+    "shoulder_lift_state_deg": [-82.109894, -92.131866, -100.395607, -101.186813],
+    "elbow_flex_state_deg": [79.252747, 89.186813, 96.131866, 96.483513],
+    "interpretation": "The anticorrelated trace documents recorded motion but supplies no independent URDF angle, so it cannot determine either sign or offset."
+  },
+  "independent_correspondences_available": 0,
+  "prior_648_frame_ik_interpretation": "internally consistent numerical FK/IK error only; not validated physical TCP error",
+  "hardware_access": false,
+  "sanitization": "No calibration JSON values, images, video, raw dataset, usernames, or absolute paths included."
+}

@@ -1,0 +1,431 @@
+{
+  "scope": {
+    "frames": 30846,
+    "episodes": 53,
+    "fps": 20
+  },
+  "conventions": {
+    "dataset": "LeRobot normalized motor degrees (not proven URDF joint-space degrees)",
+    "calibration_range": "observed hand-swept encoder range centered at (range_min+range_max)/2",
+    "encoder_degrees_per_tick": 0.08791208791208792,
+    "lerobot_version_inspected": "0.6.2"
+  },
+  "joints": {
+    "shoulder_pan": {
+      "urdf_degrees": [
+        -109.99987525598623,
+        109.99987525598623
+      ],
+      "calibration_normalized_degrees": [
+        -120.21978021978022,
+        120.21978021978022
+      ],
+      "calibration_drive_mode": 0,
+      "action_minmax_degrees": [
+        -79.34066009521484,
+        19.824174880981445
+      ],
+      "state_minmax_degrees": [
+        -78.9011001586914,
+        19.296703338623047
+      ],
+      "action_outside_urdf_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_urdf_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_minus_state_degrees": {
+        "mean": 0.08889819573530588,
+        "mean_absolute": 1.1716638662052423,
+        "p95_absolute": 4.571429967880249,
+        "p99_absolute": 5.384616851806641,
+        "max_absolute": 5.714285850524902
+      }
+    },
+    "shoulder_lift": {
+      "urdf_degrees": [
+        -100.00004285756798,
+        100.00004285756798
+      ],
+      "calibration_normalized_degrees": [
+        -105.23076923076923,
+        105.23076923076923
+      ],
+      "calibration_drive_mode": 0,
+      "action_minmax_degrees": [
+        -103.82417297363281,
+        40.96703338623047
+      ],
+      "state_minmax_degrees": [
+        -103.47252655029297,
+        40.879119873046875
+      ],
+      "action_outside_urdf_by_tolerance_degrees": {
+        "0.0": 8203,
+        "0.1": 8193,
+        "0.2": 8187,
+        "0.5": 8056
+      },
+      "state_outside_urdf_by_tolerance_degrees": {
+        "0.0": 8178,
+        "0.1": 8160,
+        "0.2": 8145,
+        "0.5": 8013
+      },
+      "action_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_minus_state_degrees": {
+        "mean": -0.8815046630297123,
+        "mean_absolute": 1.869013701311885,
+        "p95_absolute": 6.505496978759766,
+        "p99_absolute": 8.53956050872801,
+        "max_absolute": 9.868133544921875
+      }
+    },
+    "elbow_flex": {
+      "urdf_degrees": [
+        -96.82986737710912,
+        96.82986737710912
+      ],
+      "calibration_normalized_degrees": [
+        -97.36263736263736,
+        97.36263736263736
+      ],
+      "calibration_drive_mode": 0,
+      "action_minmax_degrees": [
+        -42.41758346557617,
+        97.45054626464844
+      ],
+      "state_minmax_degrees": [
+        -39.42856979370117,
+        97.010986328125
+      ],
+      "action_outside_urdf_by_tolerance_degrees": {
+        "0.0": 9204,
+        "0.1": 1834,
+        "0.2": 1794,
+        "0.5": 612
+      },
+      "state_outside_urdf_by_tolerance_degrees": {
+        "0.0": 1231,
+        "0.1": 98,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_outside_calibration_by_tolerance_degrees": {
+        "0.0": 612,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_minus_state_degrees": {
+        "mean": -1.0249718400654375,
+        "mean_absolute": 1.9075258654280618,
+        "p95_absolute": 5.626374244689941,
+        "p99_absolute": 7.120880126953125,
+        "max_absolute": 7.472530364990234
+      }
+    },
+    "wrist_flex": {
+      "urdf_degrees": [
+        -94.99984017946129,
+        94.99984017946129
+      ],
+      "calibration_normalized_degrees": [
+        -104.92307692307692,
+        104.92307692307692
+      ],
+      "calibration_drive_mode": 0,
+      "action_minmax_degrees": [
+        -33.36263656616211,
+        79.25274658203125
+      ],
+      "state_minmax_degrees": [
+        -32.0439567565918,
+        77.93406677246094
+      ],
+      "action_outside_urdf_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_urdf_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_minus_state_degrees": {
+        "mean": -0.12400709813520973,
+        "mean_absolute": 1.3117749553980769,
+        "p95_absolute": 5.054943084716797,
+        "p99_absolute": 6.087911605834961,
+        "max_absolute": 6.615385055541992
+      }
+    },
+    "wrist_roll": {
+      "urdf_degrees": [
+        -157.21102461697095,
+        162.78934171036462
+      ],
+      "calibration_normalized_degrees": [
+        -180.0,
+        180.0
+      ],
+      "calibration_drive_mode": 0,
+      "action_minmax_degrees": [
+        -135.78021240234375,
+        -57.71428680419922
+      ],
+      "state_minmax_degrees": [
+        -135.5164794921875,
+        -59.120880126953125
+      ],
+      "action_outside_urdf_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_urdf_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "state_outside_calibration_by_tolerance_degrees": {
+        "0.0": 0,
+        "0.1": 0,
+        "0.2": 0,
+        "0.5": 0
+      },
+      "action_minus_state_degrees": {
+        "mean": -0.023405469206685278,
+        "mean_absolute": 0.6374672221463454,
+        "p95_absolute": 3.6703262329101562,
+        "p99_absolute": 5.010986328125,
+        "max_absolute": 5.472526550292969
+      }
+    }
+  },
+  "elbow_calibration_exceedance_runs_strict": [
+    {
+      "episode": 6,
+      "frame_start": 54,
+      "frame_end": 95
+    },
+    {
+      "episode": 8,
+      "frame_start": 514,
+      "frame_end": 520
+    },
+    {
+      "episode": 9,
+      "frame_start": 515,
+      "frame_end": 519
+    },
+    {
+      "episode": 10,
+      "frame_start": 498,
+      "frame_end": 510
+    },
+    {
+      "episode": 11,
+      "frame_start": 498,
+      "frame_end": 512
+    },
+    {
+      "episode": 13,
+      "frame_start": 511,
+      "frame_end": 624
+    },
+    {
+      "episode": 14,
+      "frame_start": 0,
+      "frame_end": 79
+    },
+    {
+      "episode": 14,
+      "frame_start": 499,
+      "frame_end": 510
+    },
+    {
+      "episode": 15,
+      "frame_start": 476,
+      "frame_end": 588
+    },
+    {
+      "episode": 16,
+      "frame_start": 0,
+      "frame_end": 64
+    },
+    {
+      "episode": 16,
+      "frame_start": 460,
+      "frame_end": 472
+    },
+    {
+      "episode": 20,
+      "frame_start": 543,
+      "frame_end": 554
+    },
+    {
+      "episode": 21,
+      "frame_start": 522,
+      "frame_end": 527
+    },
+    {
+      "episode": 22,
+      "frame_start": 451,
+      "frame_end": 451
+    },
+    {
+      "episode": 22,
+      "frame_start": 453,
+      "frame_end": 458
+    },
+    {
+      "episode": 23,
+      "frame_start": 453,
+      "frame_end": 454
+    },
+    {
+      "episode": 26,
+      "frame_start": 549,
+      "frame_end": 549
+    },
+    {
+      "episode": 27,
+      "frame_start": 536,
+      "frame_end": 545
+    },
+    {
+      "episode": 28,
+      "frame_start": 409,
+      "frame_end": 414
+    },
+    {
+      "episode": 30,
+      "frame_start": 469,
+      "frame_end": 471
+    },
+    {
+      "episode": 32,
+      "frame_start": 396,
+      "frame_end": 396
+    },
+    {
+      "episode": 34,
+      "frame_start": 449,
+      "frame_end": 457
+    },
+    {
+      "episode": 38,
+      "frame_start": 413,
+      "frame_end": 421
+    },
+    {
+      "episode": 40,
+      "frame_start": 461,
+      "frame_end": 471
+    },
+    {
+      "episode": 41,
+      "frame_start": 496,
+      "frame_end": 499
+    },
+    {
+      "episode": 42,
+      "frame_start": 437,
+      "frame_end": 445
+    },
+    {
+      "episode": 43,
+      "frame_start": 483,
+      "frame_end": 495
+    },
+    {
+      "episode": 44,
+      "frame_start": 428,
+      "frame_end": 435
+    },
+    {
+      "episode": 45,
+      "frame_start": 432,
+      "frame_end": 438
+    },
+    {
+      "episode": 46,
+      "frame_start": 496,
+      "frame_end": 500
+    },
+    {
+      "episode": 48,
+      "frame_start": 442,
+      "frame_end": 449
+    },
+    {
+      "episode": 51,
+      "frame_start": 394,
+      "frame_end": 395
+    }
+  ],
+  "limitations": [
+    "Cached calibration was not compared with active servo registers because hardware access was prohibited.",
+    "Numeric agreement does not prove URDF zero, axis sign, collision safety, or mechanical hard limits."
+  ]
+}

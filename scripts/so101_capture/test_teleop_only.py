@@ -213,5 +213,52 @@ class TeleopSafetyTests(unittest.TestCase):
         follower.send_action.assert_not_called()
 
 
+
+    def test_startup_gate_rejects_large_mismatch_before_writes(self):
+        follower, leader = self.devices()
+        leader.bus.present["shoulder_pan"] = 1004
+        with patch("record_episode.synchronize_positions") as alignment:
+            with self.assertRaisesRegex(RuntimeError, "Startup alignment REJECTED"):
+                start_hardware(follower, leader, guarded_teleop_start=True,
+                               max_initial_pose_difference=2.0)
+        self.assertEqual(follower.bus.writes, 0)
+        follower.configure.assert_not_called()
+        leader.configure.assert_not_called()
+        alignment.assert_not_called()
+
+    def test_teleop_clips_goal_before_write_and_rejects_outside(self):
+        follower, leader = self.devices()
+        follower.bus.present = dict.fromkeys(MOTORS, 0)
+        follower.bus.torque = dict.fromkeys(MOTORS, 1)
+        follower.send_action = Mock(side_effect=lambda action: action.copy())
+        leader.get_action = Mock(return_value=dict.fromkeys(NAMES, 40.0))
+        bounds = {"shoulder_lift.pos": (-0.4, 0.4),
+                  "elbow_flex.pos": (-0.2, 0.2)}
+        sent = teleop_tick(follower, leader, dict.fromkeys(NAMES, 0.0),
+                           joint_bounds=bounds)
+        self.assertEqual(sent["shoulder_lift.pos"], 0.4)
+        self.assertEqual(sent["elbow_flex.pos"], 0.2)
+        self.assertEqual(sent["shoulder_pan.pos"], 1.5)
+        follower.bus.present["shoulder_lift"] = 0.41
+        with self.assertRaisesRegex(RuntimeError, "outside allowed interval"):
+            teleop_tick(follower, leader, sent, joint_bounds=bounds)
+        follower.send_action.assert_called_once()
+
+
+    def test_teleop_locked_goals_override_leader_request(self):
+        follower, leader = self.devices()
+        follower.bus.present = dict.fromkeys(MOTORS, 0)
+        follower.bus.torque = dict.fromkeys(MOTORS, 1)
+        follower.send_action = Mock(side_effect=lambda action: action.copy())
+        leader.get_action = Mock(return_value=dict.fromkeys(NAMES, 40.0))
+        inactive = {n: 0.0 for n in NAMES if n != "elbow_flex.pos"}
+        result = teleop_tick(follower, leader, dict.fromkeys(NAMES, 0.0),
+                             locked_goals=inactive,
+                             joint_bounds={"elbow_flex.pos": (-2.0, 2.0)})
+        self.assertEqual(result["elbow_flex.pos"], 1.5)
+        for name in inactive:
+            self.assertEqual(result[name], 0.0)
+        follower.send_action.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()

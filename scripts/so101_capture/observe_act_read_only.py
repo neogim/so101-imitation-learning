@@ -151,7 +151,9 @@ def load_policy(device, checkpoint=None, image_keys=('observation.images.iphone'
     if (set(config.input_features) != {"observation.state", *image_keys}
             or set(config.output_features) != {"action"}
             or tuple(config.input_features["observation.state"].shape) != (6,)
-            or any(tuple(config.input_features[key].shape) != (3, 168, 224)
+            or any(len(tuple(config.input_features[key].shape)) != 3
+                   or tuple(config.input_features[key].shape)[0] != 3
+                   or any(int(v) <= 0 for v in tuple(config.input_features[key].shape)[1:])
                    for key in image_keys)):
         raise ValueError("ACT feature mismatch")
     policy = ACTPolicy.from_pretrained(selected_checkpoint, config=config, local_files_only=True, strict=True)
