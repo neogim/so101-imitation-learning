@@ -28,7 +28,7 @@ Rendering needs a compatible OpenGL context. The PyAV dependency is only used wh
 python -m unittest scripts/so101_sim/test_real_to_sim.py -v
 ~~~
 
-These standard-library tests validate configuration and dataset metadata failure paths. Real dataset/MuJoCo end-to-end execution is not yet validated.
+GitHub Actions passed Python syntax and 7 tests (6 unit, 1 synthetic-Parquet + SO-101 URDF MuJoCo integration) on 2026-11-03. Real captured dataset replay and Side/Wrist image rendering are not yet validated.
 
 ## Offline replay
 
@@ -70,8 +70,9 @@ workcell.example.json is a **visible uncalibrated scaffold**. It is not evidence
 - [x] Read-only dataset adapter and sampled Joint6 state replay
 - [x] SO-101 URDF import and static illustrative workcell scaffolding
 - [x] Virtual Side and Wrist cameras and optional paired PNG comparison
-- [x] Hardware-free unit tests added, **not executed**
-- [ ] Verify MuJoCo import and offscreen rendering in the user's environment
+- [x] Hardware-free tests and synthetic Parquet/URDF integration test: 7/7 passed in GitHub Actions
+- [x] Verify MuJoCo URDF loading and kinematic replay in GitHub Actions (Linux)
+- [ ] Verify offscreen Side/Wrist rendering in the user's environment
 - [ ] Verify the actual local LeRobot dataset path/layout
 - [ ] Measure camera calibration while keeping current physical positions
 - [ ] Calibrate joint mapping/URDF and gripper representation
