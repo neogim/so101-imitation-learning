@@ -98,7 +98,7 @@ if [[ ! -f scripts/so101_capture/cameras.local.yaml ]]; then
   echo "Error: missing scripts/so101_capture/cameras.local.yaml" >&2
   exit 1
 fi
-if [[ ! -d "$CONDA_PREFIX" && "${CONDA_PREFIX:-}" != "" ]]; then
+if [[ -n "${CONDA_PREFIX:-}" && ! -d "${CONDA_PREFIX}" ]]; then
   echo "Error: CONDA_PREFIX is not an existing directory." >&2
   exit 1
 fi
