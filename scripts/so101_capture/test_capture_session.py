@@ -375,6 +375,20 @@ class SessionTests(unittest.TestCase):
             finally:
                 gate.set()
                 sink.close()
+            ds.save_episode.assert_called_once_with(parallel_encoding=True)
+            self.assertEqual([(e['kind'], e['phase']) for e in sink.events], [
+                ('save', 'started'), ('save', 'finished'),
+                ('finalize', 'started'), ('finalize', 'finished')])
+
+    def test_close_recovery_save_uses_process_isolated_video_encoding(self):
+        with tempfile.TemporaryDirectory() as d:
+            ds = Mock()
+            ds.has_pending_frames.return_value = True
+            sink = DatasetSink(ds, Path(d))
+            sink.close()
+            ds.save_episode.assert_called_once_with(parallel_encoding=True)
+            self.assertEqual(sink.saved, 1)
+            self.assertEqual(sink.events[0]['kind'], 'close_save')
 
 
 if __name__=='__main__':
