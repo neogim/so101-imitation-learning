@@ -1,0 +1,5 @@
+#!/bin/sh
+# This is intentionally installed using core.hooksPath (not executable bit).
+# $1 = remote name, $2 = remote URL.
+repo_root=$(git rev-parse --show-toplevel) || exit 2
+exec python3 "$repo_root/scripts/privacy/check_pre_push.py"
