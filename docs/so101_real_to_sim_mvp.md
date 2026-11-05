@@ -49,7 +49,38 @@ python scripts/so101_sim/real_to_sim.py \
 
 Expected output: report.json and optional frame_XXXXXX_{side,wrist}_sim.png / _real.png / _comparison.png. Output directory must not exist. Source data is read-only.
 
-Dataset layout expected: meta/info.json; data/chunk-*/episode_NNNNNN.parquet with observation.state, action, timestamp; optional videos/observation.images.{side,wrist}/chunk-*/episode_NNNNNN.mp4. State and action arrays must list shoulder_pan.pos, shoulder_lift.pos, elbow_flex.pos, wrist_flex.pos, wrist_roll.pos, gripper.pos in order.
+Dataset layout (automatically selected by `codebase_version`):
+- **LeRobot v3.0:** `meta/info.json` has `data_path=data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet`, `video_path=videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4`. `meta/episodes/chunk-*/file-*.parquet` contains episode boundaries, shard indices and video timestamp offsets. **Many episodes share a file.** Select by `episode_index`, sort by local `frame_index`, and use per-camera `from_timestamp` for video decoding.
+- **Legacy layout:** `data/chunk-*/episode_NNNNNN.parquet` and episode-local MP4.
+- State and action must list shoulder_pan.pos, shoulder_lift.pos, elbow_flex.pos, wrist_flex.pos, wrist_roll.pos, gripper.pos in order.
+
+**2026-11-05 dataset confirmation:** existing `muhi-side-wrist-success-053-20261025-168x224` has `codebase_version=v3.0`, `total_episodes=53`, `fps=20`, and `data/chunk-000/file-000.parquet`. The initial script expected per-episode files and failed; the new adapter supports v3 metadata. Real local re-test remains pending. Original dataset remains read-only.
+
+On Mac run:
+~~~bash
+git status
+git pull --ff-only
+python -m unittest discover -s scripts/so101_sim -p 'test_*.py' -v
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+OUT="outputs/real2sim/episode0-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/real_to_sim.py --dataset-root "$DATASET" --episode 0 --stride 20 --max-frames 30 --output "$OUT"
+python -m json.tool "$OUT/report.json" | head -80
+~~~
+
+If there is a failure in the new adapter, inspect metadata read-only:
+~~~bash
+python - <<'PY'
+from pathlib import Path
+import pyarrow.parquet as pq
+r = Path("data/so101/muhi-side-wrist-success-053-20261025-168x224")
+for p in sorted((r / "meta/episodes").glob("chunk-*/file-*.parquet"))[:1]:
+    print(p, pq.read_schema(p))
+    print(pq.read_table(p).slice(0, 2).to_pylist())
+for p in sorted((r / "data").glob("chunk-*/file-*.parquet"))[:1]:
+    print(p, pq.read_schema(p))
+PY
+~~~
+
 
 ## What is deliberately NOT calibrated
 
@@ -73,7 +104,8 @@ workcell.example.json is a **visible uncalibrated scaffold**. It is not evidence
 - [x] Hardware-free tests and synthetic Parquet/URDF integration test: 7/7 passed in GitHub Actions
 - [x] Verify MuJoCo URDF loading and kinematic replay in GitHub Actions (Linux)
 - [ ] Verify offscreen Side/Wrist rendering in the user's environment
-- [ ] Verify the actual local LeRobot dataset path/layout
+- [x] Identify actual local LeRobot dataset path/layout: v3.0 shared file-000.parquet
+- [ ] Verify v3.0 episode decoding against the user's actual 53-episode dataset
 - [ ] Measure camera calibration while keeping current physical positions
 - [ ] Calibrate joint mapping/URDF and gripper representation
 - [ ] Validate per-frame Real/Sim reprojection errors
