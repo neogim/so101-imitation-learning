@@ -1,0 +1,95 @@
+{
+  "$schema_note": "EXAMPLE ONLY. Do not change physical cameras or interpret poses as measured. Camera quaternions use MuJoCo wxyz; local camera -Z points forward.",
+  "calibrated": false,
+  "wrist_parent_body": "gripper_link",
+  "joints": {
+    "sign": {
+      "shoulder_pan": 1,
+      "shoulder_lift": 1,
+      "elbow_flex": 1,
+      "wrist_flex": 1,
+      "wrist_roll": 1
+    },
+    "offset_deg": {
+      "shoulder_pan": 0,
+      "shoulder_lift": 0,
+      "elbow_flex": 0,
+      "wrist_flex": 0,
+      "wrist_roll": 0
+    }
+  },
+  "cameras": {
+    "side": {
+      "pos_m": [
+        0.3,
+        -0.35,
+        0.5
+      ],
+      "quat_wxyz": [
+        0.86,
+        0.36,
+        0.14,
+        0.32
+      ],
+      "fovy_deg": 60,
+      "calibration": "NOT_MEASURED"
+    },
+    "wrist": {
+      "pos_m": [
+        0,
+        -0.04,
+        0.025
+      ],
+      "quat_wxyz": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "fovy_deg": 72,
+      "calibration": "NOT_MEASURED"
+    }
+  },
+  "objects": {
+    "table": {
+      "pos_m": [
+        0.16,
+        0,
+        -0.045
+      ],
+      "half_size_m": [
+        0.35,
+        0.35,
+        0.03
+      ],
+      "calibration": "NOT_MEASURED"
+    },
+    "muhi": {
+      "pos_m": [
+        0.18,
+        0.11,
+        0.02
+      ],
+      "quat_wxyz": [
+        0.70710678,
+        0,
+        0.70710678,
+        0
+      ],
+      "radius_m": 0.019,
+      "half_length_m": 0.031,
+      "calibration": "PHOTO_APPROXIMATION"
+    },
+    "cup": {
+      "pos_m": [
+        0.18,
+        -0.12,
+        -0.015
+      ],
+      "radius_m": 0.05,
+      "height_m": 0.12,
+      "wall_thickness_m": 0.003,
+      "calibration": "PHOTO_APPROXIMATION"
+    }
+  }
+}

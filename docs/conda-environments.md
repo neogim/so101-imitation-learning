@@ -145,6 +145,81 @@ python -m pip install mujoco==3.17.0 numpy==2.4.6
 
 `glfw`、`PyOpenGL`、`absl-py` などは `mujoco` の依存として導入される。
 
+
+## `so101-real2sim`：Real-to-Sim専用環境（2026-11-05にユーザー動作確認）
+
+既存の `so101-mujoco` とは**別環境**で、`feature/mujoco-real-to-sim` のオフライン実機ログ再生・画像比較に利用する。従来の `lerobot` 収録環境や `so101-ik` に追加インストールしない。
+
+### 新規作成手順
+
+Apple Silicon Mac のターミナルで：
+
+```bash
+# Conda環境を新規作成（既に存在する場合は再作成しない）
+conda create -n so101-real2sim python=3.11 -y
+conda activate so101-real2sim
+
+# SO-101 Real-to-Sim MVP用パッケージ
+python -m pip install \
+  "mujoco>=3.3,<4" \
+  "pyarrow>=16" \
+  "pillow>=10" \
+  "av>=12"
+```
+
+| パッケージ | 用途 |
+|---|---|
+| `mujoco` | SO-101 URDFの読み込み、運動学的リプレイ、仮想カメラレンダリング |
+| `pyarrow` | 既存LeRobot Parquetエピソードの読み取り |
+| `pillow` | 実写・Sim画像の保存・比較 |
+| `av`（PyAV） | 既存Side/Wrist MP4動画からの静止画抽出 |
+
+上記は**再構築用コマンド**であり、依存パッケージの全バージョンを固定した環境ロックファイルではない。
+
+### 動作確認
+
+```bash
+conda activate so101-real2sim
+python --version
+python -c "import mujoco; print('MuJoCo:', mujoco.__version__)"
+python -c "import pyarrow, PIL, av; print('Data/image libraries: OK')"
+python -m pip check
+
+# so101-imitation-learning リポジトリ直下で実行
+python -m unittest discover -s scripts/so101_sim -p "test_*.py" -v
+```
+
+**2026-11-05のユーザー報告：** `MuJoCo: 3.17.0` を確認。6件のunit testは `ok`。7件目 `test_synthetic_single_episode_mujoco` は貼付されたログに完了表示がなく、Macローカルでの成功判定は保留。GitHub Actions（Linux）では以前に7件成功。
+
+### 再利用・終了
+
+```bash
+conda activate so101-real2sim  # 次回の研究時
+conda deactivate               # 終了時
+conda env list                 # 存在確認
+```
+
+**注意：** `conda env remove` や `conda create --force` は不要。既存環境を消さない。
+
+### 現在確認中の実データ読み込みエラー
+
+実データは存在するが、現在の `real_to_sim.py` は `data/chunk-*/episode_000000.parquet` の形式でParquetを探索しており、`Expected exactly one Parquet for episode 0; got 0` と報告した。**パスの不一致が疑われるが、実際の配置は未確認**。次の読み取り専用コマンドで確認する：
+
+```bash
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+find "$DATASET/data" -type f -name "*.parquet" | head -20
+python - <<'PY'
+import json
+from pathlib import Path
+root = Path("data/so101/muhi-side-wrist-success-053-20261025-168x224")
+info = json.loads((root / "meta/info.json").read_text())
+for key in ("codebase_version", "data_path", "video_path", "total_episodes", "fps"):
+    print(key, "=", info.get(key))
+PY
+```
+
+`data_path` が単一エピソード以外の形式の場合は、**既存データを移動・変換せずに、読み込み側のアダプタを修正する**。実データの形式を確認するまでは推測で書き換えない。
+
 ## 検証コマンド
 
 環境の現状を再確認するときは以下を使う。
