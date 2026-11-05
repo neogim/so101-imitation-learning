@@ -44,8 +44,30 @@ def load_config(path: Path) -> dict:
     return validate_config(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _episode_v3_metadata(root: Path, episode: int) -> dict:
+    """Read one v3 per-episode metadata record; never infer boundaries from filenames."""
+    import pyarrow.dataset as ds
+
+    meta_dir = root / "meta/episodes"
+    paths = sorted(meta_dir.glob("chunk-*/file-*.parquet"))
+    if not paths:
+        raise ValueError(f"Missing v3 episode metadata under {meta_dir}")
+    dataset = ds.dataset([str(p) for p in paths], format="parquet")
+    if "episode_index" not in dataset.schema.names:
+        raise ValueError("v3 episode metadata lacks episode_index")
+    import pyarrow.compute as pc
+    subset = dataset.to_table(filter=pc.field("episode_index") == episode)
+    if subset.num_rows != 1:
+        raise ValueError(f"Expected one metadata row for episode {episode}; got {subset.num_rows}")
+    meta = subset.to_pylist()[0]
+    for key in ("data/chunk_index", "data/file_index", "length"):
+        if key not in meta:
+            raise ValueError(f"Missing required v3 episode metadata: {key}")
+    return meta
+
+
 def read_episode(root: Path, episode: int, stride: int, max_frames: int) -> dict:
-    """Read one episode Parquet without modifying the raw dataset or opening a camera."""
+    """Read one episode by metadata and episode_index; never alter the source data."""
     if episode < 0 or stride <= 0 or max_frames <= 0:
         raise ValueError("episode>=0, stride>0 and max_frames>0 are required")
     info = json.loads((root / "meta/info.json").read_text())
@@ -55,24 +77,52 @@ def read_episode(root: Path, episode: int, stride: int, max_frames: int) -> dict
     for key in ("observation.state", "action"):
         if features[key].get("names") != STATE_NAMES:
             raise ValueError(f"Unexpected joint names/order in {key}: {features[key].get('names')}")
-    found = sorted(root.glob(f"data/chunk-*/episode_{episode:06d}.parquet"))
-    if len(found) != 1:
-        raise ValueError(f"Expected exactly one Parquet for episode {episode}; got {len(found)}")
     import pyarrow.parquet as pq
-    table = pq.read_table(found[0], columns=["observation.state", "action", "timestamp"])
-    indices = list(range(0, table.num_rows, stride))[:max_frames]
-    states = table["observation.state"].to_pylist()
-    actions = table["action"].to_pylist()
-    ts = table["timestamp"].to_pylist()
+    version = info.get("codebase_version", "")
+    metadata = None
+    if version.startswith("v3"):
+        metadata = _episode_v3_metadata(root, episode)
+        pattern = info.get("data_path")
+        if not pattern:
+            raise ValueError("Missing data_path in v3 info.json")
+        relative = pattern.format(chunk_index=int(metadata["data/chunk_index"]),
+                                  file_index=int(metadata["data/file_index"]))
+        file = root / relative
+        if not file.is_file():
+            raise ValueError(f"v3 data shard missing: {file}")
+        columns = ["episode_index", "frame_index", "observation.state", "action", "timestamp"]
+        schema = pq.read_schema(file)
+        if not set(columns).issubset(schema.names):
+            raise ValueError(f"v3 data shard columns missing: {set(columns) - set(schema.names)}")
+        import pyarrow.compute as pc
+        tab = pq.read_table(file, columns=columns)
+        tab = tab.filter(pc.equal(tab["episode_index"], episode))
+        if tab.num_rows != int(metadata["length"]):
+            raise ValueError(f"v3 episode length mismatch: metadata={metadata['length']}, data={tab.num_rows}")
+        table_rows = sorted(tab.to_pylist(), key=lambda r: r["frame_index"])
+        if [r["frame_index"] for r in table_rows] != list(range(len(table_rows))):
+            raise ValueError("v3 frame_index is non-contiguous or duplicated")
+    else:
+        found = sorted(root.glob(f"data/chunk-*/episode_{episode:06d}.parquet"))
+        if len(found) != 1:
+            raise ValueError(f"Expected exactly one Parquet for episode {episode}; got {len(found)}")
+        file = found[0]
+        tab = pq.read_table(file, columns=["observation.state", "action", "timestamp"])
+        table_rows = [{"frame_index": i, **row} for i, row in enumerate(tab.to_pylist())]
     rows = []
-    for i in indices:
-        state, action = [float(v) for v in states[i]], [float(v) for v in actions[i]]
+    for r in table_rows[::stride][:max_frames]:
+        i = int(r["frame_index"])
+        state = [float(v) for v in r["observation.state"]]
+        action = [float(v) for v in r["action"]]
         if len(state) != 6 or len(action) != 6 or not all(map(math.isfinite, state + action)):
-            raise ValueError(f"Nonfinite or wrong action/state shape at frame {i}")
-        rows.append({"frame_index": i, "timestamp": float(ts[i]), "state": state, "action": action})
+            raise ValueError(f"Nonfinite or wrong state/action shape at frame {i}")
+        timestamp = float(r["timestamp"])
+        if not math.isfinite(timestamp):
+            raise ValueError(f"Nonfinite timestamp at frame {i}")
+        rows.append({"frame_index": i, "timestamp": timestamp, "state": state, "action": action})
     if not rows:
         raise ValueError("Episode has zero rows")
-    return {"source_parquet": str(found[0]), "info": info, "episode": episode, "rows": rows}
+    return {"source_parquet": str(file), "info": info, "episode": episode, "metadata": metadata, "rows": rows}
 
 
 def joint_radians(row: list[float], config: dict) -> dict[str, float]:
@@ -158,17 +208,45 @@ def render_image(model, data, camera_name: str, width: int, height: int):
         return renderer.render().copy()
 
 
-def source_video_frame(root: Path, key: str, episode: int, frame_index: int):
-    """Optional comparison image: PyAV sequential read, no camera hardware involved."""
-    videos = list(root.glob(f"videos/{key}/chunk-*/episode_{episode:06d}.mp4"))
-    if len(videos) != 1:
-        return None
+def source_video_frame(root: Path, key: str, episode: int, frame_index: int,
+                       info: dict | None = None, metadata: dict | None = None):
+    """Decode one frame using v3 video shard offset, or v2 episode-local MP4."""
+    if info is not None and info.get("codebase_version", "").startswith("v3"):
+        if metadata is None:
+            raise ValueError("v3 video decoding requires episode metadata")
+        prefix = f"videos/{key}/"
+        needed = (prefix + "chunk_index", prefix + "file_index",
+                  prefix + "from_timestamp", prefix + "to_timestamp")
+        if not all(k in metadata for k in needed):
+            raise ValueError(f"Missing v3 video offsets for {key}")
+        template = info.get("video_path")
+        if not template:
+            raise ValueError("Missing v3 video_path")
+        video = root / template.format(video_key=key,
+                                       chunk_index=int(metadata[needed[0]]),
+                                       file_index=int(metadata[needed[1]]))
+        fps = float(info["fps"])
+        from_ts = float(metadata[needed[2]])
+        to_ts = float(metadata[needed[3]])
+        if frame_index < 0 or frame_index >= int(metadata["length"]):
+            raise ValueError("Frame index outside requested episode")
+        target = round(from_ts * fps) + frame_index
+        if target >= round(to_ts * fps):
+            raise ValueError("Frame index exceeds video episode end")
+    else:
+        videos = list(root.glob(f"videos/{key}/chunk-*/episode_{episode:06d}.mp4"))
+        if len(videos) != 1:
+            return None
+        video = videos[0]
+        target = frame_index
+    if not video.is_file():
+        raise ValueError(f"Video file missing: {video}")
     import av
-    with av.open(str(videos[0])) as container:
+    with av.open(str(video)) as container:
         for i, frame in enumerate(container.decode(video=0)):
-            if i == frame_index:
+            if i == target:
                 return frame.to_image()
-    return None
+    raise ValueError(f"Requested video frame {target} not decoded from {video}")
 
 
 def run(args) -> dict:
@@ -213,7 +291,7 @@ def run(args) -> dict:
                 Image.fromarray(image).save(output / (prefix + "_sim.png"))
                 if args.real_images:
                     real = source_video_frame(root, "observation.images." + key,
-                                              args.episode, row["frame_index"])
+                                              args.episode, row["frame_index"], ep["info"], ep["metadata"])
                     if real is not None:
                         real = real.resize((args.width, args.height))
                         real.save(output / (prefix + "_real.png"))
