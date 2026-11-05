@@ -35,3 +35,36 @@ fx≈189.0590, fy≈188.7162, cx≈111.0737, cy≈81.0421
 5. Side camera extrinsics require measured 3D-to-2D correspondences in the robot/workcell frame; intrinsics alone do not solve camera pose.
 
 Avoid blindly taking source-lineage.json absolute paths into Git: they can expose a local username. Use relative paths in any committed report.
+
+## 追加確認：マルチカメラ収録での変換箇所
+
+\`scripts/so101_capture/capture_session.py\` が \`--camera-config\` を受けると、\`multi_camera.capture_image_shape(camera_cfg)\` の結果が実際の保存解像度となる。 \`multi_camera.py\` の \`capture_image_shape()\` は640×480、448×336、320×240に対応する。
+
+また \`multi_camera.py\` のAVFoundationフレーム取得部分（\`_fetch()\`）では、入力解像度と \`image_shape\` が異なれば **Pillow BILINEAR** で指定サイズに縮小している。つまり、収録元のSide 320×240が、640×480入力からリサイズされた可能性はあるが、コードだけでは入力サイズも、その当時の \`cameras.local.yaml\` の設定も確定できない。
+
+**次のローカル確認（設定ファイルの秘密を公開しない）：**
+
+~~~bash
+# 画面やローカルIP、機器シリアルを含む設定ファイルを貼り付けず、
+# 画像サイズだけ抽出して表示する
+python - <<'PY'
+from pathlib import Path
+import yaml
+for path in sorted(Path("scripts/so101_capture").glob("cameras*.local.yaml")):
+    raw = yaml.safe_load(path.read_text()) or {}
+    size = raw.get("capture", {})
+    print(path.name, "capture.width =", size.get("width"),
+          "capture.height =", size.get("height"))
+PY
+
+# 収録時の情報が残る場合はローカルのsource_lineage.jsonも確認するが、
+# 絶対パスが含まれるため、原文をGitへコミットしない
+~~~
+
+**Note:** \`obs_camera.py\` はOBS仮想カメラの単独経路（640×480）。マルチカメラ録画で必ず通るとは限らないため、同一視しない。
+
+## 比較対象
+
+- 内部パラメータの640×480推定は「スクリーンショットの中央640×480」に基づく。
+- 実際の録画が別のOBS crop、フィルタ、リサイズ経路を通ったなら、同じ画素変換のKとはならない。
+- \`cx,cy\` はピクセル中心定義により \`c'=(c+0.5)s-0.5\` の補正が必要になる場合がある。値の単純拡大縮小は概算。
