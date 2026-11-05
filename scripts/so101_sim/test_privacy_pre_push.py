@@ -19,13 +19,13 @@ def png_with_chunk(typ, payload=b""):
 class PrivacyPushTests(unittest.TestCase):
     def test_unix_path_and_username(self):
         issues=privacy.find_issues("reports/model.json",
-            b'{"source": "/Users/exampleperson/Documents/project", "token":"ok"}',
+            (b'{"source": "/' + b'Users/exampleperson/Documents/project", "token":"ok"}'),
             names={"exampleperson"})
         self.assertTrue(any("home path" in s for s in issues))
         self.assertTrue(any("username" in s for s in issues))
 
     def test_windows_path(self):
-        issues=privacy.find_issues("report.txt", b'C:\\Users\\myaccount\\Documents\\file',
+        issues=privacy.find_issues("report.txt", (b'C:\\' + b'Users\\myaccount\\Documents\\file'),
                                    names={"myaccount"})
         self.assertTrue(any("Windows" in s for s in issues))
 
