@@ -20,17 +20,17 @@
 
 ~~~json
 {
-  "width": 168,
-  "height": 224,
+  "width": 224,
+  "height": 168,
   "fx": 180.0,
   "fy": 180.0,
-  "cx": 84.0,
-  "cy": 112.0,
+  "cx": 112.0,
+  "cy": 84.0,
   "distortion": [0, 0, 0, 0, 0]
 }
 ~~~
 
-実画像の縦横サイズ、画像のcrop/resize/rotateを確認すること。元の解像度で校正している場合、画像を縮小しているなら内部行列も対応してスケーリングする。上記の168x224も**このデータセット名だけから推測した説明用**であり、採用前に実ファイルサイズを確認する。
+実画像の縦横サイズ、画像のcrop/resize/rotateを確認すること。元の解像度で校正している場合、画像を縮小しているなら内部行列も対応してスケーリングする。収録データのmeta/info.jsonでheight=168、width=224と確認済み。上記fx/fy/cx/cyは説明用の仮値であり実校正値ではない。
 
 ## Step 2：対応点を準備する
 
@@ -102,3 +102,31 @@ open "$CHECK"
 - [ ] WristのHand-Eye校正へ進む
 
 関係：[Draft PR #8](https://github.com/neogim/so101-imitation-learning/pull/8)／[Real-to-Sim計画](https://app.notion.com/p/40f85e16f4dc81368471db66b32bd029)
+
+## iPhone → OBS Virtual Camera → LeRobot のSide内部校正
+
+**Side = iPhone＋OBS、Wrist = Innomaker U20CAM。** 収録済みSideの実解像度は **幅224 × 高168**。OBSのクロップ・拡大縮小・回転およびLeRobot側リサイズの有無を確認する。iPhone本体の内部パラメータを無条件に転用しない。
+
+既存デモの再収録は不要。ただし、内部校正には、**収録と同じOBSシーン／出力・LeRobotへの入力経路**で撮影したチェッカーボード画像を新規に12枚以上集めることを推奨。固定Sideカメラは動かさず、校正板の位置・向きだけを変える。撮影設定が元の53エピソード時と変わっていれば、新しい校正値を過去に直接適用できない。
+
+[追加された内部校正スクリプト](https://github.com/neogim/so101-imitation-learning/blob/feature/mujoco-real-to-sim/scripts/so101_sim/calibrate_side_obs_intrinsics.py)
+
+~~~bash
+conda activate so101-real2sim
+python -m pip install "opencv-python-headless>=4.8"
+
+# 事前にチェッカーボード画像を読み取り用フォルダに保存
+IMAGES="outputs/real2sim/calibration/side_chessboard_images"
+OUT="outputs/real2sim/side-intrinsics-$(date +%Y%m%d-%H%M%S)"
+
+# 以下の7×5は「内側の角の数」、20mmは仮の正方形一辺。
+# 実際の校正板の寸法に置き換えて実行する。
+python scripts/so101_sim/calibrate_side_obs_intrinsics.py \
+  --images "$IMAGES" --columns 7 --rows 5 --square-mm 20 \
+  --output "$OUT"
+open "$OUT"
+~~~
+
+出力：intrinsics.json（PnP入力形式）およびreport.json。PnP前に内部校正の撮影サイズ、再投影RMS、画面内の点の分布、別画像での再現性をチェックする。
+
+**重要：** 224×168に縮小した画像ではチェッカーボード角の精度が不足し得る。必要なら高解像度で校正し、既知のOBS／LeRobot変換を内部行列に反映する。校正写真は既存実験データとは別管理。
