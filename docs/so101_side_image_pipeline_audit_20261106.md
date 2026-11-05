@@ -68,3 +68,12 @@ PY
 - 内部パラメータの640×480推定は「スクリーンショットの中央640×480」に基づく。
 - 実際の録画が別のOBS crop、フィルタ、リサイズ経路を通ったなら、同じ画素変換のKとはならない。
 - \`cx,cy\` はピクセル中心定義により \`c'=(c+0.5)s-0.5\` の補正が必要になる場合がある。値の単純拡大縮小は概算。
+
+
+## 2026-11-06 local capture configuration verification
+
+The user inspected three gitignored camera configuration files locally, without exposing private device identifiers. All three currently specify capture.width=320 and capture.height=240: cameras.local.yaml, cameras.obs-wrist-compare.local.yaml, cameras.side-jpeg70.local.yaml. This agrees with the 320x240 source LeRobot video and supported multi_camera.capture_image_shape setting. Historical October 25 capture configuration, OBS crop, and source frame dimensions are still not independently verified.
+
+For pure 640x480 to 224x168 full-field resizing (s=0.35), exploratory pinhole candidate yields fx~189.059, fy~188.716. Principal point with simple scaling is cx~111.074 cy~81.042; pixel-center-based mapping (c+0.5)*s-0.5 gives cx~110.749 cy~80.717. This is conditional, NOT physically validated, and should not be promoted to calibrated extrinsics/intrinsics.
+
+Next required measurement: six or more independently measured noncoplanar 3D landmark positions in SO-101 base/workcell coordinates and matching Side-camera 2D pixels in the same unchanged imaging pipeline. Do not infer real 3D points from illustrative MuJoCo world geometry.
