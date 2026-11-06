@@ -555,3 +555,44 @@ J2の -103.21° はURDF定義の下限約-100°を超えるので警告対象。
 4. リンク→マーカーの未知変換とBase→Sideカメラの未知変換を同時推定
 5. 未使用姿勢の再投影誤差・幾何の再現性で検証
 
+
+
+## 12. 全姿勢ペア監査と追加撮影の判断（2026-11-07）
+
+従来の抽出器では**直前に採用した姿勢との関節角度差**で重複を除外している。
+そのため離れた時点の再訪姿勢、特に`wrist_link`上のID2にとって
+J5のみ違う姿勢が残り得る。追加撮影の前に
+`scripts/so101_capture/audit_aruco_diversity.py` で
+全姿勢ペアを監査する（読み取り専用）。
+
+```bash
+conda activate lerobot
+git pull --ff-only
+python -m unittest discover -s scripts/so101_capture -p 'test_*aruco*.py' -v
+python scripts/so101_capture/audit_aruco_diversity.py \
+  --manifest outputs/so101-aruco-calibration-20261108/manifest.json
+```
+
+`pairwise_joint_near_repeats`：
+- `all_five_near_duplicate` = J1〜J5最大角度差が3°未満。
+- `wrist_fk_near_duplicate_candidate` = J1〜J4最大角度差が3°未満
+  （J5が異なっても、ID2のリンク姿勢は同じ可能性）。
+
+`per_marker` にはID0/1（`gripper_link`仮説）、ID2（`wrist_link`仮説）ごとに、
+観測枚数、FK上の最大3D位置差・回転差、近接ペア、
+位置座標のXYZ広がり・中心化座標の特異値を表示する。
+5mm・5°未満の近接ペアは重複候補として報告する。
+これらは**仮の閾値**であって、校正精度の保証や真の独立観測数の証明ではない。
+
+**追撮する場合**：現在のデータセットとは別rootに記録し、
+同じカメラ位置・ズーム・OBS画像変換を維持する。
+ID2（J5上流）を主対象としてJ1〜J4を使い、異なる3D位置と傾きの姿勢を
+確保。ID0/1（J5下流）には追加のJ5回転も有効。
+各姿勢2秒以上静止し、マーカーの黒枠が十分大きく見える距離・角度を選ぶ。
+可動リミットを押し込まないこと。新規撮影は既存22姿勢の再収集ではなく
+不足する分布を補完するために行う。
+
+**まだ推定していないもの：** カメラ内部パラメータ、
+実機とURDF角度の符号・ゼロ点、
+マーカー取付剛体変換、Base-to-Sideカメラ外部変換。
+それらの推定には適切な校正ターゲットと別工程が必要。
