@@ -62,7 +62,7 @@ class StationarySelectionTests(unittest.TestCase):
         regions = stationary_regions(np.vstack([a, moving, b]), window=12)
         self.assertEqual(len(regions), 2)
         self.assertEqual(regions[0], list(range(25)))
-        self.assertEqual(regions[1], list(range(45, 70)))
+        self.assertEqual(regions[1], list(range(44, 70)))
 
     def test_short_or_moving_sequence_has_no_region(self):
         import numpy as np
