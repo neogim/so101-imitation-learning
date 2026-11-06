@@ -5,6 +5,9 @@ on:
     paths:
       - "scripts/so101_capture/extract_aruco_calibration.py"
       - "scripts/so101_capture/test_extract_aruco_calibration.py"
+      - "scripts/so101_capture/audit_fk_aruco.py"
+      - "scripts/so101_capture/test_audit_fk_aruco.py"
+      - "data/urdf/so101/so101_new_calib.urdf"
       - ".github/workflows/aruco-calibration-tests.yml"
   push:
     branches:
@@ -12,6 +15,9 @@ on:
     paths:
       - "scripts/so101_capture/extract_aruco_calibration.py"
       - "scripts/so101_capture/test_extract_aruco_calibration.py"
+      - "scripts/so101_capture/audit_fk_aruco.py"
+      - "scripts/so101_capture/test_audit_fk_aruco.py"
+      - "data/urdf/so101/so101_new_calib.urdf"
       - ".github/workflows/aruco-calibration-tests.yml"
 
 jobs:
@@ -27,6 +33,6 @@ jobs:
       - name: Install test-only numerical dependency
         run: python -m pip install numpy
       - name: Compile source
-        run: python -m py_compile scripts/so101_capture/extract_aruco_calibration.py scripts/so101_capture/test_extract_aruco_calibration.py
+        run: python -m py_compile scripts/so101_capture/extract_aruco_calibration.py scripts/so101_capture/test_extract_aruco_calibration.py scripts/so101_capture/audit_fk_aruco.py scripts/so101_capture/test_audit_fk_aruco.py
       - name: Test stationary frame selection
-        run: python -m unittest discover -s scripts/so101_capture -p 'test_extract_aruco_calibration.py' -v
+        run: python -m unittest discover -s scripts/so101_capture -p 'test_*aruco.py' -v
