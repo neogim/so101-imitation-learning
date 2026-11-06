@@ -1,93 +1,322 @@
-# SO-101 Side ArUco: 校正用の静止姿勢データ収集
+# SO-101 / ArUco Real-to-Sim：Mac実機収集・抽出の完全手順書
 
-## 方針と安全性
+> 対象：macOS、SO-101 Leader/Follower、固定iPhone→OBS Sideカメラ、`feature/aruco-calibration-capture-20261107`。
+> 最終確認：2026-11-07。コード静的確認による手順。**実機では未検証**。
+> **このPRで完成したのは校正「観測データの収集・抽出」まで**。Eye-to-Hand 6DoF解法、MuJoCo一致の確定は後続工程。
 
-**既存の `capture_session.py` の20Hz Leader→Followerテレオペ／安全機構を使う。**
-校正専用の制御経路やFollower USBへの別プロセス接続を作らない。
-収集したデータセットを**後から** `extract_aruco_calibration.py` で解析し、
-静止区間のSide画像と**同じフレーム**のFollower実測関節角度を抽出する。
-これによりテレオペ制御ループへOpenCV検出処理を追加せずに済む。
+## 0. この手順の設計：既存安全テレオペを再利用
 
-**まだ実機動作確認はしていない。**
-スクリプトはオフラインの抽出器であり、Eye-to-Handの6DoF外部パラメータを
-推定するソルバーではない。
+- **収集**：既存 `scripts/so101_capture/capture_session.py` がLeader→Follower操作とSide映像＋Follower実測6軸を20Hzで同じLeRobotデータセットに記録する。
+- **抽出**：実機とは独立に `scripts/so101_capture/extract_aruco_calibration.py` が静止区間とArUco ID 0〜5の四隅座標を抽出する。
+- **実機収集中に `observe_aruco_follower_readonly.py` や他のテレオペプログラムを同時実行しない**。FollowerのUSBシリアルポートを二重に所有しないため。
+- **古い53エピソード、既存 `cameras.local.yaml`、Leader/Followerキャリブレーションファイルは変更しない。**
+- 収集した映像と状態は同じLeRobotフレームに保存されるが、OBSはカメラ露光時刻を提供しないため、厳密な時刻同期が保証されるわけではない。静止保持で影響を小さくする。
+- 各マーカーは別リンクにある場合がある。各マーカーの貼付先リンク特定とFK検証は、6DoF外部校正に必要。
 
-## 準備
+## 1. Mac上の作業環境
 
-- 対象：Followerに装着した `DICT_4X4_50` のID 0〜5。
-- マーカー実寸：**黒い外枠の一辺14mm**（印刷全体18mm、白枠は各2mm）。
-- **iPhone Sideカメラ・OBSのズーム／クロップ・ロボットベースを固定する。**
-- `cameras.local.yaml` の `capture.width/height` は既存環境で320×240。
-  校正用の最初の試験は640×480にする場合、**既存ファイルを上書きせず**
-  専用のYAMLコピーに変更する。既存カメラ処理は320×240、448×336、640×480を許容する。
-  1280×960は現実装で未対応。640×480にアップスケールするだけでは精度向上しない。
-- OBS Side映像の撮影系が、チェッカーボード16枚の内部校正と同じ画像幾何か確認する。
-  640×480で得た暫定内部パラメータは、640×480の同じ画像座標系でのみ直接使える。
-- 各マーカーの**所属リンク名**を別途確定する。異なるリンクに貼ったIDをひとつの
-  静止剛体ボードとして処理してはいけない。
+### 1-1. リポジトリとブランチ
 
-## 実機収集：既存コマンドのみ
+SO-101リポジトリのルートで（作業中の未コミット変更があれば勝手に破棄しない）：
 
-1. Macで既存のLeRobot/Capture依存関係、OBS、FollowerとLeaderを接続。
-2. 別のテレオペ処理や `observe_aruco_follower_readonly.py` は起動しない。
-3. 新規出力ディレクトリ名を用意。先に**ハードウェア非駆動のpreflight**を実行。
+```bash
+pwd
+git status --short
+git fetch origin
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only
+git branch --show-current
+test -f scripts/so101_capture/capture_session.py
+test -f scripts/so101_capture/extract_aruco_calibration.py
+```
+
+想定ブランチ：`feature/aruco-calibration-capture-20261107`。ブランチ切替がローカルで見つからない場合は、未コミット変更がないことを確認してから：
+
+```bash
+git switch --track origin/feature/aruco-calibration-capture-20261107
+```
+
+既存の作業変更がありswitchに失敗したら、**変更を消さずに停止**して確認する。次のすべてのコマンドはリポジトリルートで実行する。
+
+### 1-2. condaを有効化
+
+```bash
+conda env list
+conda activate lerobot
+which python
+python --version
+python -c "import lerobot, cv2, av, pyarrow, yaml, numpy; print('LeRobot/cv2/PyAV/Arrow/YAML/NumPy OK'); print('ArUco:', hasattr(cv2, 'aruco'))"
+```
+
+- `lerobot` という環境名は**候補**。実際の一覧に存在しなければ、以前SO-101で使用した環境に置き換える（`so101-ik`を自動的に代用しない）。
+- `python: command not found` はcondaが未有効な可能性が高い。まず `conda env list` と `conda activate ...` を行う。
+- `conda: command not found` ならインストール済みのMiniforge/condaの初期化設定を確認。勝手に環境を新規作成・アップグレードしない。
+- `ArUco: False` なら該当環境にOpenCV ArUcoがない。**実機で実行する前に**バージョン・依存関係を確認する。無断で `opencv-python` と `opencv-contrib-python` を混在インストールしない。
+- プロジェクトのカメラ依存に分離されたローカル仮想環境がある場合は、これまで通りの実行方式を優先する。最初に上のimportが成立するか確認。
+
+### 1-3. Macのポートと実機安全確認
+
+```bash
+ls /dev/tty.usbmodem*
+```
+
+既存コード `record_episode.py` のLeader/Follower既定値：
+- Follower: `/dev/tty.usbmodem5B7B0098201`
+- Leader: `/dev/tty.usbmodem5B7B0185961`
+
+表示される実際のポートと一致するか必ず確認。違っていたら**無理に実行しない**。記録済みの元のキャリブレーションは再実行・上書きしない。
+
+安全のため、障害物・ケーブル干渉・マーカー剥がれ・腕の落下リスクを除き、Followerを支えられる状態にする。初期位置をLeader/Followerで合わせる。既存コードは起動時の同期処理で**Followerを動かす可能性がある**。
+
+## 2. OBS / Sideカメラの準備
+
+### 2-1. OBSを起動する
+
+1. 固定iPhoneのSide映像入力（以前のACT収集と同じOBSソース）を起動する。
+2. OBSの**WebSocket v5**が有効であることを確認。接続資格情報は既存の環境変数 `OBS_WEBSOCKET_PASSWORD` またはリポジトリルートのローカル `.env` を使用。**パスワードをYAMLやGitに書かない**。
+3. OBSソース名、ソースUUID、`expected_settings`、ズーム、クロップ、回転、表示アスペクト、DroidCamのカメラ設定は以前から変えない。
+4. チェッカーボード16枚で求めた内部校正値は、**同じ640×480の画像幾何**と確認できた場合にだけ直接使う。モード変更に伴って実効画角／クロップが変わる場合は再検証が必要。
+5. **640×480の要求は、元のiPhone映像を高解像度で再取得できたことを意味しない**。OBS `GetSourceScreenshot` は指定サイズで画像を返す。拡大だけの場合、マーカーの実質的な情報量は増えない。
+
+### 2-2. 専用YAMLを安全に作成（既存ファイルを保持）
+
+既存の `cameras.local.yaml` をコピーし、`capture` の2フィールドだけ変更する。元ファイルは変更しない。
+
+```bash
+test -f cameras.local.yaml
+test ! -e cameras.aruco-640.local.yaml
+cp -p cameras.local.yaml cameras.aruco-640.local.yaml
+python - <<'PY'
+from pathlib import Path
+import yaml
+p = Path("cameras.aruco-640.local.yaml")
+data = yaml.safe_load(p.read_text(encoding="utf-8"))
+assert isinstance(data, dict) and isinstance(data.get("cameras"), dict)
+assert "side" in data["cameras"], "side source absent"
+assert data["cameras"]["side"].get("provider") == "obs_source", "expected Side OBS source"
+capture = data.setdefault("capture", {})
+assert isinstance(capture, dict)
+capture["width"] = 640
+capture["height"] = 480
+p.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+print("Side calibration YAML created:", p)
+print("capture:", capture["width"], capture["height"])
+PY
+```
+
+**一度作った後はこのブロックを再実行しない**（`test ! -e` が失敗する設計）。既に作成済みなら、コピーせず既存ファイルを確認する。
+
+読み取りだけで検査する：
+
+```bash
+python - <<'PY'
+import sys
+sys.path.insert(0, "scripts/so101_capture")
+from multi_camera import load_config, capture_image_shape
+cfg = load_config("cameras.aruco-640.local.yaml", enabled="side")
+print("enabled:", tuple(cfg["active_cameras"]))
+print("shape(H,W,C):", capture_image_shape(cfg))
+assert tuple(cfg["active_cameras"]) == ("side",)
+assert capture_image_shape(cfg) == (480, 640, 3)
+PY
+git status --short
+```
+
+`cameras.aruco-640.local.yaml` は**個人のOBS設定が入ったローカルファイル**。Gitへコミットしない。必要に応じてgitignore状況を確認し、ステージしないこと。
+
+### 2-3. 640×480でArUcoが見えるか
+
+Marker辞書：`DICT_4X4_50`、ID **0〜5**。外側の**黒いマーカー正方形14mm**（印刷紙全体18mm・白余白2mm）。コーナー推定に使う長さは14mm。
+
+OBSからの静止画を用いる既存チェック：
+
+```bash
+python scripts/so101_capture/check_so101_aruco_image.py \
+  --image /path/to/actual-side-still.png \
+  --expected-ids 0 1 2 3 4 5 \
+  --out-dir outputs/so101-aruco-preview-20261107
+```
+
+`/path/to/actual-side-still.png` は**実際に存在する撮影画像に置換**する。Sideカメラの画像だけを渡す（左右黒帯付きのスクリーンショットを使う場合、四隅画素座標は後の校正座標系と異なるので注意）。このスクリプトは見えないIDがあると終了コード2を返す。**必ず全6枚が同時に見える必要はない**。表示された `detected_ids` とannotated PNGで確認する。
+
+## 3. 実機を動かさないpreflight
+
+**先にデータセット名を決める**。同じ `--root` は一度録画したら再利用できない。最初は15〜20秒のスモークテスト専用名を推奨。
+
+```bash
+test -d data/so101
+test ! -e data/so101/aruco-smoke-20261107
+python scripts/so101_capture/capture_session.py \
+  --root data/so101/aruco-smoke-20261107 \
+  --camera-config cameras.aruco-640.local.yaml \
+  --enable-cameras side \
+  --seconds 20 --num-episodes 1 \
+  --task "ArUco calibration capture smoke test"
+```
+
+期待：`File/USB-path preflight passed. No camera or serial connection.`。
+ここでは**カメラ・モーターを接続しない**が、実機USBパスと校正ファイルの存在は確認する。エラーならその場で停止。
+
+## 4. スモークテスト：最初の実機録画
+
+`--execute` をつけると実機のモーターを操作する。Leader/Follower初期姿勢・ケーブル・障害物を確認後、対話式のMacターミナルでのみ実行：
+
+```bash
+python scripts/so101_capture/capture_session.py \
+  --root data/so101/aruco-smoke-20261107 \
+  --camera-config cameras.aruco-640.local.yaml \
+  --enable-cameras side \
+  --seconds 20 --num-episodes 1 \
+  --task "ArUco calibration capture smoke test" \
+  --execute
+```
+
+**実行操作（表示されるモード名を必ず確認）：**
+1. 起動時にカメラ接続、Leader/Followerの校正照合、Follower初期保持、Leaderとのゆっくりしたアライメントが実行される。**Followerは動く場合がある**。
+2. `SAFE_RESET` で開始。Leader/Followerの姿勢が合っている状態で `r` を押す。保持確認・カウントダウン後に `RECORDING` と表示されたら撮影開始。**`t` は録画なしのテレオペ**なので今回の収集には不向き。
+3. `RECORDING` 中、数種類の姿勢へゆっくり動かす。各姿勢で1〜2秒静止。最初の20秒は操作フロー・保存確認だけを目的とし、20〜30姿勢を狙わない。
+4. 20秒で自動終了するか、開始から最短1秒を過ぎて `e`。その後 `TELEOP_RESET` になる。
+5. `h` で `SAFE_RESET`、状態表示を確認して `q` で終了する。途中で異常があれば安全に中止する。**Ctrl-Cは中断／部分保存になるため通常の終了操作として推奨しない**。
+6. **モーターのトルクは自動的にOFFにならない**。終了時も保持力やアーム落下のリスクがある。電源の切断は腕を支えてから行う。異常時は安全を優先。
+
+撮影中に他のプログラムからFollowerのUSBポートを開かない。
+
+### 4-1. スモークテストの保存確認
+
+```bash
+test -f data/so101/aruco-smoke-20261107/meta/info.json
+test -f data/so101/aruco-smoke-20261107/shutdown.json
+python - <<'PY'
+from pathlib import Path
+import json
+root = Path("data/so101/aruco-smoke-20261107")
+info = json.loads((root/"meta/info.json").read_text())
+shutdown = json.loads((root/"shutdown.json").read_text())
+print("episodes:", info.get("total_episodes"))
+print("frames:", info.get("total_frames"))
+print("side:", "observation.images.side" in info.get("features", {}))
+print("shutdown_error:", shutdown.get("error"))
+print("cleanup_errors:", shutdown.get("cleanup_errors"))
+assert info.get("total_episodes", 0) >= 1
+assert info.get("total_frames", 0) > 0
+assert "observation.images.side" in info.get("features", {})
+assert shutdown.get("error") is None
+assert not shutdown.get("cleanup_errors")
+PY
+```
+
+エラーがあれば**本番撮影に進まない**。録画ファイルが出来ても不完全な場合がある。
+
+### 4-2. スモークテストの抽出・確認
+
+```bash
+python scripts/so101_capture/extract_aruco_calibration.py \
+  --dataset data/so101/aruco-smoke-20261107 \
+  --out-dir outputs/so101-aruco-smoke-20261107 \
+  --window 12 --tolerance-deg 0.7 \
+  --distinct-deg 3 --min-edge-px 8 --max-poses 10
+```
+
+```bash
+python - <<'PY'
+from pathlib import Path
+import json
+p = Path("outputs/so101-aruco-smoke-20261107/manifest.json")
+m = json.loads(p.read_text())
+print("extracted poses:", len(m["samples"]))
+for s in m["samples"]:
+    print(s["image"], "IDs:", [x["id"] for x in s["markers"]],
+          "edges(px):", [x["min_edge_px"] for x in s["markers"]])
+PY
+```
+
+1件以上の `samples` があり、該当PNGと関節角度が保存されていることを確認。ゼロ件なら静止時間不足・ArUco視認性・縮小や圧縮などを切り分ける。**ゼロ件で120秒撮影へ進まない**。出力先は毎回新しい名前を使い、既存を上書きしない。
+
+## 5. 本番：25前後の多様な姿勢を収集
+
+スモークが成功した場合のみ、新しい `--root` を使用する。まず事前検証：
+
+```bash
+test ! -e data/so101/aruco-calibration-20261107
+python scripts/so101_capture/capture_session.py \
+  --root data/so101/aruco-calibration-20261107 \
+  --camera-config cameras.aruco-640.local.yaml \
+  --enable-cameras side \
+  --seconds 120 --num-episodes 1 \
+  --task "Observe stationary ArUco poses for camera calibration"
+```
+
+実機実行（明示的に `--execute` を追加）：
 
 ```bash
 python scripts/so101_capture/capture_session.py \
   --root data/so101/aruco-calibration-20261107 \
   --camera-config cameras.aruco-640.local.yaml \
   --enable-cameras side \
-  --seconds 120 \
-  --num-episodes 1 \
-  --task "Observe stationary ArUco poses for camera calibration"
+  --seconds 120 --num-episodes 1 \
+  --task "Observe stationary ArUco poses for camera calibration" \
+  --execute
 ```
 
-4. **実機実行を明示的に許可できる状態でのみ**同じコマンドに `--execute` を付ける。
-   実機を動かす前にLeader/Followerの初期姿勢と周辺干渉を確認する。
-5. 既存のコンソール操作： `t` はテレオペ、`r` は安全確認とカウントダウン後に
-   エピソード録画開始、`e` は録画終了、`h` は保持モード、
-   `q` は `SAFE_RESET` から終了。**録画を開始しなければ抽出データは残らない**。
-6. 録画中に約20〜30の異なる姿勢へゆっくり動かし、各姿勢で
-   **1〜2秒静止**。上下・左右・前後・手首角を安全な可動範囲で分散。
-   20Hzなら各ホールドは20〜40フレーム。120秒は最大録画時間の例であり、
-   1回で足りなければ新規rootに分けて追加収集する。
-7. 動作終了後、`e`、`h`、SAFE_RESETで `q` の順を守る。
-   異常・引っ掛かり・熱・ケーブル張力があれば中止。
-   **終了時のトルクは自動でOFFにならない**ことに注意。
+- `r` で録画開始、`RECORDING` を確認。
+- 目安：中央5、左右6、前後上下6、手首回転8など**20〜30の重ならない姿勢**。各1〜2秒静止、無理に速度を上げない。
+- 120秒の上限を超えた場合は、**別の新しい出力フォルダ**に分けて収集。繰り返し撮影で旧データを上書きしない。
+- 終了：`e`（制限時間前）、`h`、`q`。自動終了後は `h`、`q`。
+- **Sideの視野から消える姿勢ばかり撮らない**。すべての姿勢で6枚見える必要はないが、主となる同一リンクのArUcoが十分な数の姿勢で検出できることが重要。
 
-## 抽出（実機・USB・カメラ不要）
+終了後は**4-1と同じ確認**で、ディレクトリ名だけ `aruco-calibration-20261107` に置き換える。
+
+## 6. 本番データのオフライン抽出
 
 ```bash
 python scripts/so101_capture/extract_aruco_calibration.py \
   --dataset data/so101/aruco-calibration-20261107 \
   --out-dir outputs/so101-aruco-calibration-20261107 \
-  --window 12 --tolerance-deg 0.7 --distinct-deg 3 \
-  --min-edge-px 8 --max-poses 30
+  --window 12 --tolerance-deg 0.7 \
+  --distinct-deg 3 --min-edge-px 8 --max-poses 30
 ```
 
 出力：
-- `manifest.json`: データセット名、各サンプルのepisode/frame/timestamp、
-  実測6関節（J6のみ正規化値）、ArUco ID・四隅の画素座標・最小辺長、
-  黒枠14mm、警告。
-- `images/*.png`: 静止候補のSide画像（映像の再圧縮フレーム）。
+- `manifest.json`：各静止姿勢のepisode番号、frame番号、timestamp、実測6関節、検出ID、四隅座標、黒枠一辺14mm、警告。
+- `images/pose_*.png`：選ばれたSideフレーム。
 
-実行ごとに**新規の出力フォルダ**を指定する。既存データを変更しない。
-動画は既存LeRobotのMP4であり、照明やH.264の圧縮で小マーカーの
-コーナー精度は変動する。結果を確認してから必要に応じて高画質撮影を検討する。
+**成功の最低条件**：候補姿勢が複数、PNGとJSONの対応が正しく、同じマーカーが異なる位置・方向から十分見えていること。再投影誤差、FK整合性、複数姿勢での再現性を確認するまでは、外部パラメータが求まったとは言えない。
 
-## 校正を始める前に確認すべきこと
+**注：この抽出器は最大30件であり、複数エピソード統合や各リンクごとの校正解決は将来の拡張。** また、すべての録画フレームの画像・関節角度をローカルに残しておけば、別の抽出閾値で再解析できる。
 
-1. 検出IDと各リンクの対応（J5で動くもの／動かないもの）。
-2. 各ポーズで実測関節角度とArUco検出が同期しているか（**静止**でずれを抑える）。
-3. 640×480画像のintrinsicsとの一致。映像系のクロップ／リサイズ変化がないか。
-4. URDF/FKのJ2/J3符号、ゼロオフセット、およびマーカーのリンクへの剛体取り付け。
-5. **マーカー→リンク変換が未知**なので、複数姿勢に基づくEye-to-Handソルバーの
-   実装と未使用姿勢での再投影評価が別途必要。5枚見えても自動的に外部校正成功ではない。
-
-## テスト
+## 7. テスト（ロボット接続不要）
 
 ```bash
-python -m unittest discover -s scripts/so101_capture -p 'test_extract_aruco_calibration.py'
+python -m unittest discover -s scripts/so101_capture -p 'test_extract_aruco_calibration.py' -v
 ```
 
-テストは数値配列による静止姿勢判定のみで、モーター・カメラにはアクセスしない。
+このテストは静止姿勢選別の数値ロジックを検証。実LeRobot MP4/Parquet統合テストと実機操作の妥当性は別途必要。
+
+## 8. よくあるエラーと対処
+
+| 症状 | 原因の候補・対処 |
+|---|---|
+| `zsh: command not found: python` | `conda env list` → `conda activate lerobot`（実在する環境名）→ `which python`。 |
+| `conda: command not found` | インストール済みcondaの初期化／PATHを確認。プロジェクトに合わせて環境を選び直す。 |
+| `No such file: cameras.aruco-640.local.yaml` | 2-2で専用YAMLを作成。Git管理対象の元YAMLを変更しない。 |
+| `Unknown or empty enabled camera list` | YAMLの `cameras.side` を確認。 `--enable-cameras side` と完全一致。 |
+| `No camera or serial connection` | **正常**：`--execute` なしのpreflight終了。 |
+| OBS WebSocket認証失敗 | OBSを起動し既存のWebSocket v5設定とローカル `.env` を確認。パスワードを公開しない。 |
+| Camera shape mismatch / `capture width/height` | 専用YAMLの640/480とコードの許可サイズを照合。 |
+| `Missing USB port` / calibration missing | 現在のMacポート・旧校正データを確認し、実機接続を停止。再キャリブレーションを自動実行しない。 |
+| `Leader/Follower pose difference >3` | 操作を停止。Leader/Followerを安全に同じ姿勢にする。Followerを力任せに押さない。 |
+| `Control gap >250 ms` / `Tracking error >8` | スクリプト停止・安全確認。OBS取得遅延、USB通信、ホスト負荷など切り分け。 |
+| 録画はあるが抽出サンプル0 | 各姿勢で静止が足りない、マーカーが小さい・隠れる、録画品質が不十分。まず短い再試験。 |
+| 一部のIDが見えない | **全6枚同時検出は必須ではない**。1つの基準リンクで多様な姿勢を確保する。 |
+| 120秒で足りない | 新しい `--root` で別の収集。以前の録画を上書きしない。 |
+| 終了後、アームが保持される | **仕様：トルクは自動OFFにならない**。安全に支えてから電源操作。 |
+
+## 9. 外部校正ソルバーへ渡すときの注意
+
+- 実測14mmとカメラ内部パラメータの画像座標系を一致させる。
+- ID 0〜5の**どれがどの剛体リンクにあるか**を明示する。異なる可動リンクの観測を「固定ボード」として足し合わせない。
+- マーカー→リンクの取付変換が未知なら、それ自体も推定するEye-to-Hand最適化が必要。
+- FKのJ2/J3符号・原点・URDFの正しさ、マーカー取付剛性、姿勢分布が精度を左右する。
+- 最後は**未使用の姿勢**でSide画像とMuJoCo投影を比較する。
+- 現PRは **観測データ抽出と単体テスト**まで。実機収集データでの結合試験、6DoF解法、MuJoCoへの反映は未完。
+
