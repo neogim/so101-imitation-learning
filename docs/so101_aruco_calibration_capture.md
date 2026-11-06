@@ -280,6 +280,65 @@ PY
 
 1件以上の `samples` があり、該当PNGと関節角度が保存されていることを確認。ゼロ件なら静止時間不足・ArUco視認性・縮小や圧縮などを切り分ける。**ゼロ件で120秒撮影へ進まない**。出力先は毎回新しい名前を使い、既存を上書きしない。
 
+## 4-4. 2026-11-07 実機20秒スモーク結果と抽出v2での再試験
+
+実機側の収集は成功：`aruco-smoke-20261107-02` に1エピソード・394フレームを保存した。
+旧抽出器は静止代表フレーム6・105のみを検査して両方ともマーカーなし・0件だったが、
+別途録画MP4を20フレーム間隔で走査すると、フレーム20/40でID 1、260/280/300でID 0/2/4などが検出できた。
+関節状態の12フレーム最大変動幅は20で0.000°、40で0.264°、260〜300は4〜6°前後
+（動作中）だった。このため**ArUcoの検出不能と断定してマーカーを張り替える必要はない**。
+
+v2では12フレーム連続で最大変動0.7°以下の窓を探し、その窓に含まれる各フレームを
+**すべて走査する**。連続する静止候補を1つの区間とみなし、区間ごとに
+`min_edge_px` を満たした**検出マーカー数 → 合計最小辺長 → 最小辺長**
+の順に品質を比較し、ベスト1枚と同じフレームの関節状態を出力する。
+1つの静止区間から重複姿勢を増やさない。検出失敗時には
+`frames_checked`, `frames_with_any_marker`, `ids_seen`,
+`max_detected_edge_px` を `rejected` に記録する。
+
+まずリポジトリを更新し、環境は引き続き `lerobot` を使用：
+
+```bash
+git status --short
+git pull --ff-only
+python -m unittest discover -s scripts/so101_capture -p 'test_extract_aruco_calibration.py' -v
+```
+
+**既存の出力先は上書き禁止**。新しい出力名 `-v2` を使って、保存済み394フレームを
+再抽出する（ロボット、カメラ、OBS、PYTHONPATH不要）。
+
+```bash
+python scripts/so101_capture/extract_aruco_calibration.py \
+  --dataset data/so101/aruco-smoke-20261107-02 \
+  --out-dir outputs/so101-aruco-smoke-20261107-02-v2 \
+  --window 12 --tolerance-deg 0.7 \
+  --distinct-deg 3 --min-edge-px 8 --max-poses 10
+```
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+p = Path("outputs/so101-aruco-smoke-20261107-02-v2/manifest.json")
+m = json.loads(p.read_text(encoding="utf-8"))
+print("stationary_regions:", m["stationary_regions"])
+print("eligible_frames_examined:", m["eligible_frames_examined"])
+print("saved:", len(m["samples"]), "rejected:", len(m["rejected"]))
+for item in m["samples"]:
+    print("frame", item["frame_index"],
+          "IDs", [x["id"] for x in item["markers"]],
+          "edges", [x["min_edge_px"] for x in item["markers"]])
+for item in m["rejected"]:
+    print("rejected:", item["reason"],
+          "frames_checked", item["frames_checked"],
+          "IDs_seen", item["ids_seen"])
+PY
+```
+
+**事前に検出数を保証できない**：サンプル保存には静止判定・ArUco実検出・
+最低辺長8pxのすべてが必要。0件だった場合も、診断情報を見て
+閾値・撮影方法を見直す。今回はデータ再撮影より再抽出を優先する。
+
 ## 5. 本番：25前後の多様な姿勢を収集
 
 スモークが成功した場合のみ、新しい `--root` を使用する。まず事前検証：
