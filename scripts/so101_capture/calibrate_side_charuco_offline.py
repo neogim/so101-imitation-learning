@@ -38,7 +38,7 @@ def detect(board, image, min_corners=10):
         return None
     cc = np.asarray(cc, np.float32).reshape(-1, 1, 2)
     ci = np.asarray(ci, np.int32).reshape(-1, 1)
-    if len(ci) < min_corners or cv2.aruco.testCharucoCornersCollinear(board, ci):
+    if len(ci) < min_corners or np.linalg.matrix_rank(cc.reshape(-1, 2) - cc.reshape(-1, 2).mean(axis=0), tol=1e-4) < 2:
         return None
     return (cc, ci)
 
@@ -46,10 +46,12 @@ def detect(board, image, min_corners=10):
 def calibrate(board, training, image_size):
     if len(training) < 5:
         raise ValueError("At least 5 calibration views required")
-    result = cv2.aruco.calibrateCameraCharucoExtended(
-        [s["corners"] for s in training],
-        [s["ids"] for s in training],
-        board, image_size, None, None)
+    board_points = np.asarray(board.getChessboardCorners(), np.float32)
+    object_points = [board_points[s["ids"].reshape(-1)].reshape(-1, 1, 3)
+                     for s in training]
+    image_points = [s["corners"] for s in training]
+    result = cv2.calibrateCameraExtended(
+        object_points, image_points, image_size, None, None)
     rms, k, distortion, _, _, _, _, per_view = result
     if not np.isfinite(k).all() or not np.isfinite(distortion).all() or not np.isfinite(rms):
         raise ValueError("Calibration has invalid parameters")
@@ -101,7 +103,7 @@ def run(image_dir, out_dir, *, min_corners=10, min_train=12):
         if size != current_size:
             raise ValueError(f"Mixed image sizes: expected {size}, got {current_size}: {file}")
         corners, ids, _, _ = detector.detectBoard(im)
-        if corners is None or ids is None or len(ids) < min_corners or cv2.aruco.testCharucoCornersCollinear(board, ids):
+        if corners is None or ids is None or len(ids) < min_corners or np.linalg.matrix_rank(np.asarray(corners).reshape(-1, 2) - np.asarray(corners).reshape(-1, 2).mean(axis=0), tol=1e-4) < 2:
             rejected.append({"image": file.name, "reason": "insufficient_or_collinear_corners"})
             continue
         observed.append({"image": file.name,
