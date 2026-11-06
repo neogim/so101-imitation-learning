@@ -79,8 +79,7 @@ class StationarySelectionTests(unittest.TestCase):
         self.assertEqual(marker_quality(a, min_edge_px=8), (1, 12., 12.))
 
     def test_empty_region_validation(self):
-        self.assertEqual(stationary_regions([], window=12) if False else
-                         stationary_regions([[0]*6]*11, window=12), [])
+        self.assertEqual(stationary_regions([[0] * 6] * 11, window=12), [])
 
 
 if __name__ == "__main__":
