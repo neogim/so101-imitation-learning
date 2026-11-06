@@ -340,6 +340,44 @@ python -m unittest discover -s scripts/so101_capture -p 'test_extract_aruco_cali
 
 このテストは静止姿勢選別の数値ロジックを検証。実LeRobot MP4/Parquet統合テストと実機操作の妥当性は別途必要。
 
+### 4-3. OBS WebSocket依存がない場合（実機接続前に停止したケース）
+
+`ModuleNotFoundError: No module named 'websocket'` /
+`Install websocket-client into isolated .local/camera-deps` は、
+OBSカメラ接続に必要な `websocket-client` がPythonから見えていないことを示す。
+OpenCV/PyAVの `AVFFrameReceiver` 警告は別問題であり、**このエラーを解消するために
+既存のFFmpegライブラリを削除・改名しない**。
+
+```bash
+python -m pip install --target .local/camera-deps websocket-client
+PYTHONPATH="$PWD/.local/camera-deps${PYTHONPATH:+:$PYTHONPATH}" \
+  python -c "import websocket; print('websocket-client OK:', websocket.__version__)"
+```
+
+`--target` でのインストールは `lerobot` conda環境のsite-packagesに直接追加しない。
+**実行時にも同じPYTHONPATHを付ける必要がある**。
+
+カメラ接続前でも、`LeRobotDataset.create()` が出力rootを作った可能性がある。
+**出力ディレクトリを消さず、必ず新しいroot名に変更**する。
+例：`aruco-smoke-20261107-02`。既存ディレクトリの有無は
+`ls -ld data/so101/aruco-smoke-20261107*` で確認できる。
+再実行前にカメラ接続・OBS WebSocket v5・パスワードを確認する。
+
+```bash
+PYTHONPATH="$PWD/.local/camera-deps${PYTHONPATH:+:$PYTHONPATH}" \
+python scripts/so101_capture/capture_session.py \
+  --root data/so101/aruco-smoke-20261107-02 \
+  --camera-config scripts/so101_capture/cameras.aruco-640.local.yaml \
+  --enable-cameras side \
+  --seconds 20 --num-episodes 1 \
+  --task "ArUco calibration capture smoke test" \
+  --execute
+```
+
+この実行は**実機モーターが動く可能性がある**ため、十分な初期姿勢・障害物・
+ケーブルの確認後に実行する。初回の `--execute` なしpreflightは成功していても、
+`--execute` 時のOBS接続・モーター動作を保証するものではない。
+
 ## 8. よくあるエラーと対処
 
 | 症状 | 原因の候補・対処 |
@@ -349,6 +387,7 @@ python -m unittest discover -s scripts/so101_capture -p 'test_extract_aruco_cali
 | `No such file: cameras.aruco-640.local.yaml` | 2-2で専用YAMLを作成。Git管理対象の元YAMLを変更しない。 |
 | `Unknown or empty enabled camera list` | YAMLの `cameras.side` を確認。 `--enable-cameras side` と完全一致。 |
 | `No camera or serial connection` | **正常**：`--execute` なしのpreflight終了。 |
+| `No module named websocket` | `websocket-client` が見えていない。4-3を参照。 |
 | OBS WebSocket認証失敗 | OBSを起動し既存のWebSocket v5設定とローカル `.env` を確認。パスワードを公開しない。 |
 | Camera shape mismatch / `capture width/height` | 専用YAMLの640/480とコードの許可サイズを照合。 |
 | `Missing USB port` / calibration missing | 現在のMacポート・旧校正データを確認し、実機接続を停止。再キャリブレーションを自動実行しない。 |
