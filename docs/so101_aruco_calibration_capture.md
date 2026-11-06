@@ -514,3 +514,44 @@ python scripts/so101_capture/audit_aruco_links.py \
 
 **注**：`so101_new_calib.urdf` は一般モデルであり、
 今回の実機の追加カメラ固定具やArUco位置を自動的には表現していない。
+
+## 11. URDF FK監査（実機不要・2026-11-07）
+
+`scripts/so101_capture/audit_fk_aruco.py` は既存の22姿勢分の `joints` を
+URDFのJ1〜J5へ**度→ラジアン**変換して適用し、`base_link` から
+`wrist_link` / `gripper_link` への4×4同次変換を計算する。
+URDF `origin xyz/rpy` と `axis` に従い回転関節の変換を連結する。
+マーカー自体の取付位置、カメラ内部・外部パラメータ、物理実機との一致は**推定しない**。
+
+```bash
+conda activate lerobot
+git pull --ff-only
+python -m unittest discover -s scripts/so101_capture -p 'test_*aruco.py' -v
+python scripts/so101_capture/audit_fk_aruco.py \
+  --manifest outputs/so101-aruco-calibration-20261108/manifest.json
+```
+
+結果は標準出力のサマリーとJSONに表示する。
+`--perturb-j5-deg 10` がデフォルトで、
+`wrist_link` の位置・回転差は理論上0、
+`gripper_link` の姿勢差は理論上10°となる。
+これは**URDFトポロジとFK実装の内部整合性**の確認であり、
+実機に対して符号やゼロ点が正しいことの証明ではない。
+
+`joint_limit_checks` は各軸の実測角度レンジとURDF制限を比較する。
+J2の -103.21° はURDF定義の下限約-100°を超えるので警告対象。
+オフセット／可動制限・calibration.json・実機との差があり得るため、
+**角度を自動補正したりURDFを書き換えたりしない**。
+
+`fk_position_ranges_m` は各座標の最大−最小幅であり、
+位置推定の誤差や姿勢分布の適否を保証しない。
+`per_sample` には各フレームのBase→リンク原点位置とJ5摂動テスト結果を含む。
+
+次の段階では以下を別途実施する必要がある：
+
+1. `observation.state` の角度とURDF角度のゼロ点・符号を外部基準で照合
+2. ID 0/1/2のマーカー取付先が剛体であることを確認
+3. Sideカメラ最終640×480画像で内部パラメータを校正
+4. リンク→マーカーの未知変換とBase→Sideカメラの未知変換を同時推定
+5. 未使用姿勢の再投影誤差・幾何の再現性で検証
+
