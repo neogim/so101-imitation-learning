@@ -78,35 +78,80 @@ ls /dev/tty.usbmodem*
 4. チェッカーボード16枚で求めた内部校正値は、**同じ640×480の画像幾何**と確認できた場合にだけ直接使う。モード変更に伴って実効画角／クロップが変わる場合は再検証が必要。
 5. **640×480の要求は、元のiPhone映像を高解像度で再取得できたことを意味しない**。OBS `GetSourceScreenshot` は指定サイズで画像を返す。拡大だけの場合、マーカーの実質的な情報量は増えない。
 
-### 2-2. 専用YAMLを安全に作成（既存ファイルを保持）
+### 2-2. 既存YAMLの実際の保存場所を探してから、安全に専用YAMLを作成
 
-既存の `cameras.local.yaml` をコピーし、`capture` の2フィールドだけ変更する。元ファイルは変更しない。
+**重要：** `cameras.local.yaml` がリポジトリ直下にあるとは限らない。
+`test -f ...` を独立した行で実行しても、通常の対話シェルでは以降の
+`cp` や `python` を止めない。**存在確認に失敗したら、コピー処理に進まない。**
+
+まず、**リポジトリルート**から既存のYAMLを探す（読み取りのみ）：
 
 ```bash
-test -f cameras.local.yaml
-test ! -e cameras.aruco-640.local.yaml
-cp -p cameras.local.yaml cameras.aruco-640.local.yaml
+pwd
+find . -type f \( -name 'cameras*.yaml' -o -name 'cameras*.yml' \) -print
+```
+
+見つからない場合、別の作業ディレクトリを使っていた可能性がある。
+親ディレクトリも範囲を限定して検索：
+
+```bash
+find .. -maxdepth 4 -type f \( -name 'cameras*.yaml' -o -name 'cameras*.yml' \) -print
+```
+
+- ファイルがなければ、**そこで停止して旧収集時のカメラ設定を復元・特定する**。
+  OBSソースのUUIDや `expected_settings` を推測で書かない。
+- 見つかった候補に `cameras` → `side` → `provider: obs_source` があるかを読み取り確認する。
+- **そのファイルのパスをSOURCE_YAMLに指定**する。以下の `<発見した既存YAMLのパス>`
+  は必ず実在する値に置換し、プレースホルダーのまま実行しない。
+- Gitブランチを切り替えたためにGit管理外のYAMLが消えたとは限らない。
+  元の作業フォルダが違う可能性もある。
+
+```bash
+SOURCE_YAML="<発見した既存YAMLのパス>"
+export SOURCE_YAML
+```
+
+続いて、次の**ひとつのPythonブロック**で存在確認・検証・コピー・640×480変更を一括実行する。
+前段に失敗しても後段が実行される独立コマンド列とは異なり、エラーがあれば
+保存処理の前に停止する。既存のYAMLは**読み取り専用**で、新規ファイルのみ作成する。
+
+```bash
 python - <<'PY'
+import os
 from pathlib import Path
 import yaml
-p = Path("cameras.aruco-640.local.yaml")
-data = yaml.safe_load(p.read_text(encoding="utf-8"))
-assert isinstance(data, dict) and isinstance(data.get("cameras"), dict)
-assert "side" in data["cameras"], "side source absent"
-assert data["cameras"]["side"].get("provider") == "obs_source", "expected Side OBS source"
+
+raw = os.environ.get("SOURCE_YAML", "")
+if not raw or raw.startswith("<"):
+    raise SystemExit("ERROR: SOURCE_YAML を実在する設定ファイルのパスに変更してください")
+source = Path(raw).expanduser()
+target = Path("cameras.aruco-640.local.yaml")
+if not source.is_file():
+    raise SystemExit(f"ERROR: 元のカメラ設定ファイルがありません: {source}")
+if target.exists():
+    raise SystemExit(f"ERROR: 既にある専用YAMLは上書きしません: {target}")
+data = yaml.safe_load(source.read_text(encoding="utf-8"))
+if not isinstance(data, dict) or not isinstance(data.get("cameras"), dict):
+    raise SystemExit("ERROR: camerasマッピングがないYAMLです")
+side = data["cameras"].get("side")
+if not isinstance(side, dict) or side.get("provider") != "obs_source":
+    raise SystemExit("ERROR: SideがOBS sourceとして設定されていません")
+if not side.get("source_uuid") or not side.get("source_name"):
+    raise SystemExit("ERROR: SideのOBS source UUID/nameが欠けています")
 capture = data.setdefault("capture", {})
-assert isinstance(capture, dict)
-capture["width"] = 640
-capture["height"] = 480
-p.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-print("Side calibration YAML created:", p)
-print("capture:", capture["width"], capture["height"])
+if not isinstance(capture, dict):
+    raise SystemExit("ERROR: captureがマッピングではありません")
+capture["width"], capture["height"] = 640, 480
+# 新規作成専用。競合しても上書きせず失敗する。
+with target.open("x", encoding="utf-8") as f:
+    yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
+print("Created:", target)
+print("Source retained:", source)
+print("Capture: 640x480; Side OBS source:", side["source_name"])
 PY
 ```
 
-**一度作った後はこのブロックを再実行しない**（`test ! -e` が失敗する設計）。既に作成済みなら、コピーせず既存ファイルを確認する。
-
-読み取りだけで検査する：
+作成後は次で**読み取り専用検証**する：
 
 ```bash
 python - <<'PY'
@@ -122,7 +167,10 @@ PY
 git status --short
 ```
 
-`cameras.aruco-640.local.yaml` は**個人のOBS設定が入ったローカルファイル**。Gitへコミットしない。必要に応じてgitignore状況を確認し、ステージしないこと。
+`cameras.aruco-640.local.yaml` は個人のOBS設定・機器情報を含むローカルファイルなので、
+**Gitへコミットしない**。必要なら `git check-ignore -v cameras.aruco-640.local.yaml`
+で無視設定を確認する。未追跡として表示される場合は、作業に支障のない範囲で
+`.git/info/exclude` などのローカル除外設定を使い、リポジトリに公開しない。
 
 ### 2-3. 640×480でArUcoが見えるか
 
