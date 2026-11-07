@@ -1,0 +1,19 @@
+{
+  "width": 640,
+  "height": 480,
+  "fx": 543.1731853745,
+  "fy": 542.9571235975,
+  "cx": 316.3947777784,
+  "cy": 229.5481738115,
+  "distortion": [
+    0.0765355847774,
+    -0.1208781287341,
+    0,
+    0,
+    0
+  ],
+  "status": "candidate_not_validated",
+  "source": "assets/calibration/side_charuco_20261107_40frame_diagnostic.json",
+  "model": "CALIB_FIX_K3 + CALIB_ZERO_TANGENT_DIST",
+  "warning": "Not final: OBS image geometry and printed board/physical FK consistency still need validation."
+}
