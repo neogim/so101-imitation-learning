@@ -63,6 +63,47 @@ def add_simple_studio_light(spec):
     )
 
 
+def apply_white_follower_preview(model):
+    """Change only the compiled preview model's yellow printed-plastic material.
+
+    The source URDF remains unchanged; motors (dark material) remain dark.
+    """
+    import mujoco
+
+    white = np.array([0.92, 0.92, 0.90, 1.0], dtype=float)
+    mid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_MATERIAL, "3d_printed")
+    if mid >= 0:
+        model.mat_rgba[mid] = white
+    # MuJoCo's URDF importer can instead bake colors into individual geoms.
+    yellow = np.array([1.0, 0.82, 0.12], dtype=float)
+    for idx in range(model.ngeom):
+        color = model.geom_rgba[idx]
+        if np.allclose(color[:3], yellow, atol=0.025):
+            model.geom_rgba[idx] = white
+
+
+def add_backdrop(spec, T_base_cv):
+    """Large pale wall behind the arm in camera view, to avoid black void.
+
+    This wall is a simple visual backdrop, not part of the real workcell.
+    """
+    import mujoco
+
+    T = np.asarray(T_base_cv, dtype=float)
+    center = T[:3, 3] + T[:3, :3] @ np.array([0., 0., 1.8])
+    R_mj = T[:3, :3] @ np.diag([1., -1., -1.])
+    quat_xyzw = Rotation.from_matrix(R_mj).as_quat()
+    spec.worldbody.add_geom(
+        name="r2s_preview_pale_backdrop",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        pos=center.tolist(),
+        quat=quat_xyzw[[3, 0, 1, 2]].tolist(),
+        size=[3.0, 3.0, 0.01],
+        rgba=[0.73, 0.76, 0.79, 1.0],
+        contype=0, conaffinity=0,
+    )
+
+
 def add_approximate_workcell(spec):
     """Simple visible tabletop/ground, NOT measured from the real photograph.
 
@@ -71,12 +112,11 @@ def add_approximate_workcell(spec):
     """
     import mujoco
 
-    workcell = r2s.load_config(Path(__file__).with_name("workcell.example.json"))
-    table = workcell["objects"]["table"]
+    # Larger neutral tabletop for a visible preview. Not physically measured.
     spec.worldbody.add_geom(
         name="r2s_preview_ground",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
-        pos=[0, 0, -0.085],
+        pos=[0, 0, -0.13],
         size=[2.0, 2.0, 0.1],
         rgba=[0.78, 0.80, 0.82, 1.0],
         contype=0,
@@ -85,9 +125,9 @@ def add_approximate_workcell(spec):
     spec.worldbody.add_geom(
         name="r2s_preview_table",
         type=mujoco.mjtGeom.mjGEOM_BOX,
-        pos=table["pos_m"],
-        size=table["half_size_m"],
-        rgba=[0.70, 0.67, 0.62, 1.0],
+        pos=[0.0, 0.0, -0.033],
+        size=[0.65, 0.65, 0.03],
+        rgba=[0.76, 0.72, 0.67, 1.0],
         contype=0,
         conaffinity=0,
     )
@@ -129,6 +169,7 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         raise ValueError('workcell must be simple or none')
     if workcell == 'simple':
         add_approximate_workcell(spec)
+        add_backdrop(spec, extr['T_base_camera'])
     if lighting not in ("simple", "original"):
         raise ValueError("lighting must be simple or original")
     if lighting == "simple":
@@ -136,6 +177,7 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
     spec.worldbody.add_camera(name="r2s_side_calibrated_candidate",
                               pos=position, quat=quaternion, fovy=fovy)
     model = spec.compile()
+    apply_white_follower_preview(model)
     data = mujoco.MjData(model)
     state = [float(selected["joints"][key]) for key in (*r2s.JOINTS, "gripper")]
     config = {"joints": {
@@ -186,7 +228,8 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         "fit_holdout_rms_mm": extr["holdout_error_mm"]["rms"],
         "lighting_preset": lighting,
         "workcell_preset": workcell,
-        "workcell_note": "Example tabletop and ground only; neither their geometry nor color is calibrated to the real scene.",
+        "workcell_note": "Illustrative enlarged tabletop, floor and pale background behind the robot; no physical measurement.",
+        "visual_material_note": "Preview-only printed-plastic yellow was changed to off-white; source URDF and black servo parts unchanged.",
         "lighting_note": "Simple preset adds one fixed world light; no image postprocessing or photometric calibration.",
         "image": str(real_path),
         "output": str(output_dir / "real_vs_mujoco.png"),
@@ -194,7 +237,7 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
             "Joint zero/sign conventions and URDF/geometry not yet verified physically.",
             "Marker itself is not rendered in URDF; judge overall robot silhouette/position.",
             "MuJoCo fovy approximates fy; principal point offset and distortion are not simulated.",
-            "Real image background/table objects are absent from the virtual scene.",
+            "Virtual tabletop and backdrop are illustrative, not measured from the real scene.",
             "No contact or motor simulation and no robot/camera device connections.",
         ],
     }
