@@ -170,3 +170,69 @@ table pose. The report explicitly warns on residual area/edge discrepancies.
 For a **single-axis diagnostic** use `--axis x` or `--axis y`; the other
 SO-101 base coordinates will remain fixed. Do not attempt to correct a
 wrong table yaw by moving the table in X or Y.
+
+
+## 2026-11-08: Match Episode 4 props and diagnose Muhi orientation
+
+The first alignment version used the default uncalibrated **Muhi/cup
+positions and neutral robot pose**, even when the comparison movie had
+used Episode 4's three-click annotations. This made the real/sim
+occlusion patterns incomparable and explains why improved table-mask
+IoU did not improve Muhi orientation.
+
+Re-run using the **same first-frame pose and object annotations**.
+Reuse the saved SAM3 mask, and specify the actual Episode 4 files:
+
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+REAL="outputs/real2sim/episode4_side_640x480.png"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+MASK="outputs/real2sim/sam3-episode4-20261108-003728/real_mask.png"
+OUT="outputs/real2sim/episode4-aligned-scene-$(date +%Y%m%d-%H%M%S)"
+
+python scripts/so101_sim/align_previous_scene_sam3.py \
+  --real-image "$REAL" --real-mask "$MASK" \
+  --dataset-root "$DATASET" --episode 4 \
+  --object-layout-json "$OBJECTS" \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --axis xy --edge-x-min 440 --edge-x-max 600 \
+  --output "$OUT"
+
+open "$OUT/before.png" "$OUT/after.png"
+cat "$OUT/report.json"
+```
+
+The top-edge strip 440..600px is merely a **working diagnostic
+region**, not an automatically verified unoccluded segment. Inspect
+the real mask before relying on its error. A single image cannot
+guarantee metric 3D correspondence.
+
+To inspect whether the earlier three clicks actually yield the same
+body/cap direction in the MuJoCo scene, generate an offline movie using
+the unchanged historic table offsets (4cm left/5cm front):
+
+```bash
+MOVIE="outputs/real2sim/episode4-muhi-axis-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root "$DATASET" --episode 4 --stride 5 --max-frames 60 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$OBJECTS" \
+  --output "$MOVIE"
+
+open "$MOVIE/muhi_axis_reprojection.png"
+cat "$MOVIE/report.json"
+```
+
+The `muhi_axis_reprojection.png` draws **green** actual click
+body/cap endpoints and **red** projected model endpoints. The
+`muhi_axis_reprojection` object in the report includes per-endpoint
+pixel errors. This does not change the bottle's physical pose or
+simulate a grasp. To make Muhi move with the gripper in a movie,
+`--attach-frame` / `--release-frame` must be provided using
+observed frame indices, never invented.
