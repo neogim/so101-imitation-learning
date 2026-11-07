@@ -59,6 +59,16 @@ class MaskAndGeometryTests(unittest.TestCase):
         self.assertEqual(m["bbox_delta_sim_minus_real_px"], [2, -1, 2, 1])
         self.assertEqual(m["bbox_max_abs_error_px"], 2)
 
+    def test_alignment_score_penalizes_same_iou_wrong_apparent_size(self):
+        real = np.zeros((50, 70), bool)
+        real[10:30, 15:35] = True
+        exact = real.copy()
+        oversized = np.zeros_like(real)
+        oversized[8:35, 10:42] = True
+        self.assertGreater(align.alignment_score(real, exact),
+                           align.alignment_score(real, oversized))
+        self.assertAlmostEqual(align.alignment_score(real, exact), 1.0)
+
     def test_base_axis_translation_does_not_rotate_or_move_other_props(self):
         try:
             import mujoco
