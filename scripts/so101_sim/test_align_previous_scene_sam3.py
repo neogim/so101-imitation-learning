@@ -88,6 +88,40 @@ class MaskAndGeometryTests(unittest.TestCase):
                            align.alignment_score(real, oversized))
         self.assertAlmostEqual(align.alignment_score(real, exact), 1.0)
 
+    def test_table_yaw_rotates_all_parts_only_about_table_center(self):
+        import mujoco
+        xml = """<mujoco><worldbody>
+        <geom name="r2s_preview_table" type="box" size=".4 .255 .02" pos=".2 .1 -.02"/>
+        <geom name="r2s_table_leg_mm" type="box" size=".02 .02 .1" pos=".3 .1 -.2"/>
+        <geom name="r2s_table_leg_mp" type="box" size=".02 .02 .1" pos=".2 .2 -.2"/>
+        <geom name="r2s_table_leg_pm" type="box" size=".02 .02 .1"/>
+        <geom name="r2s_table_leg_pp" type="box" size=".02 .02 .1"/>
+        <geom name="r2s_muhi_body" type="sphere" size=".01" pos=".3 .3 .03"/>
+        <camera name="side" pos="0 0 1"/>
+        </worldbody></mujoco>"""
+        model = mujoco.MjModel.from_xml_string(xml)
+        ids = align.movie.table_geom_ids(model)
+        p0 = model.geom_pos[ids].copy()
+        q0 = model.geom_quat[ids].copy()
+        muhi = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_muhi_body")
+        muhi0 = model.geom_pos[muhi].copy()
+        cam0 = model.cam_pos.copy()
+        align.movie.set_table_pose_delta(model, p0, q0, [0., 0., 0.], 90.)
+        np.testing.assert_allclose(model.geom_pos[ids[0]], p0[0], atol=1e-7)
+        np.testing.assert_allclose(model.geom_pos[ids[1]], [.2, .2, -.2], atol=1e-7)
+        np.testing.assert_allclose(model.geom_pos[ids[2]], [.1, .1, -.2], atol=1e-7)
+        np.testing.assert_allclose(model.geom_pos[muhi], muhi0, atol=1e-7)
+        np.testing.assert_allclose(model.cam_pos, cam0, atol=1e-7)
+        np.testing.assert_allclose(model.geom_size[ids[0]], [.4, .255, .02], atol=1e-7)
+        align.movie.set_table_pose_delta(model, p0, q0, [.02, -.03, 0.], 0.)
+        np.testing.assert_allclose(model.geom_pos[ids[0]], p0[0] + [.02, -.03, 0.])
+        np.testing.assert_allclose(model.geom_quat[ids[0]], q0[0], atol=1e-7)
+
+    def test_negative_yaw_search_bound_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Yaw"):
+            align.optimize(None, None, None, None, None, None,
+                           fit_yaw=True, max_yaw_delta_deg=0.)
+
     def test_base_axis_translation_does_not_rotate_or_move_other_props(self):
         try:
             import mujoco
