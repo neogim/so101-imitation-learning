@@ -49,8 +49,8 @@ def targets_from_clicks(points, T_base_cv, intrinsics):
 
 def valid_image_click(event, ax):
     """Accept only valid in-image left clicks, ignoring active zoom/pan tools."""
-    from matplotlib.backend_bases import MouseButton
-    if event.inaxes is not ax or event.button != MouseButton.LEFT:
+    # Matplotlib MouseButton.LEFT compares equal to integer 1.
+    if event.inaxes is not ax or event.button != 1:
         return False
     toolbar = getattr(getattr(event.canvas, "manager", None), "toolbar", None)
     if toolbar is not None and getattr(toolbar, "mode", ""):
