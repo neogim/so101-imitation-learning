@@ -128,10 +128,9 @@ REAL="outputs/real2sim/episode4_side_640x480.png"
 EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
 INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
 
-# Edit the folder name below to the actual existing successful SAM3 run.
-# Do not confuse the mask with the composite video or another episode.
-find outputs/real2sim -name real_mask.png -print
-MASK="outputs/real2sim/sam3-episode4-YOUR-EXISTING-RUN/real_mask.png"
+# Reuse the latest EXISTING Episode 4 SAM3 mask without another 3.2GB inference.
+MASK="$(find outputs/real2sim -type f -path '*/sam3-episode4-*/real_mask.png' -print | sort | tail -n 1)"
+test -n "$MASK" && test -f "$MASK" || { echo "Episode 4 SAM3 mask not found"; false; }
 
 OUT="outputs/real2sim/episode4-base-xy-$(date +%Y%m%d-%H%M%S)"
 python scripts/so101_sim/align_previous_scene_sam3.py \
@@ -159,3 +158,15 @@ the camera/object model rather than continuing blind translations.
 
 No local user IDs, usernames or absolute home paths should be included
 in repository files.
+
+
+The revised optimizer maximizes an **image-space diagnostic objective**:
+mask IoU minus penalties for excess apparent area and the projected
+bounding-envelope discrepancy. This is still approximate: occluded mask
+regions, camera parameter errors and mismatched 3D table dimensions can
+prevent precise overlap. Do not treat the score as independently measured
+table pose. The report explicitly warns on residual area/edge discrepancies.
+
+For a **single-axis diagnostic** use `--axis x` or `--axis y`; the other
+SO-101 base coordinates will remain fixed. Do not attempt to correct a
+wrong table yaw by moving the table in X or Y.
