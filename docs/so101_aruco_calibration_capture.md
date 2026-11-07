@@ -4,6 +4,90 @@
 > 最終確認：2026-11-07。コード静的確認による手順。**実機では未検証**。
 > **このPRで完成したのは校正「観測データの収集・抽出」まで**。Eye-to-Hand 6DoF解法、MuJoCo一致の確定は後続工程。
 
+## 2026-11-07：マーカー貼り替え後の5姿勢スモークテスト（Real2Sim最短ルート）
+
+**今回の実機マーカー実寸（黒枠外周。白い余白は含まない）**：
+
+| ID | 黒枠外周 | 状態 |
+|---|---:|---|
+| 0 | 14mm | 以前のまま |
+| 1 | 25mm | 貼り替え済み |
+| 2 | 14mm | 以前のまま。コードによる遮蔽を避ける |
+| 3 | 25mm | 貼り替え済み |
+| 4 | 25mm | 貼り替え済み |
+| 5 | 25mm | 貼り替え済み |
+
+**これを優先**：解析の深掘りではなく、まず5姿勢を別rootに収集・抽出する。観測対象は `DICT_4X4_50` のID0〜5。サイズが違ってもID検出には影響しないが、**PnPにはIDごとの実寸が必要**。旧14mm一律PnP診断は新データに使用しない。
+
+前提：この文書のセクション1〜2の環境確認済み、OBS Side（640×480）と既存の `cameras.aruco-640.local.yaml` が利用でき、Leader/Followerの安全確認ができていること。**新しいデータセット名を使用し、既存22姿勢を上書きしない。**
+
+```bash
+conda activate lerobot
+git status --short
+git pull --ff-only
+python -m unittest discover -s scripts/so101_capture -p 'test_extract_aruco_calibration.py' -v
+
+# 既存録画と衝突しない専用root。最初の実行はpreflightのみ（ロボット動作なし）。
+test ! -e data/so101/aruco-mixed5-20261107
+python scripts/so101_capture/capture_session.py \
+  --root data/so101/aruco-mixed5-20261107 \
+  --camera-config cameras.aruco-640.local.yaml \
+  --enable-cameras side \
+  --seconds 45 --num-episodes 1 \
+  --task "Mixed-size ArUco five-pose calibration smoke test"
+```
+
+実機接続・操作：障害物／ケーブル／初期姿勢を確認してから、下記の `--execute` 付きコマンドを**対話式ターミナルで**実行する。初期アライメントでFollowerが動く可能性がある。操作は `SAFE_RESET` で `r` → `RECORDING` 確認 → 中央・左・右・上・手首の5姿勢で各**2秒以上静止** → 自動終了、または `e` → `h` → `q`。Followerポートを別プロセスで同時に開かない。
+
+```bash
+python scripts/so101_capture/capture_session.py \
+  --root data/so101/aruco-mixed5-20261107 \
+  --camera-config cameras.aruco-640.local.yaml \
+  --enable-cameras side \
+  --seconds 45 --num-episodes 1 \
+  --task "Mixed-size ArUco five-pose calibration smoke test" \
+  --execute
+```
+
+撮影後、まず保存状態を確認してから、**新しい**出力先に5姿勢を抽出：
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+root = Path("data/so101/aruco-mixed5-20261107")
+info = json.loads((root/"meta/info.json").read_text())
+shutdown = json.loads((root/"shutdown.json").read_text())
+print("episodes", info.get("total_episodes"), "frames", info.get("total_frames"))
+print("shutdown_error", shutdown.get("error"), "cleanup_errors", shutdown.get("cleanup_errors"))
+assert info.get("total_frames", 0) > 0
+assert "observation.images.side" in info.get("features", {})
+assert shutdown.get("error") is None and not shutdown.get("cleanup_errors")
+PY
+test ! -e outputs/so101-aruco-mixed5-20261107
+python scripts/so101_capture/extract_aruco_calibration.py \
+  --dataset data/so101/aruco-mixed5-20261107 \
+  --out-dir outputs/so101-aruco-mixed5-20261107 \
+  --window 12 --tolerance-deg 0.7 \
+  --distinct-deg 3 --min-edge-px 8 --max-poses 5 \
+  --marker-sizes-mm '0:14,1:25,2:14,3:25,4:25,5:25'
+python - <<'PY'
+import json
+from pathlib import Path
+p = Path("outputs/so101-aruco-mixed5-20261107/manifest.json")
+m = json.loads(p.read_text())
+print("poses", len(m["samples"]), "size_map_mm", m["marker_sizes_mm_by_id"])
+for s in m["samples"]:
+    print("frame", s["frame_index"],
+          "IDs", [v["id"] for v in s["markers"]],
+          "edge_px", [v["min_edge_px"] for v in s["markers"]])
+PY
+```
+
+**合格ライン**：厳密なmm精度は追わない。新25mmマーカーを少なくとも一部の静止姿勢で安定検出でき、5姿勢前後の多様な観測を保存できれば本撮影へ。5未満なら、`rejected` の確認と姿勢・遮蔽の調整を先に行う。**PnPやEye-to-Hand推定はこの後**。旧データは14mm全IDの別セッションなので混ぜて一律寸法計算しない。
+
+---
+
 ## 0. この手順の設計：既存安全テレオペを再利用
 
 - **収集**：既存 `scripts/so101_capture/capture_session.py` がLeader→Follower操作とSide映像＋Follower実測6軸を20Hzで同じLeRobotデータセットに記録する。
@@ -174,7 +258,7 @@ git status --short
 
 ### 2-3. 640×480でArUcoが見えるか
 
-Marker辞書：`DICT_4X4_50`、ID **0〜5**。外側の**黒いマーカー正方形14mm**（印刷紙全体18mm・白余白2mm）。コーナー推定に使う長さは14mm。
+Marker辞書：`DICT_4X4_50`、ID **0〜5**。旧セッションは全IDが黒枠14mm。**2026-11-07貼り替え後はID0/2＝14mm、ID1/3/4/5＝25mm**。コーナー推定・PnPに使う長さは白余白を除いた各黒枠外周。
 
 OBSからの静止画を用いる既存チェック：
 
