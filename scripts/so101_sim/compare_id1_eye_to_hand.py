@@ -104,7 +104,28 @@ def add_backdrop(spec, T_base_cv):
     )
 
 
-def add_approximate_workcell(spec):
+def workcell_shift_left_front(T_base_cv, left_m=0.08, front_m=0.10):
+    """Ground-plane translation left/toward camera, not arbitrary base X/Y.
+
+    Project camera right and forward onto base XY; negative camera right is
+    screen-left, negative camera forward is toward the viewer. Preserve Z.
+    """
+    if not (math.isfinite(left_m) and math.isfinite(front_m)):
+        raise ValueError("Workcell offsets must be finite")
+    R = np.asarray(T_base_cv, dtype=float)[:3, :3]
+    if R.shape != (3, 3) or not np.isfinite(R).all():
+        raise ValueError("Invalid camera rotation")
+    left = -R[:2, 0].copy()
+    front = -R[:2, 2].copy()
+    for direction in (left, front):
+        norm = np.linalg.norm(direction)
+        if norm < 1e-7:
+            raise ValueError("Camera direction cannot be projected onto workcell XY")
+        direction /= norm
+    return np.r_[left_m * left + front_m * front, 0.]
+
+
+def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.)):
     """Photo-approximate Muhi, clear cup and 65x60cm table from earlier Colab scene.
 
     These placements are historic, unmeasured approximations, not calibration.
@@ -113,8 +134,11 @@ def add_approximate_workcell(spec):
     import mujoco
 
     world = spec.worldbody
+    shift = np.asarray(shift_xyz, dtype=float)
+    if shift.shape != (3,) or not np.isfinite(shift).all():
+        raise ValueError("Invalid workcell shift")
     def geom(name, shape, pos, size, rgba, *, quat=None):
-        kwargs = dict(name=name, type=shape, pos=pos, size=size, rgba=rgba,
+        kwargs = dict(name=name, type=shape, pos=(np.asarray(pos, dtype=float) + shift).tolist(), size=size, rgba=rgba,
                       contype=0, conaffinity=0)
         if quat is not None:
             kwargs["quat"] = quat
@@ -155,7 +179,7 @@ def add_approximate_workcell(spec):
              [.70, .86, .92, .62], quat=quat)
 
 
-def project_reference_points(T_base_cv, cam):
+def project_reference_points(T_base_cv, cam, shift_xyz=(0., 0., 0.)):
     """Project approximate workcell reference points; diagnostic only."""
     T = np.asarray(T_base_cv, dtype=float)
     R, t = T[:3, :3], T[:3, 3]
@@ -165,8 +189,9 @@ def project_reference_points(T_base_cv, cam):
         "cup_center": [.18, -.12, .06],
     }
     result = {}
+    shift = np.asarray(shift_xyz, dtype=float)
     for name, p in points.items():
-        xyz = R.T @ (np.asarray(p, dtype=float) - t)
+        xyz = R.T @ (np.asarray(p, dtype=float) + shift - t)
         if xyz[2] <= .01:
             result[name] = {"in_front": False}
             continue
@@ -181,7 +206,7 @@ def project_reference_points(T_base_cv, cam):
 
 
 def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, output_dir,
-               marker_id=1, sample_number=None, lighting='simple', workcell='simple'):
+               marker_id=1, sample_number=None, lighting='simple', workcell='simple',\n               workcell_left_m=0.08, workcell_front_m=0.10):
     import mujoco
 
     if output_dir.exists():
@@ -220,8 +245,9 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         spec.compiler.discardvisual = False
     if workcell not in ('simple', 'none'):
         raise ValueError('workcell must be simple or none')
+    shift = workcell_shift_left_front(extr['T_base_camera'], workcell_left_m, workcell_front_m)
     if workcell == 'simple':
-        add_approximate_workcell(spec)
+        add_approximate_workcell(spec, shift)
         add_backdrop(spec, extr['T_base_camera'])
     if lighting not in ("simple", "original"):
         raise ValueError("lighting must be simple or original")
@@ -286,9 +312,12 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         "fit_holdout_rms_mm": extr["holdout_error_mm"]["rms"],
         "lighting_preset": lighting,
         "workcell_preset": workcell,
+        "workcell_offset_m_in_base": shift.tolist() if workcell == "simple" else None,
+        "workcell_left_m": workcell_left_m,
+        "workcell_front_m": workcell_front_m,
         "urdf_discardvisual_disabled_for_preview": workcell == "simple",
         "workcell_note": "Approximate 65x60cm tabletop and historically modeled Muhi bottle / transparent cylindrical cup. No measured physical placement.",
-        "workcell_projection": project_reference_points(extr["T_base_camera"], cam) if workcell == "simple" else None,
+        "workcell_projection": project_reference_points(extr["T_base_camera"], cam, shift) if workcell == "simple" else None,
         "visual_material_note": "Preview-only printed-plastic yellow was changed to off-white; source URDF and black servo parts unchanged.",
         "lighting_note": "Simple preset adds one fixed world light; no image postprocessing or photometric calibration.",
         "image": str(real_path),
@@ -322,10 +351,15 @@ def main():
                    help="simple adds a fixed white fill light; original preserves original MuJoCo lighting")
     p.add_argument("--workcell", choices=("simple", "none"), default="simple",
                    help="Render approximate photo-based Muhi/cup/table, or none for robot alone")
+    p.add_argument("--workcell-left-cm", type=float, default=8.0,
+                   help="Shift all illustrative props to image-left on base XY plane (default: 8 cm)")
+    p.add_argument("--workcell-front-cm", type=float, default=10.0,
+                   help="Shift props toward the camera on base XY plane (default: 10 cm)")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args()
     r = render_one(a.manifest, a.extrinsics, a.intrinsics, a.urdf,
-                   a.output, a.marker_id, a.frame, a.lighting, a.workcell)
+                   a.output, a.marker_id, a.frame, a.lighting, a.workcell,
+                   a.workcell_left_cm / 100., a.workcell_front_cm / 100.)
     print("Saved:", r["output"])
     print("Frame:", r["frame_index"], "FOVy:", round(r["approx_fovy_deg"], 2))
 
