@@ -105,6 +105,7 @@ class SideCameraTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("mujoco") is not None,
                          "MuJoCo unavailable in this numerical-only environment")
     def test_table_yaw_and_shift_compiles(self):
+        import math
         import mujoco
         root = Path(__file__).resolve().parents[2]
         spec = mujoco.MjSpec.from_file(str(root / "data/urdf/so101/so101_new_calib.urdf"))
