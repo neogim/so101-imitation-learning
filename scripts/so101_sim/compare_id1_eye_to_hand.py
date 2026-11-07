@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Offline real-photo vs MuJoCo Side camera view for one captured SO-101 pose.
+
+Uses the preliminary ID1 center-only calibration and existing manifest PNG.
+NO robot/OBS connections. DOES NOT apply calibration to the real robot.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+import sys
+
+import numpy as np
+from PIL import Image, ImageDraw
+from scipy.spatial.transform import Rotation
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "so101_capture"))
+import real_to_sim as r2s
+
+
+def mujoco_camera_pose(T_base_cv):
+    """Convert OpenCV optical (x right,y down,z forward) to MuJoCo (x right,y up,-z forward)."""
+    matrix = np.asarray(T_base_cv, dtype=float)
+    if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+        raise ValueError("Expected finite T_base_camera 4x4")
+    R = matrix[:3, :3]
+    if (not np.allclose(R.T @ R, np.eye(3), atol=1e-3)
+            or not np.isclose(np.linalg.det(R), 1, atol=1e-3)
+            or not np.allclose(matrix[3], [0, 0, 0, 1], atol=1e-6)):
+        raise ValueError("Invalid camera rigid transform")
+    R_mj = R @ np.diag([1., -1., -1.])
+    q_xyzw = Rotation.from_matrix(R_mj).as_quat()
+    return matrix[:3, 3].tolist(), q_xyzw[[3, 0, 1, 2]].tolist()
+
+
+def fovy_from_intrinsics(fy, height):
+    if not (math.isfinite(fy) and fy > 0 and height > 0):
+        raise ValueError("Invalid focal length/height")
+    return math.degrees(2 * math.atan(height / (2 * fy)))
+
+
+def marker_center_px(marker):
+    points = np.asarray(marker["corners_px"], dtype=float).reshape(4, 2)
+    return np.mean(points, axis=0)
+
+
+def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, output_dir,
+               marker_id=1, sample_number=None):
+    import mujoco
+
+    if output_dir.exists():
+        raise ValueError("Output exists; use a fresh directory")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    extr = json.loads(extrinsics_path.read_text(encoding="utf-8"))
+    cam = json.loads(intrinsics_path.read_text(encoding="utf-8"))
+    if (cam.get("width"), cam.get("height")) != (640, 480):
+        raise ValueError("Camera intrinsics must be 640x480")
+    if int(extr["marker_id"]) != marker_id or extr.get("marker_link") != "gripper_link":
+        raise ValueError("Extrinsics are not the expected ID1/gripper_link fit")
+    if not extr.get("identifiable_9dof", False):
+        raise ValueError("Fit is rank-deficient; camera pose is not reliable even as an initial visualization")
+    if extr.get("status") != "provisional_not_applied_to_mujoco":
+        raise ValueError("Unexpected extrinsic format")
+    if manifest.get("marker_sizes_mm_by_id", {}).get(str(marker_id)) != 25.0:
+        raise ValueError("Expected the 25mm ID1 capture")
+    valid = [s for s in manifest["samples"]
+             if any(int(m["id"]) == marker_id for m in s["markers"])]
+    if not valid:
+        raise ValueError("Selected marker not visible in any manifest sample")
+    selected = valid[len(valid)//2] if sample_number is None else next(
+        (s for s in valid if int(s["frame_index"]) == sample_number), None)
+    if selected is None:
+        raise ValueError("Selected frame has no ID1 observation")
+
+    position, quaternion = mujoco_camera_pose(extr["T_base_camera"])
+    fovy = fovy_from_intrinsics(float(cam["fy"]), int(cam["height"]))
+
+    spec = mujoco.MjSpec.from_file(str(urdf_path.resolve()))
+    spec.worldbody.add_camera(name="r2s_side_calibrated_candidate",
+                              pos=position, quat=quaternion, fovy=fovy)
+    model = spec.compile()
+    data = mujoco.MjData(model)
+    state = [float(selected["joints"][key]) for key in (*r2s.JOINTS, "gripper")]
+    config = {"joints": {
+        "sign": {key: 1 for key in r2s.JOINTS},
+        "offset_deg": {key: 0. for key in r2s.JOINTS},
+    }}
+    r2s.set_pose(model, data, state, config)
+
+    width, height = int(cam["width"]), int(cam["height"])
+    with mujoco.Renderer(model, height=height, width=width) as renderer:
+        renderer.update_scene(data, camera="r2s_side_calibrated_candidate")
+        simulated = Image.fromarray(renderer.render().copy()).convert("RGB")
+    real_path = manifest_path.parent / selected["image"]
+    with Image.open(real_path) as photo:
+        if photo.size != (width, height):
+            raise ValueError("Real PNG dimensions differ from intrinsics")
+        real = photo.convert("RGB")
+
+    # Show an observed ID1 center on the real image only. The robot URDF does
+    # not contain a corresponding marker mesh, so no simulated marker is drawn.
+    observed_marker = next(m for m in selected["markers"] if int(m["id"]) == marker_id)
+    observed_x, observed_y = marker_center_px(observed_marker)
+    annotated_real = real.copy()
+    d = ImageDraw.Draw(annotated_real)
+    d.ellipse((observed_x-5, observed_y-5, observed_x+5, observed_y+5),
+              outline="lime", width=2)
+    d.text((observed_x+7, observed_y+3), "ID1", fill="lime")
+
+    canvas = Image.new("RGB", (width*2, height+28), (25, 25, 25))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((8, 7), "REAL: captured Side (ID1 green)", fill="white")
+    draw.text((width+8, 7), "SIM: preliminary Side camera / FK", fill="white")
+    canvas.paste(annotated_real, (0, 28))
+    canvas.paste(simulated, (width, 28))
+
+    output_dir.mkdir(parents=True, exist_ok=False)
+    canvas.save(output_dir / "real_vs_mujoco.png")
+    simulated.save(output_dir / "mujoco_only.png")
+    report = {
+        "status": "VISUAL_CHECK_ONLY_PROVISIONAL",
+        "frame_index": int(selected["frame_index"]),
+        "episode": int(selected["episode_index"]),
+        "marker_id": marker_id,
+        "observed_marker_center_px": [float(observed_x), float(observed_y)],
+        "estimated_camera_pos_base_m": position,
+        "estimated_camera_quat_mujoco_wxyz": quaternion,
+        "approx_fovy_deg": fovy,
+        "fit_holdout_rms_mm": extr["holdout_error_mm"]["rms"],
+        "image": str(real_path),
+        "output": str(output_dir / "real_vs_mujoco.png"),
+        "caveats": [
+            "Joint zero/sign conventions and URDF/geometry not yet verified physically.",
+            "Marker itself is not rendered in URDF; judge overall robot silhouette/position.",
+            "MuJoCo fovy approximates fy; principal point offset and distortion are not simulated.",
+            "Real image background/table objects are absent from the virtual scene.",
+            "No contact or motor simulation and no robot/camera device connections.",
+        ],
+    }
+    (output_dir / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return report
+
+
+def main():
+    root = Path(__file__).resolve().parents[2]
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--manifest", type=Path, required=True)
+    p.add_argument("--extrinsics", type=Path, required=True)
+    p.add_argument("--intrinsics", type=Path,
+                   default=root / "assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json")
+    p.add_argument("--urdf", type=Path,
+                   default=root / "data/urdf/so101/so101_new_calib.urdf")
+    p.add_argument("--marker-id", type=int, default=1)
+    p.add_argument("--frame", type=int, default=None,
+                   help="Optional known manifest frame index containing marker ID1")
+    p.add_argument("--output", type=Path, required=True)
+    a = p.parse_args()
+    r = render_one(a.manifest, a.extrinsics, a.intrinsics, a.urdf,
+                   a.output, a.marker_id, a.frame)
+    print("Saved:", r["output"])
+    print("Frame:", r["frame_index"], "FOVy:", round(r["approx_fovy_deg"], 2))
+
+
+if __name__ == "__main__":
+    main()
