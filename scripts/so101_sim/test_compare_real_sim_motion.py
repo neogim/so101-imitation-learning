@@ -11,7 +11,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_real_sim_motion import (sample_evenly, comparison_panel,
-                                     pixel_to_base_plane, video_object_layout, MuhiGripperAttachment, read_object_targets)
+                                     pixel_to_base_plane, video_object_layout, MuhiGripperAttachment, read_object_targets, set_visual_gripper)
 
 
 class MotionComparisonTests(unittest.TestCase):
@@ -98,6 +98,26 @@ class MotionComparisonTests(unittest.TestCase):
             }), encoding="utf-8")
             with self.assertRaises(ValueError):
                 read_object_targets(path)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco") is not None,
+                         "MuJoCo unavailable")
+    def test_j6_normalized_gripper_replay(self):
+        import mujoco
+        model = mujoco.MjModel.from_xml_string("""<mujoco>
+          <worldbody><body><joint name="gripper" type="hinge"
+          range="-0.174533 1.74533" limited="true"/>
+          <geom type="box" size=".01 .01 .01" mass=".01"/></body></worldbody>
+          </mujoco>""")
+        data = mujoco.MjData(model)
+        at_closed = set_visual_gripper(model, data, 0.)
+        at_open = set_visual_gripper(model, data, 100.)
+        self.assertGreater(at_open, at_closed)
+        midpoint = set_visual_gripper(model, data, 50.)
+        self.assertAlmostEqual(midpoint, (at_closed + at_open)/2, places=6)
+        inverted = set_visual_gripper(model, data, 0., invert=True)
+        self.assertAlmostEqual(inverted, at_open, places=6)
+        with self.assertRaises(ValueError):
+            set_visual_gripper(model, data, 150.)
 
     def test_real_sim_panel(self):
         real = Image.new("RGB", (224, 168), "red")
