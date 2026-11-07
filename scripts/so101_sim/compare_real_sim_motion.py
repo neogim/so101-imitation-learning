@@ -162,6 +162,61 @@ def read_frames_once(path, indices):
     return selected
 
 
+class MuhiGripperAttachment:
+    """Kinematic visualization: fixed relative Muhi pose while grasp is active.
+
+    No collision forces, no suction or friction dynamics. This updates only
+    the ephemeral simulation model's world geom transforms.
+    """
+    def __init__(self, model, data):
+        import mujoco
+        self.model, self.data = model, data
+        self.body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "gripper_link")
+        if self.body < 0:
+            raise ValueError("MuJoCo gripper_link body missing")
+        self.ids = [
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            for name in ("r2s_muhi_body", "r2s_muhi_cap")
+        ]
+        if any(i < 0 for i in self.ids):
+            raise ValueError("Expected Muhi geoms are missing")
+        self.rel_pos = None
+        self.rel_rot = None
+        self.initial_distance_m = None
+
+    def attach(self):
+        from scipy.spatial.transform import Rotation
+        grip_pos = self.data.xpos[self.body].copy()
+        grip_R = self.data.xmat[self.body].reshape(3, 3).copy()
+        self.rel_pos = []
+        self.rel_rot = []
+        for gid in self.ids:
+            p = self.data.geom_xpos[gid].copy()
+            R = self.data.geom_xmat[gid].reshape(3, 3).copy()
+            self.rel_pos.append(grip_R.T @ (p - grip_pos))
+            self.rel_rot.append(grip_R.T @ R)
+        self.initial_distance_m = float(np.linalg.norm(
+            self.data.geom_xpos[self.ids[0]] - grip_pos))
+
+    def follow(self):
+        import mujoco
+        from scipy.spatial.transform import Rotation
+        if self.rel_pos is None:
+            raise ValueError("Muhi not attached")
+        grip_pos = self.data.xpos[self.body]
+        grip_R = self.data.xmat[self.body].reshape(3, 3)
+        for gid, p_rel, R_rel in zip(self.ids, self.rel_pos, self.rel_rot):
+            self.model.geom_pos[gid] = grip_pos + grip_R @ p_rel
+            quat = Rotation.from_matrix(grip_R @ R_rel).as_quat()
+            self.model.geom_quat[gid] = quat[[3, 0, 1, 2]]
+        mujoco.mj_forward(self.model, self.data)
+
+    def detach(self):
+        # Last world positions stay fixed because these geoms have world parent.
+        self.rel_pos = None
+        self.rel_rot = None
+
+
 def run_motion(args):
     import av
     import mujoco
@@ -189,6 +244,15 @@ def run_motion(args):
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
+    if args.attach_frame is not None:
+        if args.attach_frame < 0 or (args.release_frame is not None
+                                     and args.release_frame <= args.attach_frame):
+            raise ValueError("attach-frame must be nonnegative and precede release-frame")
+    elif args.release_frame is not None:
+        raise ValueError("--release-frame requires --attach-frame")
+    attachment = MuhiGripperAttachment(model, data) if args.attach_frame is not None else None
+    attached = False
+    released = False
     source_fps = float(ep["info"]["fps"])
     fps_out = source_fps / args.stride
     if not (0 < fps_out < 121):
@@ -206,6 +270,18 @@ def run_motion(args):
         with mujoco.Renderer(model, width=640, height=480) as renderer:
             for row, source_index in zip(ep["rows"], frame_ids):
                 r2s.set_pose(model, data, row["state"], config)
+                frame_index = int(row["frame_index"])
+                if attachment is not None:
+                    if not attached and frame_index >= args.attach_frame:
+                        attachment.attach()
+                        attached = True
+                    if attached and not released:
+                        if args.release_frame is not None and frame_index >= args.release_frame:
+                            # Keep Muhi fixed in the world after the previous pose.
+                            attachment.detach()
+                            released = True
+                        else:
+                            attachment.follow()
                 renderer.update_scene(data, camera=camera)
                 simulation = Image.fromarray(renderer.render().copy()).convert("RGB")
                 panel = comparison_panel(reals[source_index], simulation,
@@ -225,11 +301,22 @@ def run_motion(args):
             "cup": [args.cup_u, args.cup_v],
         },
         "video_object_local_layout": layout,
+        "muhi_attachment": {
+            "attach_frame": args.attach_frame,
+            "release_frame": args.release_frame,
+            "attachment_triggered": attached,
+            "release_triggered": released,
+            "distance_from_gripper_at_attach_m": (
+                attachment.initial_distance_m if attachment is not None else None),
+            "behavior": "fixed relative pose to gripper body after attach; no grasp physics",
+        },
         "video_object_alignment": "Approximate first-frame pixel matching using November camera model; not actual 3D measured pose.",
         "limitations": [
             "The Side calibration dates to 2026-11-07 and may not match the recording setup.",
             "Joint angles are replayed by FK; normalized gripper is not mapped.",
-            "Static illustrative Muhi/cup do not physically respond to the arm.",
+            "Cup stays static; Muhi follows the arm only if --attach-frame is supplied.",
+            "Attachment maintains initial relative offset, does not detect contact or solve grasp mechanics.",
+            "If distance_from_gripper_at_attach_m is large, the visual attachment is not physically plausible.",
             "There is no ACT inference and no hardware connection.",
         ],
     }, ensure_ascii=False, indent=2)+"\n", encoding="utf-8")
@@ -258,6 +345,10 @@ def main():
             sub.add_argument("--cup-u", type=float, default=375., help="Clear container center x in the 640-pixel Real video panel")
             sub.add_argument("--cup-v", type=float, default=310., help="Clear container center y in 480-pixel Real video panel")
             sub.add_argument("--muhi-yaw-deg", type=float, default=45., help="Provisional Muhi yaw around base Z; change if axis disagrees")
+            sub.add_argument("--attach-frame", type=int, default=None,
+                             help="Recorded episode frame index at grasp; Muhi follows gripper after this")
+            sub.add_argument("--release-frame", type=int, default=None,
+                             help="Recorded episode frame index at release; Muhi stays at last position")
     args = parser.parse_args()
     print("Saved:", run_poses(args) if args.mode == "poses" else run_motion(args))
 
