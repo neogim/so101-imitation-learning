@@ -2,6 +2,8 @@
 import sys
 import unittest
 import importlib.util
+import json
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +11,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_real_sim_motion import (sample_evenly, comparison_panel,
-                                     pixel_to_base_plane, video_object_layout, MuhiGripperAttachment)
+                                     pixel_to_base_plane, video_object_layout, MuhiGripperAttachment, read_object_targets)
 
 
 class MotionComparisonTests(unittest.TestCase):
@@ -74,6 +76,28 @@ class MotionComparisonTests(unittest.TestCase):
         mujoco.mj_forward(model, data)
         np.testing.assert_allclose(data.geom_xpos[obj.ids[0]],
                                    original + [.10, 0., 0.], atol=1e-7)
+
+    def test_read_per_video_object_layout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "objects.json"
+            path.write_text(json.dumps({
+                "image_size": [640, 480],
+                "muhi_center_px": [250, 355],
+                "cup_center_px": [375, 300],
+                "muhi_yaw_deg": -20,
+            }), encoding="utf-8")
+            muhi, cup, yaw = read_object_targets(path)
+            self.assertEqual(muhi, (250., 355.))
+            self.assertEqual(cup, (375., 300.))
+            self.assertEqual(yaw, -20.)
+            path.write_text(json.dumps({
+                "image_size": [640, 480],
+                "muhi_center_px": [700, 355],
+                "cup_center_px": [375, 300],
+                "muhi_yaw_deg": -20,
+            }), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                read_object_targets(path)
 
     def test_real_sim_panel(self):
         real = Image.new("RGB", (224, 168), "red")
