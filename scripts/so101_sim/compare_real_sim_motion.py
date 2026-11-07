@@ -223,7 +223,17 @@ def read_object_targets(path):
     Coordinates are in resized 640x480 Side-video pixel space.
     A mask-derived 2D angle is not a full 6DoF object orientation.
     """
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = Path(path).read_text(encoding="utf-8")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        # Compatibility with annotated JSON produced before 2026-11-07 fix:
+        # the GUI mistakenly appended a *literal* backslash-n after the JSON.
+        if not raw.endswith("\\n"):
+            raise
+        payload = json.loads(raw[:-2])
+    if not isinstance(payload, dict):
+        raise ValueError("Object localization JSON must contain an object")
     if payload.get("image_size") != [640, 480]:
         raise ValueError("Object localization JSON must have image_size [640, 480]")
     def center(key):
