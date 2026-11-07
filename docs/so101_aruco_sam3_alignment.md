@@ -329,3 +329,56 @@ visible far-edge mean absolute error 65.8 -> 31.1 px. X offset hit
 +12cm search bound, and right image border nearly matched; this is
 **NOT_ALIGNED**, not evidence of calibrated depth. Old 650x600mm fit
 numbers must not be mixed with the corrected 800x510mm model.
+
+
+## 2026-11-08: Joint XY + tabletop Yaw fitting with measured 800×510mm
+
+The earlier position-only solver could not correct a slanted far edge:
+it held tabletop yaw at 15°. The latest script adds `--fit-yaw` to fit
+the tabletop rigid pose around its center in SO-101 base XY and Z-yaw,
+while keeping the measured tabletop dimensions fixed. It rotates four
+legs consistently and does not move the camera, SO-101, Muhi or cup.
+Use only the **visible upper edge strip** of the SAM3 real mask.
+Image-cropped/hidden corners are not invented or annotated.
+
+Recommended existing Episode 4 invocation (repository-relative paths):
+
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+REAL="outputs/real2sim/episode4_side_640x480.png"
+MASK="outputs/real2sim/sam3-episode4-20261108-003728/real_mask.png"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+OUT="outputs/real2sim/table-xy-yaw-$(date +%Y%m%d-%H%M%S)"
+
+python scripts/so101_sim/align_previous_scene_sam3.py \
+  --real-image "$REAL" --real-mask "$MASK" \
+  --dataset-root "$DATASET" --episode 4 \
+  --object-layout-json "$OBJECTS" \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --axis xy --fit-yaw --max-yaw-delta-deg 30 \
+  --edge-x-min 440 --edge-x-max 600 \
+  --output "$OUT"
+
+open "$OUT/before.png" "$OUT/after.png"
+cat "$OUT/report.json"
+```
+
+Inspect `upper_edge_after`, `area_ratio_sim_over_real`,
+`iou_after`, `search_bound_hit`, and `warnings`.
+`recommended_video_flags` now includes `--table-yaw-delta-deg`.
+When creating a comparison video, use **all** reported table flags
+with the same `--object-layout-json`; don't stack the previous fit's
++12cm or the earlier 8/10.5cm table offsets.
+
+The existing 3-click annotations are for **Muhi body/cap and cup**, not
+table corners. This step does **not** require new clicks and does not
+claim a perfect homography or metric 3D calibration. If the top edge
+still disagrees, the next meaningful input is a reviewed, visible
+physical edge reference with known correspondence—not inferred hidden
+corners, and not unbounded XY search.
