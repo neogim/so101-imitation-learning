@@ -217,6 +217,29 @@ class MuhiGripperAttachment:
         self.rel_rot = None
 
 
+def read_object_targets(path):
+    """Interoperable per-recording localization result (e.g., from SAM3 masks).
+
+    Coordinates are in resized 640x480 Side-video pixel space.
+    A mask-derived 2D angle is not a full 6DoF object orientation.
+    """
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get("image_size") != [640, 480]:
+        raise ValueError("Object localization JSON must have image_size [640, 480]")
+    def center(key):
+        value = payload.get(key)
+        if not isinstance(value, list) or len(value) != 2:
+            raise ValueError(f"Missing 2D center in {key}")
+        u, v = map(float, value)
+        if not (np.isfinite(u) and np.isfinite(v) and 0 <= u < 640 and 0 <= v < 480):
+            raise ValueError(f"Invalid {key} pixel coordinates")
+        return (u, v)
+    yaw = float(payload["muhi_yaw_deg"])
+    if not np.isfinite(yaw):
+        raise ValueError("muhi_yaw_deg must be finite")
+    return center("muhi_center_px"), center("cup_center_px"), yaw
+
+
 def run_motion(args):
     import av
     import mujoco
@@ -237,9 +260,13 @@ def run_motion(args):
     intrinsics = json.loads(args.intrinsics.read_text(encoding="utf-8"))
     if (intrinsics.get("width"), intrinsics.get("height")) != (640, 480):
         raise ValueError("Expected 640x480 Side candidate intrinsics")
+    if args.object_layout_json is not None:
+        muhi_pixel, cup_pixel, muhi_yaw = read_object_targets(args.object_layout_json)
+    else:
+        muhi_pixel, cup_pixel = (args.muhi_u, args.muhi_v), (args.cup_u, args.cup_v)
+        muhi_yaw = args.muhi_yaw_deg
     layout = video_object_layout(extrinsics["T_base_camera"], intrinsics,
-                                 (args.muhi_u, args.muhi_v),
-                                 (args.cup_u, args.cup_v), args.muhi_yaw_deg)
+                                 muhi_pixel, cup_pixel, muhi_yaw)
     model, camera = make_calibrated_model(extrinsics, intrinsics, args.urdf, layout)
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
@@ -297,10 +324,11 @@ def run_motion(args):
         "episode": args.episode, "stride": args.stride, "frames": len(ep["rows"]),
         "source_fps": source_fps, "video_fps": encoded_fps,
         "video_object_pixel_targets": {
-            "muhi": [args.muhi_u, args.muhi_v],
-            "cup": [args.cup_u, args.cup_v],
+            "muhi": list(muhi_pixel),
+            "cup": list(cup_pixel),
         },
         "video_object_local_layout": layout,
+        "object_layout_json_source": str(args.object_layout_json) if args.object_layout_json else None,
         "muhi_attachment": {
             "attach_frame": args.attach_frame,
             "release_frame": args.release_frame,
@@ -345,6 +373,8 @@ def main():
             sub.add_argument("--cup-u", type=float, default=375., help="Clear container center x in the 640-pixel Real video panel")
             sub.add_argument("--cup-v", type=float, default=310., help="Clear container center y in 480-pixel Real video panel")
             sub.add_argument("--muhi-yaw-deg", type=float, default=45., help="Provisional Muhi yaw around base Z; change if axis disagrees")
+            sub.add_argument("--object-layout-json", type=Path, default=None,
+                             help="Optional 640x480 Side-frame centers and Muhi yaw from external detector")
             sub.add_argument("--attach-frame", type=int, default=None,
                              help="Recorded episode frame index at grasp; Muhi follows gripper after this")
             sub.add_argument("--release-frame", type=int, default=None,
