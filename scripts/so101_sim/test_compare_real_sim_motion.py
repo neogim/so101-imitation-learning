@@ -119,6 +119,22 @@ class MotionComparisonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             set_visual_gripper(model, data, 150.)
 
+    def test_legacy_three_click_json_suffix_is_accepted(self):
+        payload = {
+            "image_size": [640, 480],
+            "muhi_center_px": [250, 355],
+            "cup_center_px": [375, 300],
+            "muhi_yaw_deg": -20,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "legacy.json"
+            path.write_text(json.dumps(payload) + "\\n", encoding="utf-8")
+            self.assertEqual(read_object_targets(path),
+                             ((250., 355.), (375., 300.), -20.))
+            path.write_text(json.dumps(payload) + "BAD", encoding="utf-8")
+            with self.assertRaises(json.JSONDecodeError):
+                read_object_targets(path)
+
     def test_real_sim_panel(self):
         real = Image.new("RGB", (224, 168), "red")
         sim = Image.new("RGB", (640, 480), "blue")
