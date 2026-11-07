@@ -783,3 +783,36 @@ open outputs/so101-r2s-motion-objects-aligned-20261107/real_vs_sim_episode.mp4
 ```
 
 位置合わせは*初期フレーム*基準で固定される。実動画内でムヒを持ち上げて移動する場面についてはSim側のムヒが自動追従するわけではない（把持物理・物体トラッキング未実装）。実データと推論は変更せず、出力先は新しいディレクトリを指定する。
+
+### ムヒ把持後のグリッパー追従再生（物理シミュレーションではない）
+
+`motion` モードで `--attach-frame` と `--release-frame` を渡すと、その間はムヒの本体とキャップの**相対姿勢を保持して** `gripper_link` のFKに追従させる。 `--release-frame` 以降はその時点の世界座標に置いておく。ムヒの3D位置が把持時にグリッパーから遠い場合も、その相対位置のまま追従するので、実際の把持成立を検証する用途ではない。距離は `report.json` の `muhi_attachment.distance_from_gripper_at_attach_m` に記録する。フレーム番号は録画元のepisode内の番号で、書き出し動画の連番ではない。
+
+```bash
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root data/so101/muhi-side-wrist-success-053-20261025-168x224 \
+  --episode 0 --stride 5 --max-frames 60 \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --attach-frame 80 --release-frame 220 \
+  --output outputs/so101-r2s-motion-grasp-preview-20261107
+open outputs/so101-r2s-motion-grasp-preview-20261107/real_vs_sim_episode.mp4
+```
+
+`80`, `220` は仮の動作確認値。記録動画で実際に把持・解放したフレームを見て調整する。把持・解放の自動判定、衝突、落下、接触力、ACTの推論は未対応。実機と記録データは読み取り専用。
+
+### SAM3などの外部検出器から動画ごとの物体配置を渡す
+
+SAM3が出したマスクの中心（画像上の代表点）と、ムヒの長軸角を計算したJSONを入力できる。今の段階で**SAM3の実行そのものは組み込んでいない**。あくまで検出・配置・描画の責務分離。
+
+```json
+{
+  "image_size": [640, 480],
+  "muhi_center_px": [255, 360],
+  "cup_center_px": [375, 310],
+  "muhi_yaw_deg": 45
+}
+```
+
+`--object-layout-json outputs/my_episode_objects.json` を `motion` に渡すと、`--muhi-u/v`, `--cup-u/v`, `--muhi-yaw-deg` の代わりにこのファイルを使う。座標は**横640×縦480へリサイズされたSide映像の画像座標**。単眼マスクから深度・高さ・3D姿勢は直接求まらないため、既存の暫定カメラ外部パラメータと固定高さでベースXY平面への光線交差を計算している。長軸から得た角も180度の向きの曖昧さが残り、キャップ側で符号を決める必要がある。円筒容器の鉛直軸回りyawは外観から判定する必要が通常ない。
+
+同じ動画内で物体を移動させた後は、初期フレームの検出結果だけでは追跡できない。将来は動画追跡または時系列の物体位置JSONに拡張する。撮影日の違うSideカメラの校正誤差は残る。
