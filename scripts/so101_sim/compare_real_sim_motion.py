@@ -103,6 +103,44 @@ def apply_table_base_offset(model, base_xyz_cm=(0., 0., 0.)):
     model.geom_pos[ids] += delta / 100.
 
 
+def table_geom_ids(model):
+    """All five preview table parts; other scene objects are never included."""
+    import mujoco
+
+    names = ("r2s_preview_table",) + tuple(
+        f"r2s_table_leg_{x}{y}" for x in ("m", "p") for y in ("m", "p"))
+    ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) for name in names]
+    if any(index < 0 for index in ids):
+        raise ValueError("Preview tabletop or legs missing")
+    return ids
+
+
+def set_table_pose_delta(model, reference_positions, reference_quats,
+                         base_xyz_m=(0., 0., 0.), yaw_delta_deg=0.):
+    """Rigid tabletop+legs transform about tabletop center in SO-101 base frame.
+
+    The provided baseline positions/quats are immutable. Every trial uses
+    that baseline, avoiding cumulative drift. Camera, robot and props are fixed.
+    """
+    from scipy.spatial.transform import Rotation
+
+    ids = table_geom_ids(model)
+    original = np.asarray(reference_positions, dtype=float)
+    quats = np.asarray(reference_quats, dtype=float)
+    offset = np.asarray(base_xyz_m, dtype=float)
+    if (original.shape != (len(ids), 3) or quats.shape != (len(ids), 4)
+            or offset.shape != (3,) or not np.isfinite(original).all()
+            or not np.isfinite(quats).all() or not np.isfinite(offset).all()
+            or not np.isfinite(yaw_delta_deg)):
+        raise ValueError("Invalid tabletop reference or pose adjustment")
+    yaw = Rotation.from_euler("z", float(yaw_delta_deg), degrees=True)
+    center = original[0].copy()
+    model.geom_pos[ids] = center + yaw.apply(original - center) + offset
+    base_rotation = Rotation.from_quat(quats[:, [1, 2, 3, 0]])
+    rotated = (yaw * base_rotation).as_quat()
+    model.geom_quat[ids] = rotated[:, [3, 0, 1, 2]]
+
+
 def project_base_xyz_to_side(T_base_cv, intrinsics, xyz):
     """Project a base-frame 3D point through the same candidate Side camera."""
     T = np.asarray(T_base_cv, dtype=float)
@@ -395,8 +433,14 @@ def run_motion(args):
         extrinsics, intrinsics, args.urdf, layout,
         table_extra_left_m=args.table_extra_left_cm / 100.,
         table_extra_front_m=args.table_extra_front_cm / 100.)
-    apply_table_base_offset(model, (args.table_base_x_cm, args.table_base_y_cm,
-                                    args.table_base_z_cm))
+    ids = table_geom_ids(model)
+    reference_positions = model.geom_pos[ids].copy()
+    reference_quats = model.geom_quat[ids].copy()
+    set_table_pose_delta(
+        model, reference_positions, reference_quats,
+        base_xyz_m=np.array([args.table_base_x_cm, args.table_base_y_cm,
+                             args.table_base_z_cm]) / 100.,
+        yaw_delta_deg=args.table_yaw_delta_deg)
     annotations = None
     if args.object_layout_json is not None:
         raw = args.object_layout_json.read_text(encoding="utf-8")
@@ -492,6 +536,8 @@ def run_motion(args):
         "table_extra_left_cm": args.table_extra_left_cm,
         "table_extra_front_cm": args.table_extra_front_cm,
         "table_base_xyz_cm": [args.table_base_x_cm, args.table_base_y_cm, args.table_base_z_cm],
+        "table_yaw_delta_deg": args.table_yaw_delta_deg,
+        "table_yaw_deg": 15. + args.table_yaw_delta_deg,
         "limitations": [
             "The Side calibration dates to 2026-11-07 and may not match the recording setup.",
             "J6 normalized [0,100] is mapped linearly to URDF gripper joint limits for visualization only.",
@@ -530,6 +576,8 @@ def main():
                              help="Tabletop offset camera-left in cm (default: 4)")
             sub.add_argument("--table-extra-front-cm", type=float, default=5.,
                              help="Tabletop offset toward camera in cm (negative moves farther; default: 5)")
+            sub.add_argument("--table-yaw-delta-deg", type=float, default=0.,
+                             help="Additional tabletop yaw around own center (deg); default 0")
             sub.add_argument("--table-base-x-cm", type=float, default=0.,
                              help="Additional base X translation of table+legs, cm; no rotation")
             sub.add_argument("--table-base-y-cm", type=float, default=0.,
