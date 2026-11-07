@@ -263,3 +263,33 @@ Keep real camera, Muhi and cup unchanged.
 After pulling the updated branch, use the concrete Episode 4 command in
 the preceding section and inspect its new report. **Do not reapply
 the old +12cm adjustment automatically.**
+
+
+## Reference photo / table coordinates (ACT report slide 3)
+
+Reference: https://docs.google.com/presentation/d/1aMca_m5pZ96-GOnCLb1dOHfdw3RP1GL6/edit?slide=id.p3#slide=id.p3
+
+Slide 3 contains a labeled, near-overhead view of the physical tabletop:
+- iPhone 6 Side camera mounted on **table-left**
+- SO-101 robot based on **table-right**, Wrist camera attached
+- transparent target cup toward **far/top-middle** of tabletop
+- Muhi bottle toward **near/bottom-middle** of tabletop
+- the diagram explicitly defines **TABLE coordinates**: +X to the image
+  right and +Y to the image bottom (Z can be defined as tabletop normal)
+- user's measured table footprint: **800 mm horizontally, 510 mm vertically**
+
+IMPORTANT: Those are **table-local axes** in the schematic, **not** the
+SO-101 base XYZ axes and **not** the Side-camera optical axes. Their transform
+is unknown until the tabletop pose is fitted. Do not treat right/down in the
+slide as a guaranteed sign for base X/Y.
+
+The overhead slide establishes object layout, not calibrated perspective or
+exact metric object locations. It should be used as a constraint/check when
+fitting tabletop yaw, base XY and camera projection. The Side recording crops
+or occludes part of the tabletop's horizontal extent: don't invent coordinates
+for invisible corners. Compare only visible, physically corresponding edge
+segments, then project the remaining 800×510mm geometry.
+
+Do not move the camera, robot, Muhi or cup in response to tabletop mask loss;
+the scene-fitting target is tabletop geometry. Existing 3-click Muhi/cup
+annotations are a separate constraint and should remain stable.
