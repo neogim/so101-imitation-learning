@@ -20,7 +20,7 @@ python scripts/so101_sim/compare_id1_eye_to_hand.py \
   --output outputs/so101-r2s-side-preview-20261107
 ```
 
-結果：`outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png`、`mujoco_only.png`、`report.json`。以前のSimピクセル倍率・ガンマ補正は廃止し、MuJoCoワールドに白色の固定補助ライトを1灯加える簡易照明を標準にする（`--lighting simple`）。元の照明と比較する場合は `--lighting original`。いずれも画像後処理なし。床・背景の厳密な再現や写真測量レベルの露出合わせは行わない。既存の出力フォルダを上書きしないため、照明変更後は別の出力名を使う。**同名出力が存在したら上書きせず、出力名を変更する。** Macで画像を開く：
+結果：`outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png`、`mujoco_only.png`、`report.json`。以前のSimピクセル倍率・ガンマ補正は廃止し、MuJoCoワールドに白色の固定補助ライトを1灯加える簡易照明を標準にする（`--lighting simple`）。元の照明と比較する場合は `--lighting original`。いずれも画像後処理なし。床・背景の厳密な再現や写真測量レベルの露出合わせは行わない。初期版で黒背景だったため、比較用には既存 `scripts/so101_sim/workcell.example.json` の**未実測の机**と簡易床を追加表示する（`--workcell simple` がデフォルト、消す場合は `--workcell none`）。机・床の実測・写真との厳密一致は不要。既存の出力フォルダを上書きしないため、照明変更後は別の出力名を使う。**同名出力が存在したら上書きせず、出力名を変更する。** Macで画像を開く：
 
 ```bash
 open outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png
