@@ -84,51 +84,93 @@ def segmentation_mask(renderer, model, data, camera, table_geom_id):
     )
 
 
+def mask_bbox(mask):
+    """Outer visible mask bounding rectangle, not 3D corners."""
+    yy, xx = np.nonzero(mask)
+    if not len(xx):
+        raise ValueError("Empty tabletop mask")
+    return [int(xx.min()), int(yy.min()), int(xx.max()), int(yy.max())]
+
+
+def silhouette_diagnostics(real, sim):
+    """Include envelope residuals; IoU alone conceals oversize and misplacement."""
+    metrics = overlap_metrics(real, sim)
+    rb, sb = mask_bbox(real), mask_bbox(sim)
+    metrics["real_bbox_xyxy_px"] = rb
+    metrics["sim_bbox_xyxy_px"] = sb
+    metrics["bbox_delta_sim_minus_real_px"] = [s - r for s, r in zip(sb, rb)]
+    metrics["bbox_max_abs_error_px"] = max(abs(x) for x in metrics["bbox_delta_sim_minus_real_px"])
+    return metrics
+
+
 def offset_xy(T_base_camera, left_m, front_m):
-    """Camera-relative ground-plane motion; negative front means away."""
+    """Legacy camera-relative offset, retained only for compatibility/tests."""
     return scene.workcell_shift_left_front(T_base_camera, left_m, front_m)[:2]
 
 
+def apply_base_offset(model, xyz_cm):
+    """World/base XYZ only: never touch camera, robot, props or table rotation."""
+    movie.apply_table_base_offset(model, xyz_cm)
+
+
 def optimize(model, data, renderer, camera, table_geom_id, real_mask,
-             T_base_camera, max_delta_m=.12, initial_step_m=.02, levels=4):
+             axes="xy", max_delta_m=.12, initial_step_m=.02, levels=4):
+    """Search base-frame axes, no camera-relative coupled XY translation.
+
+    IoU is a visual heuristic: do not interpret this as solved 3D calibration.
+    """
     import mujoco
 
     if max_delta_m <= 0 or initial_step_m <= 0 or levels <= 0:
         raise ValueError("Search parameters must be positive")
+    if axes not in ("x", "y", "z", "xy", "xyz"):
+        raise ValueError("axes must be x, y, z, xy or xyz")
     part_ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, n)
                 for n in TABLE_PART_NAMES]
-    if any(x < 0 for x in part_ids):
+    if any(i < 0 for i in part_ids):
         raise ValueError("Previous preview tabletop/leg geometry not found")
     original = model.geom_pos[part_ids].copy()
+    allowed = tuple("xyz".index(a) for a in axes)
+    selected = np.zeros(3, dtype=float)
 
-    def trial(left, front):
-        delta = offset_xy(T_base_camera, left, front)
-        model.geom_pos[part_ids, :2] = original[:, :2] + delta
+    def trial(delta):
+        model.geom_pos[part_ids] = original + delta
         candidate = segmentation_mask(renderer, model, data, camera, table_geom_id)
         if not candidate.any():
-            return -1.
+            return -1.0
+        # This metric is *not* proof that visible edges or camera scale align.
         return float((real_mask & candidate).sum() / (real_mask | candidate).sum())
 
-    best_left, best_front = 0., 0.
-    before = trial(0., 0.)
+    before = trial(selected)
     best_score = before
+    # Coordinate descent searches one physical axis at a time. For x-only
+    # there is no accidental y movement; table orientation stays unchanged.
     for level in range(levels):
-        step = initial_step_m / (2 ** level)
-        winner = (best_left, best_front)
-        score = best_score
-        for dl in (-2, -1, 0, 1, 2):
-            for df in (-2, -1, 0, 1, 2):
-                left, front = best_left + dl*step, best_front + df*step
-                if abs(left) > max_delta_m or abs(front) > max_delta_m:
-                    continue
-                value = trial(left, front)
-                if value > score:
-                    winner, score = (left, front), value
-        best_left, best_front = winner
-        best_score = score
-    trial(best_left, best_front)
-    return {"left_m": best_left, "front_m": best_front,
-            "iou_before": before, "iou_after": best_score}
+        step = initial_step_m / 2 ** level
+        changed = True
+        # Repeat once per level to account for mild X/Y coupling in the view.
+        while changed:
+            changed = False
+            for axis in allowed:
+                candidate_best, candidate_score = selected.copy(), best_score
+                for d in (-2, -1, 1, 2):
+                    proposed = selected.copy()
+                    proposed[axis] += step * d
+                    if abs(proposed[axis]) > max_delta_m + 1e-10:
+                        continue
+                    score = trial(proposed)
+                    if score > candidate_score + 1e-7:
+                        candidate_best, candidate_score = proposed, score
+                if candidate_score > best_score + 1e-7:
+                    selected, best_score = candidate_best, candidate_score
+                    changed = True
+            # Avoid unnecessary extra loops with score changes below threshold.
+    trial(selected)
+    return {
+        "axes": axes,
+        "base_delta_xyz_m": selected.tolist(),
+        "iou_before": before, "iou_after": best_score,
+    }
 
 
 def overlay(image, real_mask, sim_mask):
@@ -156,6 +198,8 @@ def main():
     p.add_argument("--urdf", type=Path, default=movie.DEFAULT_URDF)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--max-delta-m", type=float, default=.12)
+    p.add_argument("--axis", choices=("x", "y", "z", "xy", "xyz"), default="xy",
+                   help="SO-101 base-frame axis to optimize; default XY (Z remains fixed)")
     args = p.parse_args()
 
     if args.output.exists():
@@ -186,20 +230,30 @@ def main():
         if not first.any():
             raise ValueError("Simulated tabletop not visible with existing camera")
         result = optimize(model, data, renderer, camera, geom, real_mask,
-                          extrinsics["T_base_camera"], max_delta_m=args.max_delta_m)
+                          axes=args.axis, max_delta_m=args.max_delta_m)
         last = segmentation_mask(renderer, model, data, camera, geom)
-    result["before"] = overlap_metrics(real_mask, first)
-    result["after"] = overlap_metrics(real_mask, last)
-    result["existing_table_extra_left_cm"] = 4.
-    result["existing_table_extra_front_cm"] = 5.
-    result["suggested_table_extra_left_cm"] = 4. + result["left_m"] * 100
-    result["suggested_table_extra_front_cm"] = 5. + result["front_m"] * 100
-    result["interpretation"] = (
-        "Negative front_m moves the tabletop AWAY from the camera; "
-        "perspective makes it smaller. Fixed camera, fixed table size/yaw, "
-        "same lighting and backdrop as previous successful video."
-    )
-    result["status"] = "UNVERIFIED_OFFLINE_SILHOUETTE_CANDIDATE_NOT_CALIBRATION"
+    result["before"] = silhouette_diagnostics(real_mask, first)
+    result["after"] = silhouette_diagnostics(real_mask, last)
+    result["status"] = "VISUAL_CANDIDATE_NOT_3D_CALIBRATION"
+    result["model_target"] = "r2s_preview_table_and_four_legs"
+    result["table_yaw_deg_unchanged"] = 15.
+    result["table_dimensions_unchanged"] = True
+    result["recommended_video_flags"] = {
+        "--table-extra-left-cm": 4.0,
+        "--table-extra-front-cm": 5.0,
+        "--table-base-x-cm": round(result["base_delta_xyz_m"][0] * 100., 3),
+        "--table-base-y-cm": round(result["base_delta_xyz_m"][1] * 100., 3),
+        "--table-base-z-cm": round(result["base_delta_xyz_m"][2] * 100., 3),
+    }
+    result["warnings"] = []
+    if abs(result["after"]["area_ratio_sim_over_real"] - 1.) > .10:
+        result["warnings"].append("Projected tabletop area still differs from SAM3 by >10%.")
+    if result["after"]["bbox_max_abs_error_px"] > 15:
+        result["warnings"].append("Projected tabletop bounding edges still differ by >15 px.")
+    result["warnings"].append(
+        "SAM3 mask has occlusion holes and simulated robot pose differs; IoU is NOT a reliable 3D depth/roll estimator.")
+    result["warnings"].append(
+        "Only base XYZ location is searched; camera, yaw, physical size and other objects stay fixed.")
     args.output.mkdir(parents=True)
     Image.fromarray(real_mask.astype("uint8") * 255).save(args.output/"real_mask.png")
     overlay(original, real_mask, first).save(args.output/"before.png")
