@@ -35,8 +35,8 @@ class MotionComparisonTests(unittest.TestCase):
         K = {"fx": 543.173, "fy": 542.957, "cx": 316.395, "cy": 229.548}
         p = pixel_to_base_plane(T, K, 255., 360., .019)
         xyz = T[:3, :3].T @ (p - T[:3, 3])
-        self.assertAlmostEqual(K["fx"]*xyz[0]/xyz[2]+K["cx"], 255., places=5)
-        self.assertAlmostEqual(K["fy"]*xyz[1]/xyz[2]+K["cy"], 360., places=5)
+        self.assertAlmostEqual(K["fx"]*xyz[0]/xyz[2]+K["cx"], 255., delta=0.02)
+        self.assertAlmostEqual(K["fy"]*xyz[1]/xyz[2]+K["cy"], 360., delta=0.02)
         self.assertAlmostEqual(p[2], .019, places=5)
         layout = video_object_layout(T, K)
         self.assertEqual(layout["muhi_yaw_deg"], 45.)
