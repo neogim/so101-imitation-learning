@@ -7,7 +7,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_id1_eye_to_hand import mujoco_camera_pose, fovy_from_intrinsics
+from compare_id1_eye_to_hand import mujoco_camera_pose, fovy_from_intrinsics, project_reference_points
 
 
 class SideCameraTests(unittest.TestCase):
@@ -33,6 +33,18 @@ class SideCameraTests(unittest.TestCase):
         T[0, 0] = 2
         with self.assertRaises(ValueError):
             mujoco_camera_pose(T)
+
+    def test_workcell_projection_in_expected_camera_view(self):
+        T = np.array([[-.61650, .43981, -.65307, .49516],
+                      [.75783, .10642, -.64372, .38170],
+                      [-.21361, -.89176, -.39891, .28123],
+                      [0, 0, 0, 1]])
+        cam = {"fx": 543.17, "fy": 542.96, "cx": 316.39,
+               "cy": 229.55, "width": 640, "height": 480}
+        projected = project_reference_points(T, cam)
+        self.assertTrue(all(p["in_frame"] for p in projected.values()))
+        self.assertNotEqual(projected["muhi_center"]["pixel_approx"],
+                            projected["cup_center"]["pixel_approx"])
 
     def test_fovy(self):
         import math
