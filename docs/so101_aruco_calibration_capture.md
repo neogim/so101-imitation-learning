@@ -820,3 +820,32 @@ SAM3が出したマスクの中心（画像上の代表点）と、ムヒの長�
 ### J6（グリッパー）表示リプレイの暫定変換（11/7）
 
 従来の `real_to_sim.set_pose()` はJ1〜J5だけをMuJoCoの関節へ設定するため、Side-by-Side MP4でJ6が動かなかった。現在 `compare_real_sim_motion.py motion` に限定して、`observation.state[5]` の正規化値 `0..100` をMuJoCo URDFの `gripper` 関節下限〜上限へ線形変換する。これにより、録画済み動画の手先開閉がSimにも反映される。0が閉で100が開という**暫定仮定**を使う。動画の開閉方向が逆なら `--invert-gripper` を指定する。LeRobotキャリブレーションファイルとの厳密な対応は未検証。元の収録状態・URDF・実機制御は変えない。把持追従の `--attach-frame` は別の表示用トリガーであり、J6の動きから把持の成功を推定するものではない。
+
+### 録画の1フレームを3クリックで物体配置に変換（M1 Mac、GPU不要）
+
+現在の動画のムヒ・透明容器が実写と一致しない理由は、座標を目視で概算し、ムヒyawを45°固定していたため。簡単なオフライン手動基準として `scripts/so101_sim/annotate_episode_objects.py` を追加した。既存データの最初のSide動画フレームを640×480へリサイズして表示し、次の順でクリックする。
+
+1. ムヒの本体側端
+2. ムヒのキャップ側端
+3. 透明容器の中心
+
+これにより同じ映像上の中心2点と、暫定カメラ姿勢を使ってMuJoCoベースXY平面上で算出したムヒyawをJSON化する。**動画ごとの物体検出は将来SAM3等を追加すれば自動化できる**が、今は3クリックで検証を進める。カメラは11月の暫定校正値なので物体のミリ単位の3D位置の正しさは保証しない。
+
+```bash
+python -m pip install matplotlib  # 未インストールの場合のみ
+python scripts/so101_sim/annotate_episode_objects.py \
+  --dataset-root data/so101/muhi-side-wrist-success-053-20261025-168x224 \
+  --episode 0 \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --output outputs/so101-r2s-episode0-clicks-20261107.json
+
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root data/so101/muhi-side-wrist-success-053-20261025-168x224 \
+  --episode 0 --stride 5 --max-frames 60 \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --object-layout-json outputs/so101-r2s-episode0-clicks-20261107.json \
+  --output outputs/so101-r2s-episode0-clickaligned-20261107
+open outputs/so101-r2s-episode0-clickaligned-20261107/real_vs_sim_episode.mp4
+```
+
+この手段では一枚目における物体の中心とムヒ長軸の向きだけを補正する。撮影時期の異なるカメラ位置、3D高さ、実際の接触・把持の問題は残る。実写動画の物体が途中で移動しても自動追跡はしない。 `--attach-frame` を明示すれば従来の運動学的追従を別途利用できる。
