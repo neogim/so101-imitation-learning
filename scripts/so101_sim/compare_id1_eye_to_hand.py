@@ -63,8 +63,38 @@ def add_simple_studio_light(spec):
     )
 
 
+def add_approximate_workcell(spec):
+    """Simple visible tabletop/ground, NOT measured from the real photograph.
+
+    The table geometry is reused from the repository's example workcell,
+    but its position, size and materials are only illustrative.
+    """
+    import mujoco
+
+    workcell = r2s.load_config(Path(__file__).with_name("workcell.example.json"))
+    table = workcell["objects"]["table"]
+    spec.worldbody.add_geom(
+        name="r2s_preview_ground",
+        type=mujoco.mjtGeom.mjGEOM_PLANE,
+        pos=[0, 0, -0.085],
+        size=[2.0, 2.0, 0.1],
+        rgba=[0.78, 0.80, 0.82, 1.0],
+        contype=0,
+        conaffinity=0,
+    )
+    spec.worldbody.add_geom(
+        name="r2s_preview_table",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        pos=table["pos_m"],
+        size=table["half_size_m"],
+        rgba=[0.70, 0.67, 0.62, 1.0],
+        contype=0,
+        conaffinity=0,
+    )
+
+
 def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, output_dir,
-               marker_id=1, sample_number=None, lighting='simple'):
+               marker_id=1, sample_number=None, lighting='simple', workcell='simple'):
     import mujoco
 
     if output_dir.exists():
@@ -95,6 +125,10 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
     fovy = fovy_from_intrinsics(float(cam["fy"]), int(cam["height"]))
 
     spec = mujoco.MjSpec.from_file(str(urdf_path.resolve()))
+    if workcell not in ('simple', 'none'):
+        raise ValueError('workcell must be simple or none')
+    if workcell == 'simple':
+        add_approximate_workcell(spec)
     if lighting not in ("simple", "original"):
         raise ValueError("lighting must be simple or original")
     if lighting == "simple":
@@ -151,6 +185,8 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         "approx_fovy_deg": fovy,
         "fit_holdout_rms_mm": extr["holdout_error_mm"]["rms"],
         "lighting_preset": lighting,
+        "workcell_preset": workcell,
+        "workcell_note": "Example tabletop and ground only; neither their geometry nor color is calibrated to the real scene.",
         "lighting_note": "Simple preset adds one fixed world light; no image postprocessing or photometric calibration.",
         "image": str(real_path),
         "output": str(output_dir / "real_vs_mujoco.png"),
@@ -181,10 +217,12 @@ def main():
                    help="Optional known manifest frame index containing marker ID1")
     p.add_argument("--lighting", choices=("simple", "original"), default="simple",
                    help="simple adds a fixed white fill light; original preserves original MuJoCo lighting")
+    p.add_argument("--workcell", choices=("simple", "none"), default="simple",
+                   help="Render approximate table/ground, or none for original empty background")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args()
     r = render_one(a.manifest, a.extrinsics, a.intrinsics, a.urdf,
-                   a.output, a.marker_id, a.frame, a.lighting)
+                   a.output, a.marker_id, a.frame, a.lighting, a.workcell)
     print("Saved:", r["output"])
     print("Frame:", r["frame_index"], "FOVy:", round(r["approx_fovy_deg"], 2))
 
