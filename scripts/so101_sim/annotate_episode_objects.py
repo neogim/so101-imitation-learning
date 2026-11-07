@@ -96,7 +96,7 @@ def select_three_points(image, T_base_cv, intrinsics, output):
             try:
                 result = targets_from_clicks(points, T_base_cv, intrinsics)
                 output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\\n",
+                output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n",
                                   encoding="utf-8")
             except (ValueError, OSError) as exc:
                 points.pop()
