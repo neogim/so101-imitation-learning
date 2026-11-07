@@ -84,6 +84,25 @@ def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
     return model, camera
 
 
+def apply_table_base_offset(model, base_xyz_cm=(0., 0., 0.)):
+    """Translate ONLY tabletop and four legs in SO-101 base XYZ, never rotate.
+
+    The camera, robot, Muhi and cup stay unchanged. Centimeters are converted
+    to meters. This is additive to the older camera-relative table offsets.
+    """
+    import mujoco
+
+    delta = np.asarray(base_xyz_cm, dtype=float)
+    if delta.shape != (3,) or not np.isfinite(delta).all():
+        raise ValueError("Expected three finite table base offsets in centimeters")
+    names = ("r2s_preview_table",) + tuple(
+        f"r2s_table_leg_{x}{y}" for x in ("m", "p") for y in ("m", "p"))
+    ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) for name in names]
+    if any(index < 0 for index in ids):
+        raise ValueError("Missing table geom; refusing partial translation")
+    model.geom_pos[ids] += delta / 100.
+
+
 def comparison_panel(real, sim, subtitle=""):
     width, height = 640, 480
     out = Image.new("RGB", (1280, 508), (25, 25, 25))
@@ -306,6 +325,8 @@ def run_motion(args):
         extrinsics, intrinsics, args.urdf, layout,
         table_extra_left_m=args.table_extra_left_cm / 100.,
         table_extra_front_m=args.table_extra_front_cm / 100.)
+    apply_table_base_offset(model, (args.table_base_x_cm, args.table_base_y_cm,
+                                    args.table_base_z_cm))
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
@@ -385,6 +406,7 @@ def run_motion(args):
         "video_object_alignment": "Approximate first-frame pixel matching using November camera model; not actual 3D measured pose.",
         "table_extra_left_cm": args.table_extra_left_cm,
         "table_extra_front_cm": args.table_extra_front_cm,
+        "table_base_xyz_cm": [args.table_base_x_cm, args.table_base_y_cm, args.table_base_z_cm],
         "limitations": [
             "The Side calibration dates to 2026-11-07 and may not match the recording setup.",
             "J6 normalized [0,100] is mapped linearly to URDF gripper joint limits for visualization only.",
@@ -423,6 +445,12 @@ def main():
                              help="Tabletop offset camera-left in cm (default: 4)")
             sub.add_argument("--table-extra-front-cm", type=float, default=5.,
                              help="Tabletop offset toward camera in cm (negative moves farther; default: 5)")
+            sub.add_argument("--table-base-x-cm", type=float, default=0.,
+                             help="Additional base X translation of table+legs, cm; no rotation")
+            sub.add_argument("--table-base-y-cm", type=float, default=0.,
+                             help="Additional base Y translation of table+legs, cm; no rotation")
+            sub.add_argument("--table-base-z-cm", type=float, default=0.,
+                             help="Additional base Z translation of table+legs, cm; no rotation")
             sub.add_argument("--object-layout-json", type=Path, default=None,
                              help="Optional 640x480 Side-frame centers and Muhi yaw from external detector")
             sub.add_argument("--invert-gripper", action="store_true",
