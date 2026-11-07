@@ -105,32 +105,79 @@ def add_backdrop(spec, T_base_cv):
 
 
 def add_approximate_workcell(spec):
-    """Simple visible tabletop/ground, NOT measured from the real photograph.
+    """Photo-approximate Muhi, clear cup and 65x60cm table from earlier Colab scene.
 
-    The table geometry is reused from the repository's example workcell,
-    but its position, size and materials are only illustrative.
+    These placements are historic, unmeasured approximations, not calibration.
+    No grasp physics: all geoms are static and collision-disabled.
     """
     import mujoco
 
-    # Larger neutral tabletop for a visible preview. Not physically measured.
-    spec.worldbody.add_geom(
-        name="r2s_preview_ground",
-        type=mujoco.mjtGeom.mjGEOM_PLANE,
-        pos=[0, 0, -0.13],
-        size=[2.0, 2.0, 0.1],
-        rgba=[0.78, 0.80, 0.82, 1.0],
-        contype=0,
-        conaffinity=0,
-    )
-    spec.worldbody.add_geom(
-        name="r2s_preview_table",
-        type=mujoco.mjtGeom.mjGEOM_BOX,
-        pos=[0.0, 0.0, -0.033],
-        size=[0.65, 0.65, 0.03],
-        rgba=[0.76, 0.72, 0.67, 1.0],
-        contype=0,
-        conaffinity=0,
-    )
+    world = spec.worldbody
+    def geom(name, shape, pos, size, rgba, *, quat=None):
+        kwargs = dict(name=name, type=shape, pos=pos, size=size, rgba=rgba,
+                      contype=0, conaffinity=0)
+        if quat is not None:
+            kwargs["quat"] = quat
+        world.add_geom(**kwargs)
+
+    # The earlier notebook used a 0.65x0.60x0.04m desk with its top at z=-0.005m.
+    geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_BOX,
+         [0, 0, -.025], [.325, .30, .02], [.63, .46, .33, 1.0])
+    # Contrast between the tabletop and the background helps identify the edge.
+    for x in (-.29, .29):
+        for y in (-.26, .26):
+            geom(f"r2s_table_leg_{'p' if x>0 else 'm'}{'p' if y>0 else 'm'}",
+                 mujoco.mjtGeom.mjGEOM_BOX, [x, y, -.225],
+                 [.018, .018, .18], [.44, .35, .30, 1.0])
+
+    # Earlier photo-based workcell: bottle ~100mm long, 38mm diameter.
+    # Notebook placed bottle horizontally along the y-axis.
+    x, y = .18, .11
+    side_quat = [math.sqrt(.5), math.sqrt(.5), 0., 0.]
+    geom("r2s_muhi_body", mujoco.mjtGeom.mjGEOM_CYLINDER,
+         [x, y-.0175, .019], [.019, .0325, 0],
+         [.95, .95, .94, 1.], quat=side_quat)
+    geom("r2s_muhi_cap", mujoco.mjtGeom.mjGEOM_CYLINDER,
+         [x, y+.0325, .019], [.019, .0175, 0],
+         [.82, .89, .96, 1.], quat=side_quat)
+
+    # Earlier transparent container: diameter ~100mm, height ~120mm.
+    cx, cy, radius, h = .18, -.12, .05, .12
+    geom("r2s_cup_base", mujoco.mjtGeom.mjGEOM_CYLINDER,
+         [cx, cy, .001], [radius, .001, 0], [.70, .85, .92, .55])
+    for i in range(16):
+        a = 2 * math.pi * i / 16
+        px, py = cx+(radius-.001)*math.cos(a), cy+(radius-.001)*math.sin(a)
+        quat = [math.cos((a+math.pi/2)/2), 0., 0.,
+                math.sin((a+math.pi/2)/2)]
+        geom(f"r2s_cup_wall_{i:02d}", mujoco.mjtGeom.mjGEOM_BOX,
+             [px, py, .055], [.010, .0015, h/2],
+             [.70, .86, .92, .62], quat=quat)
+
+
+def project_reference_points(T_base_cv, cam):
+    """Project approximate workcell reference points; diagnostic only."""
+    T = np.asarray(T_base_cv, dtype=float)
+    R, t = T[:3, :3], T[:3, 3]
+    points = {
+        "table_center": [0., 0., -.005],
+        "muhi_center": [.18, .11, .019],
+        "cup_center": [.18, -.12, .06],
+    }
+    result = {}
+    for name, p in points.items():
+        xyz = R.T @ (np.asarray(p, dtype=float) - t)
+        if xyz[2] <= .01:
+            result[name] = {"in_front": False}
+            continue
+        u = float(cam["fx"] * xyz[0] / xyz[2] + cam["cx"])
+        v = float(cam["fy"] * xyz[1] / xyz[2] + cam["cy"])
+        result[name] = {
+            "pixel_approx": [round(u, 1), round(v, 1)],
+            "in_frame": 0 <= u < cam["width"] and 0 <= v < cam["height"],
+            "depth_m": round(float(xyz[2]), 3),
+        }
+    return result
 
 
 def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, output_dir,
@@ -177,6 +224,11 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
     spec.worldbody.add_camera(name="r2s_side_calibrated_candidate",
                               pos=position, quat=quaternion, fovy=fovy)
     model = spec.compile()
+    if workcell == "simple":
+        import mujoco
+        for name in ("r2s_preview_table", "r2s_muhi_body", "r2s_cup_base"):
+            if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) < 0:
+                raise RuntimeError(f"MuJoCo omitted expected workcell geom: {name}")
     apply_white_follower_preview(model)
     data = mujoco.MjData(model)
     state = [float(selected["joints"][key]) for key in (*r2s.JOINTS, "gripper")]
@@ -228,7 +280,8 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         "fit_holdout_rms_mm": extr["holdout_error_mm"]["rms"],
         "lighting_preset": lighting,
         "workcell_preset": workcell,
-        "workcell_note": "Illustrative enlarged tabletop, floor and pale background behind the robot; no physical measurement.",
+        "workcell_note": "Approximate 65x60cm tabletop and historically modeled Muhi bottle / transparent cylindrical cup. No measured physical placement.",
+        "workcell_projection": project_reference_points(extr["T_base_camera"], cam) if workcell == "simple" else None,
         "visual_material_note": "Preview-only printed-plastic yellow was changed to off-white; source URDF and black servo parts unchanged.",
         "lighting_note": "Simple preset adds one fixed world light; no image postprocessing or photometric calibration.",
         "image": str(real_path),
@@ -237,7 +290,7 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
             "Joint zero/sign conventions and URDF/geometry not yet verified physically.",
             "Marker itself is not rendered in URDF; judge overall robot silhouette/position.",
             "MuJoCo fovy approximates fy; principal point offset and distortion are not simulated.",
-            "Virtual tabletop and backdrop are illustrative, not measured from the real scene.",
+            "Virtual tabletop, Muhi bottle and cup are historical approximations; they may not match objects visible in this capture.",
             "No contact or motor simulation and no robot/camera device connections.",
         ],
     }
@@ -261,7 +314,7 @@ def main():
     p.add_argument("--lighting", choices=("simple", "original"), default="simple",
                    help="simple adds a fixed white fill light; original preserves original MuJoCo lighting")
     p.add_argument("--workcell", choices=("simple", "none"), default="simple",
-                   help="Render approximate table/ground, or none for original empty background")
+                   help="Render approximate photo-based Muhi/cup/table, or none for robot alone")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args()
     r = render_one(a.manifest, a.extrinsics, a.intrinsics, a.urdf,
