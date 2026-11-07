@@ -103,6 +103,76 @@ def apply_table_base_offset(model, base_xyz_cm=(0., 0., 0.)):
     model.geom_pos[ids] += delta / 100.
 
 
+def project_base_xyz_to_side(T_base_cv, intrinsics, xyz):
+    """Project a base-frame 3D point through the same candidate Side camera."""
+    T = np.asarray(T_base_cv, dtype=float)
+    point = np.asarray(xyz, dtype=float)
+    if T.shape != (4, 4) or point.shape != (3,):
+        raise ValueError("Invalid base camera transform or point")
+    camera_point = T[:3, :3].T @ (point - T[:3, 3])
+    if camera_point[2] <= 0:
+        raise ValueError("Object point behind candidate Side camera")
+    return [
+        float(intrinsics["fx"] * camera_point[0] / camera_point[2] + intrinsics["cx"]),
+        float(intrinsics["fy"] * camera_point[1] / camera_point[2] + intrinsics["cy"]),
+    ]
+
+
+def muhi_axis_reprojection(model, T_base_cv, intrinsics, annotation):
+    """Compare three-click physical endpoints with simulated cap/body ends.
+
+    This diagnostic does not alter geometry; it detects projection / convention
+    mismatch instead of silently applying an incorrect yaw correction.
+    """
+    import mujoco
+    body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_muhi_body")
+    cap = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_muhi_cap")
+    if min(body, cap) < 0:
+        raise ValueError("Missing two-piece Muhi preview geometry")
+    b, t = model.geom_pos[body].copy(), model.geom_pos[cap].copy()
+    axis = t - b
+    axis /= np.linalg.norm(axis)
+    body_end = b - axis * float(model.geom_size[body, 1])
+    cap_end = t + axis * float(model.geom_size[cap, 1])
+    simulated = {
+        "body_end_px": project_base_xyz_to_side(T_base_cv, intrinsics, body_end),
+        "cap_end_px": project_base_xyz_to_side(T_base_cv, intrinsics, cap_end),
+    }
+    result = {"sim": simulated, "status": "projection_candidate_not_verified"}
+    if annotation is not None:
+        orig_body = annotation.get("muhi_body_end_px")
+        orig_cap = annotation.get("muhi_cap_end_px")
+        if orig_body is not None and orig_cap is not None:
+            expected = np.asarray([orig_body, orig_cap], dtype=float)
+            projected = np.asarray([simulated["body_end_px"], simulated["cap_end_px"]])
+            error = np.linalg.norm(expected - projected, axis=1)
+            result["three_click"] = {"body_end_px": orig_body, "cap_end_px": orig_cap}
+            result["reprojection_error_px"] = [float(v) for v in error]
+            result["max_reprojection_error_px"] = float(error.max())
+    return result
+
+
+def draw_muhi_axis_preview(real_image, diagnostics):
+    """Debug on the true real Side frame: green clicks, red simulated axis."""
+    from PIL import ImageDraw
+
+    canvas = real_image.convert("RGB").copy()
+    draw = ImageDraw.Draw(canvas)
+    def axis(points, color, label):
+        a, b = [tuple(map(float, p)) for p in points]
+        draw.line([a, b], fill=color, width=3)
+        for point in (a, b):
+            x, y = point
+            draw.ellipse((x-4, y-4, x+4, y+4), outline=color, width=2)
+        draw.text((a[0]+5, a[1]-14), label, fill=color)
+    sim = diagnostics["sim"]
+    axis([sim["body_end_px"], sim["cap_end_px"]], "red", "SIM body -> cap")
+    if "three_click" in diagnostics:
+        ref = diagnostics["three_click"]
+        axis([ref["body_end_px"], ref["cap_end_px"]], "lime", "CLICK body -> cap")
+    return canvas
+
+
 def comparison_panel(real, sim, subtitle=""):
     width, height = 640, 480
     out = Image.new("RGB", (1280, 508), (25, 25, 25))
@@ -136,6 +206,9 @@ def run_poses(args):
         combined.paste(picture, (0, i*picture.height))
     output = args.output / "five_pose_comparison.png"
     combined.save(output)
+    frame0 = reals[frame_ids[0]].convert("RGB").resize((640, 480))
+    draw_muhi_axis_preview(frame0, muhi_projection).save(
+        args.output / "muhi_axis_reprojection.png")
     (args.output / "report.json").write_text(json.dumps({
         "mode": "STATIC_POSE_COMPARISON_NOT_CONTINUOUS_MOTION",
         "calibration": "provisional", "frames": results,
@@ -327,6 +400,11 @@ def run_motion(args):
         table_extra_front_m=args.table_extra_front_cm / 100.)
     apply_table_base_offset(model, (args.table_base_x_cm, args.table_base_y_cm,
                                     args.table_base_z_cm))
+    annotations = None
+    if args.object_layout_json is not None:
+        annotations = json.loads(args.object_layout_json.read_text(encoding="utf-8").removesuffix("\\\\n"))
+    muhi_projection = muhi_axis_reprojection(model, extrinsics["T_base_camera"],
+                                            intrinsics, annotations)
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
@@ -388,6 +466,7 @@ def run_motion(args):
             "cup": list(cup_pixel),
         },
         "video_object_local_layout": layout,
+        "muhi_axis_reprojection": muhi_projection,
         "j6_mapping": {
             "status": "provisional_normalized_to_urdf_range",
             "invert_gripper": args.invert_gripper,
