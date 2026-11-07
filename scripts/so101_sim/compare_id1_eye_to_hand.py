@@ -125,7 +125,8 @@ def workcell_shift_left_front(T_base_cv, left_m=0.08, front_m=0.10):
     return np.r_[left_m * left + front_m * front, 0.]
 
 
-def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.)):
+def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
+                             table_extra_xyz=(0., 0., 0.), table_yaw_deg=0.):
     """Photo-approximate Muhi, clear cup and 65x60cm table from earlier Colab scene.
 
     These placements are historic, unmeasured approximations, not calibration.
@@ -137,8 +138,23 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.)):
     shift = np.asarray(shift_xyz, dtype=float)
     if shift.shape != (3,) or not np.isfinite(shift).all():
         raise ValueError("Invalid workcell shift")
-    def geom(name, shape, pos, size, rgba, *, quat=None):
-        kwargs = dict(name=name, type=shape, pos=(np.asarray(pos, dtype=float) + shift).tolist(), size=size, rgba=rgba,
+    extra = np.asarray(table_extra_xyz, dtype=float)
+    if extra.shape != (3,) or not np.isfinite(extra).all() or not math.isfinite(table_yaw_deg):
+        raise ValueError("Invalid table-only translation/yaw")
+    yaw_rad = math.radians(table_yaw_deg)
+    c, sn = math.cos(yaw_rad), math.sin(yaw_rad)
+    yaw_rot = np.array([[c, -sn], [sn, c]], dtype=float)
+    yaw_quat = [math.cos(yaw_rad / 2), 0., 0., math.sin(yaw_rad / 2)]
+
+    def geom(name, shape, pos, size, rgba, *, quat=None, table_part=False):
+        p = np.asarray(pos, dtype=float).copy()
+        if table_part:
+            p[:2] = yaw_rot @ p[:2]
+            p += extra
+            if quat is not None:
+                raise ValueError("Table parts should not have their own rotation")
+            quat = yaw_quat
+        kwargs = dict(name=name, type=shape, pos=(p + shift).tolist(), size=size, rgba=rgba,
                       contype=0, conaffinity=0)
         if quat is not None:
             kwargs["quat"] = quat
@@ -146,13 +162,13 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.)):
 
     # The earlier notebook used a 0.65x0.60x0.04m desk with its top at z=-0.005m.
     geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_BOX,
-         [0, 0, -.025], [.325, .30, .02], [.63, .46, .33, 1.0])
+         [0, 0, -.025], [.325, .30, .02], [.63, .46, .33, 1.0], table_part=True)
     # Contrast between the tabletop and the background helps identify the edge.
     for x in (-.29, .29):
         for y in (-.26, .26):
             geom(f"r2s_table_leg_{'p' if x>0 else 'm'}{'p' if y>0 else 'm'}",
                  mujoco.mjtGeom.mjGEOM_BOX, [x, y, -.225],
-                 [.018, .018, .18], [.44, .35, .30, 1.0])
+                 [.018, .018, .18], [.44, .35, .30, 1.0], table_part=True)
 
     # Earlier photo-based workcell: bottle ~100mm long, 38mm diameter.
     # Notebook placed bottle horizontally along the y-axis.
@@ -179,7 +195,8 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.)):
              [.70, .86, .92, .62], quat=quat)
 
 
-def project_reference_points(T_base_cv, cam, shift_xyz=(0., 0., 0.)):
+def project_reference_points(T_base_cv, cam, shift_xyz=(0., 0., 0.),
+                             table_extra_xyz=(0., 0., 0.)):
     """Project approximate workcell reference points; diagnostic only."""
     T = np.asarray(T_base_cv, dtype=float)
     R, t = T[:3, :3], T[:3, 3]
@@ -190,8 +207,12 @@ def project_reference_points(T_base_cv, cam, shift_xyz=(0., 0., 0.)):
     }
     result = {}
     shift = np.asarray(shift_xyz, dtype=float)
+    table_extra = np.asarray(table_extra_xyz, dtype=float)
     for name, p in points.items():
-        xyz = R.T @ (np.asarray(p, dtype=float) + shift - t)
+        point = np.asarray(p, dtype=float) + shift
+        if name == "table_center":
+            point = point + table_extra
+        xyz = R.T @ (point - t)
         if xyz[2] <= .01:
             result[name] = {"in_front": False}
             continue
@@ -207,7 +228,8 @@ def project_reference_points(T_base_cv, cam, shift_xyz=(0., 0., 0.)):
 
 def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, output_dir,
                marker_id=1, sample_number=None, lighting='simple', workcell='simple',
-               workcell_left_m=0.08, workcell_front_m=0.10):
+               workcell_left_m=0.08, workcell_front_m=0.10,
+               table_extra_left_m=0.04, table_extra_front_m=0.05, table_yaw_deg=15.):
     import mujoco
 
     if output_dir.exists():
@@ -247,8 +269,10 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
     if workcell not in ('simple', 'none'):
         raise ValueError('workcell must be simple or none')
     shift = workcell_shift_left_front(extr['T_base_camera'], workcell_left_m, workcell_front_m)
+    table_extra = workcell_shift_left_front(extr['T_base_camera'],
+                                            table_extra_left_m, table_extra_front_m)
     if workcell == 'simple':
-        add_approximate_workcell(spec, shift)
+        add_approximate_workcell(spec, shift, table_extra, table_yaw_deg)
         add_backdrop(spec, extr['T_base_camera'])
     if lighting not in ("simple", "original"):
         raise ValueError("lighting must be simple or original")
@@ -316,9 +340,11 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         "workcell_offset_m_in_base": shift.tolist() if workcell == "simple" else None,
         "workcell_left_m": workcell_left_m,
         "workcell_front_m": workcell_front_m,
+        "table_extra_offset_m_in_base": table_extra.tolist() if workcell == "simple" else None,
+        "table_yaw_deg_in_base": table_yaw_deg,
         "urdf_discardvisual_disabled_for_preview": workcell == "simple",
         "workcell_note": "Approximate 65x60cm tabletop and historically modeled Muhi bottle / transparent cylindrical cup. No measured physical placement.",
-        "workcell_projection": project_reference_points(extr["T_base_camera"], cam, shift) if workcell == "simple" else None,
+        "workcell_projection": project_reference_points(extr["T_base_camera"], cam, shift, table_extra) if workcell == "simple" else None,
         "visual_material_note": "Preview-only printed-plastic yellow was changed to off-white; source URDF and black servo parts unchanged.",
         "lighting_note": "Simple preset adds one fixed world light; no image postprocessing or photometric calibration.",
         "image": str(real_path),
@@ -356,11 +382,19 @@ def main():
                    help="Shift all illustrative props to image-left on base XY plane (default: 8 cm)")
     p.add_argument("--workcell-front-cm", type=float, default=10.0,
                    help="Shift props toward the camera on base XY plane (default: 10 cm)")
+    p.add_argument("--table-extra-left-cm", type=float, default=4.,
+                   help="Additional tabletop-only image-left shift; Muhi and cup stay put (default: 4 cm)")
+    p.add_argument("--table-extra-front-cm", type=float, default=5.,
+                   help="Additional tabletop-only camera-facing shift (default: 5 cm)")
+    p.add_argument("--table-yaw-deg", type=float, default=15.,
+                   help="Tabletop/legs yaw around table center in base XY; approximate (default: +15 deg)")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args()
     r = render_one(a.manifest, a.extrinsics, a.intrinsics, a.urdf,
                    a.output, a.marker_id, a.frame, a.lighting, a.workcell,
-                   a.workcell_left_cm / 100., a.workcell_front_cm / 100.)
+                   a.workcell_left_cm / 100., a.workcell_front_cm / 100.,
+                   a.table_extra_left_cm / 100., a.table_extra_front_cm / 100.,
+                   a.table_yaw_deg)
     print("Saved:", r["output"])
     print("Frame:", r["frame_index"], "FOVy:", round(r["approx_fovy_deg"], 2))
 
