@@ -32,7 +32,38 @@ def sample_evenly(samples, count):
     return [samples[i] for i in sorted(set(round(float(x)) for x in np.linspace(0, len(samples)-1, n)))]
 
 
-def make_calibrated_model(extrinsics, intrinsics, urdf):
+def pixel_to_base_plane(T_base_cv, intrinsics, u, v, z_m):
+    """Intersect an OpenCV camera ray with horizontal plane z=z_m in base frame."""
+    T = np.asarray(T_base_cv, dtype=float)
+    if T.shape != (4, 4) or not np.isfinite(T).all():
+        raise ValueError("Invalid camera pose")
+    if not all(np.isfinite([u, v, z_m])):
+        raise ValueError("Target pixels and height must be finite")
+    ray = np.array([(u-float(intrinsics["cx"]))/float(intrinsics["fx"]),
+                    (v-float(intrinsics["cy"]))/float(intrinsics["fy"]), 1.])
+    ray_base = T[:3, :3] @ ray
+    if abs(ray_base[2]) < 1e-6:
+        raise ValueError("Camera ray is parallel to tabletop plane")
+    distance = (z_m - T[2, 3]) / ray_base[2]
+    if distance <= 0:
+        raise ValueError("Target pixel ray does not intersect the plane in front of camera")
+    return T[:3, 3] + distance * ray_base
+
+
+def video_object_layout(T_base_cv, intrinsics, muhi_pixel=(255., 360.),
+                        cup_pixel=(375., 310.), muhi_yaw_deg=45.):
+    """Approximate positions read visually from the *recorded video* first frame.
+
+    These are display-only initial estimates, not measured 3D object poses.
+    """
+    shift = comparison.workcell_shift_left_front(T_base_cv, .08, .10)
+    muhi = pixel_to_base_plane(T_base_cv, intrinsics, *muhi_pixel, .019) - shift
+    cup = pixel_to_base_plane(T_base_cv, intrinsics, *cup_pixel, .055) - shift
+    return dict(muhi_xy=muhi[:2].tolist(), cup_xy=cup[:2].tolist(),
+                muhi_yaw_deg=muhi_yaw_deg)
+
+
+def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None):
     import mujoco
 
     position, quat = comparison.mujoco_camera_pose(extrinsics["T_base_camera"])
@@ -41,7 +72,7 @@ def make_calibrated_model(extrinsics, intrinsics, urdf):
     spec.compiler.discardvisual = False
     shift = comparison.workcell_shift_left_front(extrinsics["T_base_camera"], .08, .10)
     extra = comparison.workcell_shift_left_front(extrinsics["T_base_camera"], .04, .05)
-    comparison.add_approximate_workcell(spec, shift, extra, 15.)
+    comparison.add_approximate_workcell(spec, shift, extra, 15., **(object_layout or {}))
     comparison.add_backdrop(spec, extrinsics["T_base_camera"])
     comparison.add_simple_studio_light(spec)
     camera = "r2s_side_calibrated_candidate"
@@ -151,7 +182,10 @@ def run_motion(args):
     intrinsics = json.loads(args.intrinsics.read_text(encoding="utf-8"))
     if (intrinsics.get("width"), intrinsics.get("height")) != (640, 480):
         raise ValueError("Expected 640x480 Side candidate intrinsics")
-    model, camera = make_calibrated_model(extrinsics, intrinsics, args.urdf)
+    layout = video_object_layout(extrinsics["T_base_camera"], intrinsics,
+                                 (args.muhi_u, args.muhi_v),
+                                 (args.cup_u, args.cup_v), args.muhi_yaw_deg)
+    model, camera = make_calibrated_model(extrinsics, intrinsics, args.urdf, layout)
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
@@ -186,6 +220,12 @@ def run_motion(args):
         "output": str(output), "video_source": str(video_path),
         "episode": args.episode, "stride": args.stride, "frames": len(ep["rows"]),
         "source_fps": source_fps, "video_fps": encoded_fps,
+        "video_object_pixel_targets": {
+            "muhi": [args.muhi_u, args.muhi_v],
+            "cup": [args.cup_u, args.cup_v],
+        },
+        "video_object_local_layout": layout,
+        "video_object_alignment": "Approximate first-frame pixel matching using November camera model; not actual 3D measured pose.",
         "limitations": [
             "The Side calibration dates to 2026-11-07 and may not match the recording setup.",
             "Joint angles are replayed by FK; normalized gripper is not mapped.",
@@ -213,6 +253,11 @@ def main():
             sub.add_argument("--episode", type=int, default=0)
             sub.add_argument("--stride", type=int, default=5)
             sub.add_argument("--max-frames", type=int, default=60)
+            sub.add_argument("--muhi-u", type=float, default=255., help="Muhi center x in the 640-pixel Real video panel")
+            sub.add_argument("--muhi-v", type=float, default=360., help="Muhi center y in 480-pixel Real video panel")
+            sub.add_argument("--cup-u", type=float, default=375., help="Clear container center x in the 640-pixel Real video panel")
+            sub.add_argument("--cup-v", type=float, default=310., help="Clear container center y in 480-pixel Real video panel")
+            sub.add_argument("--muhi-yaw-deg", type=float, default=45., help="Provisional Muhi yaw around base Z; change if axis disagrees")
     args = parser.parse_args()
     print("Saved:", run_poses(args) if args.mode == "poses" else run_motion(args))
 
