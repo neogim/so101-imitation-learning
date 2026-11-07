@@ -63,7 +63,8 @@ def video_object_layout(T_base_cv, intrinsics, muhi_pixel=(255., 360.),
                 muhi_yaw_deg=muhi_yaw_deg)
 
 
-def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None):
+def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
+                          table_extra_left_m=.04, table_extra_front_m=.05):
     import mujoco
 
     position, quat = comparison.mujoco_camera_pose(extrinsics["T_base_camera"])
@@ -71,7 +72,8 @@ def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None):
     spec = mujoco.MjSpec.from_file(str(urdf.resolve()))
     spec.compiler.discardvisual = False
     shift = comparison.workcell_shift_left_front(extrinsics["T_base_camera"], .08, .10)
-    extra = comparison.workcell_shift_left_front(extrinsics["T_base_camera"], .04, .05)
+    extra = comparison.workcell_shift_left_front(extrinsics["T_base_camera"],
+                                                 table_extra_left_m, table_extra_front_m)
     comparison.add_approximate_workcell(spec, shift, extra, 15., **(object_layout or {}))
     comparison.add_backdrop(spec, extrinsics["T_base_camera"])
     comparison.add_simple_studio_light(spec)
@@ -300,7 +302,10 @@ def run_motion(args):
         muhi_yaw = args.muhi_yaw_deg
     layout = video_object_layout(extrinsics["T_base_camera"], intrinsics,
                                  muhi_pixel, cup_pixel, muhi_yaw)
-    model, camera = make_calibrated_model(extrinsics, intrinsics, args.urdf, layout)
+    model, camera = make_calibrated_model(
+        extrinsics, intrinsics, args.urdf, layout,
+        table_extra_left_m=args.table_extra_left_cm / 100.,
+        table_extra_front_m=args.table_extra_front_cm / 100.)
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
@@ -378,6 +383,8 @@ def run_motion(args):
             "behavior": "fixed relative pose to gripper body after attach; no grasp physics",
         },
         "video_object_alignment": "Approximate first-frame pixel matching using November camera model; not actual 3D measured pose.",
+        "table_extra_left_cm": args.table_extra_left_cm,
+        "table_extra_front_cm": args.table_extra_front_cm,
         "limitations": [
             "The Side calibration dates to 2026-11-07 and may not match the recording setup.",
             "J6 normalized [0,100] is mapped linearly to URDF gripper joint limits for visualization only.",
@@ -412,6 +419,10 @@ def main():
             sub.add_argument("--cup-u", type=float, default=375., help="Clear container center x in the 640-pixel Real video panel")
             sub.add_argument("--cup-v", type=float, default=310., help="Clear container center y in 480-pixel Real video panel")
             sub.add_argument("--muhi-yaw-deg", type=float, default=45., help="Provisional Muhi yaw around base Z; change if axis disagrees")
+            sub.add_argument("--table-extra-left-cm", type=float, default=4.,
+                             help="Tabletop offset camera-left in cm (default: 4)")
+            sub.add_argument("--table-extra-front-cm", type=float, default=5.,
+                             help="Tabletop offset toward camera in cm (negative moves farther; default: 5)")
             sub.add_argument("--object-layout-json", type=Path, default=None,
                              help="Optional 640x480 Side-frame centers and Muhi yaw from external detector")
             sub.add_argument("--invert-gripper", action="store_true",
