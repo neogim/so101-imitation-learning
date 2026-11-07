@@ -4,6 +4,34 @@
 > 最終確認：2026-11-07。コード静的確認による手順。**実機では未検証**。
 > **このPRで完成したのは校正「観測データの収集・抽出」まで**。Eye-to-Hand 6DoF解法、MuJoCo一致の確定は後続工程。
 
+## 次工程：推定したSideカメラでRealとMuJoCoを1姿勢比較
+
+ID1のEye-to-Hand推定済みJSON `outputs/so101-eye-to-hand-id1-20261107/result.json` を使用し、23姿勢から **ID1が見える代表1姿勢**を選択。保存された実写PNGと、同じJ1〜J5のMuJoCo描画を並べる。**追加撮影・実機起動・OBS起動は不要**。
+
+```bash
+conda activate lerobot
+git pull --ff-only
+python -c "import mujoco, scipy, PIL, numpy; print('offline rendering dependencies OK')"
+python -m unittest discover -s scripts/so101_sim -p 'test_compare_id1_eye_to_hand.py' -v
+
+python scripts/so101_sim/compare_id1_eye_to_hand.py \
+  --manifest outputs/so101-aruco-mixed-main-20261107/manifest.json \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --output outputs/so101-r2s-side-preview-20261107
+```
+
+結果：`outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png`、`mujoco_only.png`、`report.json`。**同名出力が存在したら上書きせず、出力名を変更する。** Macで画像を開く：
+
+```bash
+open outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png
+```
+
+**座標系の重要点**：推定JSONの `T_base_camera` はOpenCV光学座標（x右、y下、z前方）から `base_link` への変換。MuJoCoのカメラはx右、y上、-z前方なので、変換行列の回転に `diag(1,-1,-1)` を右掛けし、wxyzクォータニオンでMuJoCoへ登録。画角は暫定内部校正の `fy` から計算する。
+
+**表示の限界**：比較対象はロボットの大まかな形状・向き・位置。MuJoCoモデルに実物のID1マーカーや周囲の部屋は配置していない。MuJoCoのカメラは原則中心主点・歪みなしなので、実カメラの主点のずれ（約10px）やレンズ歪みを完全には再現しない。URDFのJ2/J3零点・符号も未検証。**見え方が大幅に違う時だけ**幾何・座標系を1件ずつ確認し、問題なければ複数姿勢比較へ進む。
+
+---
+
 ## 2026-11-07：23姿勢の本撮影を使ったID1単独Eye-to-Hand推定
 
 **現在の結果**：`data/so101/aruco-mixed-main-20261107` から静止姿勢23件、ID1=20件、ID0=2件など合計79件を抽出済み。ID1は`gripper_link`に剛体固定されていると実機で確認済み。ID0の再撮影は現時点では不要。
