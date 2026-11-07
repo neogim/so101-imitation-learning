@@ -4,6 +4,33 @@
 > 最終確認：2026-11-07。コード静的確認による手順。**実機では未検証**。
 > **このPRで完成したのは校正「観測データの収集・抽出」まで**。Eye-to-Hand 6DoF解法、MuJoCo一致の確定は後続工程。
 
+## 2026-11-07：23姿勢の本撮影を使ったID1単独Eye-to-Hand推定
+
+**現在の結果**：`data/so101/aruco-mixed-main-20261107` から静止姿勢23件、ID1=20件、ID0=2件など合計79件を抽出済み。ID1は`gripper_link`に剛体固定されていると実機で確認済み。ID0の再撮影は現時点では不要。
+
+ID1のArUco四隅と仮の内部校正からマーカー中心のカメラ座標（PnP平行移動）を求め、LeRobotのJ1〜J5を既存URDFのFKへ適用。**未知数は固定Sideカメラの6DoFとgripper_link上のマーカー中心3DoFのみ**（合計9）。小さいArUcoの回転の2解問題を回避するため、マーカーのPnP回転をフィットに使わない。実機を動かさず、4〜5点を検証用として分離する。**内部校正とURDF零点は未検証なので暫定的な変換**とする。
+
+```bash
+conda activate lerobot
+git pull --ff-only
+python -c "import numpy, scipy, cv2; print('numerical dependencies OK')"
+python -m unittest discover -s scripts/so101_capture -p 'test_fit_side_camera_from_id1.py' -v
+
+mkdir -p outputs/so101-eye-to-hand-id1-20261107
+python scripts/so101_capture/fit_side_camera_from_id1.py \
+  --manifest outputs/so101-aruco-mixed-main-20261107/manifest.json \
+  --intrinsics assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json \
+  --urdf data/urdf/so101/so101_new_calib.urdf \
+  --marker-id 1 --link gripper_link \
+  --out outputs/so101-eye-to-hand-id1-20261107/result.json
+```
+
+出力の`T_base_camera`は**Sideカメラ光学座標→SO-101 base_link**の4×4変換。`T_camera_base`は逆変換（base_link→Side光学座標）。行列は推定値で、MuJoCoへ自動適用しない。
+
+**判断**：`jacobian_rank=9`かつ、検証側（holdout）の誤差が明らかに大きくなければ、まず仮カメラでMuJoCoの実写比較へ進む。残差が大きい場合も無闇に再撮影せず、ID1が見える姿勢の幅、URDF関節符号/原点とカメラ座標系のどれか最も直接的な要因を1つだけ切り分ける。カメラ校正の高精度化、ID0の追加収集、IPPEの詳細検証は保留。
+
+---
+
 ## 2026-11-07：マーカー貼り替え後の5姿勢スモークテスト（Real2Sim最短ルート）
 
 **今回の実機マーカー実寸（黒枠外周。白い余白は含まない）**：
