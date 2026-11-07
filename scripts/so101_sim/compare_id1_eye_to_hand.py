@@ -127,7 +127,8 @@ def workcell_shift_left_front(T_base_cv, left_m=0.08, front_m=0.10):
 
 def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
                              table_extra_xyz=(0., 0., 0.), table_yaw_deg=0.,
-                             muhi_xy=(.18, .11), cup_xy=(.18, -.12), muhi_yaw_deg=0.):
+                             muhi_xy=(.18, .11), cup_xy=(.18, -.12), muhi_yaw_deg=0.,
+                             table_width_m=.80, table_depth_m=.51):
     """Photo-approximate Muhi, clear cup and 65x60cm table from earlier Colab scene.
 
     These placements are historic, unmeasured approximations, not calibration.
@@ -142,6 +143,9 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
     extra = np.asarray(table_extra_xyz, dtype=float)
     if extra.shape != (3,) or not np.isfinite(extra).all() or not math.isfinite(table_yaw_deg):
         raise ValueError("Invalid table-only translation/yaw")
+    if not (math.isfinite(table_width_m) and math.isfinite(table_depth_m)
+            and table_width_m > 0 and table_depth_m > 0):
+        raise ValueError("Invalid tabletop width/depth")
     yaw_rad = math.radians(table_yaw_deg)
     c, sn = math.cos(yaw_rad), math.sin(yaw_rad)
     yaw_rot = np.array([[c, -sn], [sn, c]], dtype=float)
@@ -161,12 +165,13 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
             kwargs["quat"] = quat
         world.add_geom(**kwargs)
 
-    # The earlier notebook used a 0.65x0.60x0.04m desk with its top at z=-0.005m.
+    # Measured tabletop footprint 0.80 x 0.51m; thickness 0.04m remains approximate.
     geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_BOX,
-         [0, 0, -.025], [.325, .30, .02], [.63, .46, .33, 1.0], table_part=True)
+         [0, 0, -.025], [table_width_m / 2, table_depth_m / 2, .02],
+         [.63, .46, .33, 1.0], table_part=True)
     # Contrast between the tabletop and the background helps identify the edge.
-    for x in (-.29, .29):
-        for y in (-.26, .26):
+    for x in (-(table_width_m / 2 - .035), table_width_m / 2 - .035):
+        for y in (-(table_depth_m / 2 - .035), table_depth_m / 2 - .035):
             geom(f"r2s_table_leg_{'p' if x>0 else 'm'}{'p' if y>0 else 'm'}",
                  mujoco.mjtGeom.mjGEOM_BOX, [x, y, -.225],
                  [.018, .018, .18], [.44, .35, .30, 1.0], table_part=True)
