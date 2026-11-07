@@ -236,3 +236,30 @@ pixel errors. This does not change the bottle's physical pose or
 simulate a grasp. To make Muhi move with the gripper in a movie,
 `--attach-frame` / `--release-frame` must be provided using
 observed frame indices, never invented.
+
+## 2026-11-08: Measured tabletop dimensions
+
+The tabletop was measured as **width 800mm × depth 510mm**. The
+`r2s_preview_table` default geometry now uses **[0.400, 0.255, 0.020]m
+MuJoCo half-sizes** (40mm thickness remains an estimate). The local X
+side is treated as width and local Y as depth; the current yaw is still
+a provisional 15 degrees. The legs follow the new tabletop footprint.
+
+**Do not interpret the visible part of the tabletop as its full width.**
+The Side camera view is cropped/occluded. It is not necessary or valid
+to click an invisible left/right endpoint and call it a measured
+correspondence. To add manual point constraints later, mark only
+physically visible points on the same identified edge, and use the
+known metric dimensions to project the model's hidden edge.
+A 2-point visible edge segment provides an image-space line constraint,
+not an independently determined 6DoF pose.
+
+The previous +12cm/+2.25cm SAM3 translation was fitted to the old
+650×600mm tabletop and is invalid for the corrected dimensions.
+Re-run from the **baseline offsets** (4cm camera-left, 5cm camera-front)
+using the saved Episode 4 SAM3 mask and matching Episode 4 pose/object JSON.
+Keep real camera, Muhi and cup unchanged.
+
+After pulling the updated branch, use the concrete Episode 4 command in
+the preceding section and inspect its new report. **Do not reapply
+the old +12cm adjustment automatically.**
