@@ -212,6 +212,12 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
     fovy = fovy_from_intrinsics(float(cam["fy"]), int(cam["height"]))
 
     spec = mujoco.MjSpec.from_file(str(urdf_path.resolve()))
+    # MuJoCo defaults discardvisual=true when importing URDF. In that mode
+    # ALL added display-only geoms (contype=conaffinity=0) are discarded on
+    # compile, including our table, Muhi and cup. Keep them for visualization.
+    # This does not change the source URDF or enable contacts.
+    if workcell == "simple":
+        spec.compiler.discardvisual = False
     if workcell not in ('simple', 'none'):
         raise ValueError('workcell must be simple or none')
     if workcell == 'simple':
@@ -280,6 +286,7 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         "fit_holdout_rms_mm": extr["holdout_error_mm"]["rms"],
         "lighting_preset": lighting,
         "workcell_preset": workcell,
+        "urdf_discardvisual_disabled_for_preview": workcell == "simple",
         "workcell_note": "Approximate 65x60cm tabletop and historically modeled Muhi bottle / transparent cylindrical cup. No measured physical placement.",
         "workcell_projection": project_reference_points(extr["T_base_camera"], cam) if workcell == "simple" else None,
         "visual_material_note": "Preview-only printed-plastic yellow was changed to off-white; source URDF and black servo parts unchanged.",
