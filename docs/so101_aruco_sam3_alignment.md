@@ -75,3 +75,20 @@ Note: the alignment does not yet copy the episode's dynamic arm pose or
 its per-episode Muhi/cup annotations into the segmentation scene. It
 isolates tabletop geometry. Where occlusions dominate, use a cleaner
 Side frame and inspect the mask rather than interpreting IoU as accuracy.
+
+
+## Re-render the previous movie using the optimized offsets
+
+The original `compare_real_sim_motion.py motion` CLI now accepts the
+suggested table offsets. **Keep all the other arguments identical to the
+successful previous video**, including any object-layout JSON and timing
+settings. For example, append these two flags with numbers from the report:
+
+```bash
+  --table-extra-left-cm REPORTED_LEFT_CM \
+  --table-extra-front-cm REPORTED_FRONT_CM
+```
+
+The reported values already include the old baseline (4 cm left, 5 cm front).
+Do not add them to the old values again. Negative front is **away from camera**.
+The default values are unchanged so old invocations render identically.
