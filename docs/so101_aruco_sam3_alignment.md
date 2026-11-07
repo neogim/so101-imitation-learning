@@ -293,3 +293,39 @@ segments, then project the remaining 800×510mm geometry.
 Do not move the camera, robot, Muhi or cup in response to tabletop mask loss;
 the scene-fitting target is tabletop geometry. Existing 3-click Muhi/cup
 annotations are a separate constraint and should remain stable.
+
+
+## Physical reference source checklist (2026-11-08)
+
+Reference folder (user-supplied):
+https://drive.google.com/drive/folders/1TtqoxJLrBC0lT_ElRJmlF0PiJtv9n4bo
+
+In addition to the ACT report slide 3, use these original images before
+further tabletop geometry adjustments:
+- `画像/写真_真上.jpg`:
+  https://drive.google.com/file/d/1U_ohHzj3vlByrPHsxFn9DwATpMa-Hyz-/view
+- `画像/写真_斜め.jpg`:
+  https://drive.google.com/file/d/1uTNq-oSG_FewtH-4xaY5xt4vrpRskqTs/view
+- `画像/写真_横.jpg`:
+  https://drive.google.com/file/d/10ibc9nm1_DUIOoXyS9CK2kOjPI_-5HxJ/view
+
+Observed: the tabletop has **rounded corners** (current MuJoCo box has sharp
+corners), the camera sits on the left, the SO-101 base on the right, and a
+second lower board is visible in angled photography. Therefore:
+- A silhouette mismatch around the corners is not necessarily XYZ error.
+- Do not fit the lower shelf as if it were the top work surface.
+- Do not equate the cropped visible Side-camera span with 800mm width.
+- Top/angled/side photos are reference geometry, not necessarily synchronized
+  Episode 4 frames; do not use their raw pixels as that frame's corners.
+- **Fixed measurements**: tabletop 800x510mm. **Provisional**: thickness
+  40mm, yaw 15deg, tabletop 3D origin and camera extrinsics.
+- Match the *actual visible far edge* and yaw before simply widening the
+  XYZ search when X hits its 12cm bound.
+- Respect three-click Muhi/cup annotations independently from table pose.
+
+Most recent measured-table fit report (Episode 4, supplied 2026-11-08):
+IoU 0.6740 -> 0.8123; apparent area ratio 1.0033 -> 1.0228;
+visible far-edge mean absolute error 65.8 -> 31.1 px. X offset hit
++12cm search bound, and right image border nearly matched; this is
+**NOT_ALIGNED**, not evidence of calibrated depth. Old 650x600mm fit
+numbers must not be mixed with the corrected 800x510mm model.
