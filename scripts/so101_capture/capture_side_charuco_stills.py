@@ -11,6 +11,8 @@ import argparse
 import base64
 import io
 import json
+import subprocess
+import sys
 from pathlib import Path
 import time
 
@@ -30,6 +32,23 @@ def capture_frame(client, source, width, height, quality, destination):
     image.save(destination)
 
 
+def play_shutter_sound():
+    """Play a short Mac system sound after successful save, fail open on audio issues."""
+    if sys.platform != "darwin":
+        print("Sound cue skipped: macOS only.", flush=True)
+        return
+    sound = Path("/System/Library/Sounds/Pop.aiff")
+    if not sound.is_file():
+        print("Sound cue unavailable: Pop.aiff not found.", flush=True)
+        return
+    try:
+        subprocess.run(["/usr/bin/afplay", str(sound)],
+                       check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=3)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(f"Sound cue unavailable ({type(exc).__name__}); recording continues.", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera-config", type=Path, required=True)
@@ -39,6 +58,8 @@ def main():
                         help="Capture every N seconds automatically, no keyboard input")
     parser.add_argument("--start-delay-seconds", type=float, default=8.0,
                         help="Delay before automatic capture to pick up the board")
+    parser.add_argument("--no-sound", action="store_true",
+                        help="Disable shutter sound after every successfully saved image")
     parser.add_argument("--execute", action="store_true",
                         help="OBS only; no SO-101 servo, camera move, or robot connection")
     args = parser.parse_args()
@@ -62,6 +83,7 @@ def main():
         parser.error(f"Output already exists: {args.out_dir}; choose a new directory")
     print(f"Verified Side OBS source {spec['source_name']!r} at 640x480", flush=True)
     print("SO-101 robot is NEVER connected or commanded.", flush=True)
+    print("Sound after each saved image:", "off" if args.no_sound else "on (Mac Pop)", flush=True)
     if not args.execute:
         print("Preflight only. Add --execute to connect to OBS.", flush=True)
         return
@@ -92,6 +114,8 @@ def main():
                               spec.get("jpeg_quality", 90), dest)
                 saved.append(dest.name)
                 print(f"[{i+1}/{args.frames}] Saved {dest}", flush=True)
+                if not args.no_sound:
+                    play_shutter_sound()
         except KeyboardInterrupt:
             print("\nInterrupted by user; existing images retained.", flush=True)
         finally:
@@ -101,6 +125,8 @@ def main():
                 "image_format_from_obs": "jpeg",
                 "mode": "timed" if args.interval_seconds is not None else "manual",
                 "interval_seconds": args.interval_seconds,
+                "sound_enabled": not args.no_sound,
+                "sound_timing": "after successful file save",
                 "saved_files": saved,
                 "note": "No robot I/O. OBS source geometry must remain unchanged. "
                         "Camera UUID/password deliberately omitted."
