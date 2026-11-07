@@ -46,6 +46,92 @@ def targets_from_clicks(points, T_base_cv, intrinsics):
     }
 
 
+
+def valid_image_click(event, ax):
+    """Accept only valid in-image left clicks, ignoring active zoom/pan tools."""
+    from matplotlib.backend_bases import MouseButton
+    if event.inaxes is not ax or event.button != MouseButton.LEFT:
+        return False
+    toolbar = getattr(getattr(event.canvas, "manager", None), "toolbar", None)
+    if toolbar is not None and getattr(toolbar, "mode", ""):
+        return False
+    if event.xdata is None or event.ydata is None:
+        return False
+    return (np.isfinite(event.xdata) and np.isfinite(event.ydata)
+            and 0 <= event.xdata < 640 and 0 <= event.ydata < 480)
+
+
+def select_three_points(image, T_base_cv, intrinsics, output):
+    """Click three in-image points; save on 3rd click, then close the window."""
+    import matplotlib.pyplot as plt
+
+    labels = ("Muhi BODY end", "Muhi CAP end", "clear CUP center")
+    fig, ax = plt.subplots(figsize=(10, 7.5))
+    ax.imshow(image, extent=(-.5, 639.5, 479.5, -.5))
+    ax.set_xlim(-.5, 639.5)
+    ax.set_ylim(479.5, -.5)
+    points, artists = [], []
+    saved = [False]
+
+    def status(message):
+        ax.set_title(message)
+        fig.canvas.draw_idle()
+
+    def redraw():
+        for artist in artists:
+            artist.remove()
+        artists.clear()
+        for index, (x, y) in enumerate(points):
+            artists.extend(ax.plot(x, y, marker="o", color="lime", markersize=8,
+                                   markerfacecolor="none", markeredgewidth=2))
+            artists.append(ax.text(x+5, y+5, str(index+1), color="lime"))
+        if not saved[0]:
+            status(f"Point {len(points)+1}/3: {labels[len(points)]} | Backspace: undo | Esc: cancel")
+
+    def on_click(event):
+        if saved[0] or not valid_image_click(event, ax):
+            return
+        points.append((float(event.xdata), float(event.ydata)))
+        if len(points) == 3:
+            try:
+                result = targets_from_clicks(points, T_base_cv, intrinsics)
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\\n",
+                                  encoding="utf-8")
+            except (ValueError, OSError) as exc:
+                points.pop()
+                redraw()
+                status(f"Invalid third point: {exc} | Click again or Backspace")
+                print(f"Could not save selection: {exc}")
+                return
+            saved[0] = True
+            print(f"Saved: {output}")
+            print("Muhi yaw in base XY:", result["muhi_yaw_deg"])
+            plt.close(fig)
+        else:
+            redraw()
+
+    def on_key(event):
+        if saved[0]:
+            return
+        if event.key in ("backspace", "delete"):
+            if points:
+                points.pop()
+            redraw()
+        elif event.key in ("escape", "esc"):
+            plt.close(fig)
+
+    redraw()
+    fig.canvas.mpl_connect("button_press_event", on_click)
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    print("Left-click on IMAGE: Muhi BODY end -> Muhi CAP end -> clear CUP center.")
+    print("Only 3 valid image clicks count. Backspace=undo; Esc=cancel.")
+    plt.show(block=True)
+    if not saved[0]:
+        print("Cancelled. No output was written.")
+    return saved[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path, required=True)
@@ -68,25 +154,7 @@ def main():
     extrinsics = json.loads(args.extrinsics.read_text(encoding="utf-8"))
     if (intrinsics.get("width"), intrinsics.get("height")) != (640, 480):
         raise ValueError("Intrinsics must be for 640x480")
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(10, 7.5))
-    ax.imshow(image)
-    ax.set_xlim(0, 640)
-    ax.set_ylim(480, 0)
-    ax.set_title("Click 1: Muhi BODY end | 2: Muhi CAP end | 3: clear CUP center")
-    ax.set_xlabel("Click precisely in this order; close window to cancel")
-    print("Click Muhi BODY end, Muhi CAP end, then transparent CUP center.")
-    points = plt.ginput(3, timeout=0, show_clicks=True)
-    plt.close(fig)
-    if len(points) != 3:
-        raise RuntimeError("Cancelled: expected exactly 3 clicks; no output written")
-    result = targets_from_clicks(points, extrinsics["T_base_camera"], intrinsics)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2)+"\n",
-                           encoding="utf-8")
-    print(f"Saved: {args.output}")
-    print("Muhi yaw in base XY:", result["muhi_yaw_deg"])
-
+    select_three_points(image, extrinsics["T_base_camera"], intrinsics, args.output)
 
 if __name__ == "__main__":
     main()
