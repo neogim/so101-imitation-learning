@@ -240,6 +240,29 @@ def read_object_targets(path):
     return center("muhi_center_px"), center("cup_center_px"), yaw
 
 
+def set_visual_gripper(model, data, raw_value, invert=False):
+    """Provisional display mapping: recorded normalized J6 [0,100] -> URDF range.
+
+    Assumes 0=closed and 100=open unless --invert-gripper is supplied.
+    This is NOT a verified LeRobot-to-servo calibration.
+    """
+    import mujoco
+    jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "gripper")
+    if jid < 0:
+        raise ValueError("URDF gripper joint not found")
+    value = float(raw_value)
+    if not np.isfinite(value) or value < -1 or value > 101:
+        raise ValueError("Unexpected normalized J6 outside [0,100]")
+    value = min(100., max(0., value))
+    if invert:
+        value = 100. - value
+    lower, upper = [float(v) for v in model.jnt_range[jid]]
+    angle = lower + value / 100. * (upper - lower)
+    data.qpos[int(model.jnt_qposadr[jid])] = angle
+    mujoco.mj_forward(model, data)
+    return angle
+
+
 def run_motion(args):
     import av
     import mujoco
@@ -297,6 +320,7 @@ def run_motion(args):
         with mujoco.Renderer(model, width=640, height=480) as renderer:
             for row, source_index in zip(ep["rows"], frame_ids):
                 r2s.set_pose(model, data, row["state"], config)
+                set_visual_gripper(model, data, row["state"][5], args.invert_gripper)
                 frame_index = int(row["frame_index"])
                 if attachment is not None:
                     if not attached and frame_index >= args.attach_frame:
@@ -328,6 +352,11 @@ def run_motion(args):
             "cup": list(cup_pixel),
         },
         "video_object_local_layout": layout,
+        "j6_mapping": {
+            "status": "provisional_normalized_to_urdf_range",
+            "invert_gripper": args.invert_gripper,
+            "source": "observation.state[5]",
+        },
         "object_layout_json_source": str(args.object_layout_json) if args.object_layout_json else None,
         "muhi_attachment": {
             "attach_frame": args.attach_frame,
@@ -341,7 +370,7 @@ def run_motion(args):
         "video_object_alignment": "Approximate first-frame pixel matching using November camera model; not actual 3D measured pose.",
         "limitations": [
             "The Side calibration dates to 2026-11-07 and may not match the recording setup.",
-            "Joint angles are replayed by FK; normalized gripper is not mapped.",
+            "J6 normalized [0,100] is mapped linearly to URDF gripper joint limits for visualization only.",
             "Cup stays static; Muhi follows the arm only if --attach-frame is supplied.",
             "Attachment maintains initial relative offset, does not detect contact or solve grasp mechanics.",
             "If distance_from_gripper_at_attach_m is large, the visual attachment is not physically plausible.",
@@ -375,6 +404,8 @@ def main():
             sub.add_argument("--muhi-yaw-deg", type=float, default=45., help="Provisional Muhi yaw around base Z; change if axis disagrees")
             sub.add_argument("--object-layout-json", type=Path, default=None,
                              help="Optional 640x480 Side-frame centers and Muhi yaw from external detector")
+            sub.add_argument("--invert-gripper", action="store_true",
+                             help="Reverse unverified J6 normalized open/closed mapping")
             sub.add_argument("--attach-frame", type=int, default=None,
                              help="Recorded episode frame index at grasp; Muhi follows gripper after this")
             sub.add_argument("--release-frame", type=int, default=None,
