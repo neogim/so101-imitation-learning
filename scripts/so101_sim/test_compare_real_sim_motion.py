@@ -1,6 +1,7 @@
 """Synthetic tests for side-by-side replay helpers (no robot or video required)."""
 import sys
 import unittest
+import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -8,7 +9,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_real_sim_motion import (sample_evenly, comparison_panel,
-                                     pixel_to_base_plane, video_object_layout)
+                                     pixel_to_base_plane, video_object_layout, MuhiGripperAttachment)
 
 
 class MotionComparisonTests(unittest.TestCase):
@@ -43,6 +44,36 @@ class MotionComparisonTests(unittest.TestCase):
         self.assertEqual(len(layout["cup_xy"]), 2)
         with self.assertRaises(ValueError):
             pixel_to_base_plane(T, K, float("nan"), 310., .055)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco") is not None,
+                         "MuJoCo unavailable")
+    def test_attach_follow_and_release_keeps_world_pose(self):
+        import mujoco
+        xml = """<mujoco><worldbody>
+          <body name="gripper_link" pos="0 0 0.15">
+            <joint name="slide" type="slide" axis="1 0 0"/>
+            <geom type="sphere" size=".01" mass=".01"/>
+          </body>
+          <geom name="r2s_muhi_body" type="sphere" pos=".02 0 .15" size=".012" contype="0" conaffinity="0"/>
+          <geom name="r2s_muhi_cap" type="sphere" pos=".04 0 .15" size=".008" contype="0" conaffinity="0"/>
+        </worldbody></mujoco>"""
+        model = mujoco.MjModel.from_xml_string(xml)
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        obj = MuhiGripperAttachment(model, data)
+        original = data.geom_xpos[obj.ids[0]].copy()
+        obj.attach()
+        self.assertAlmostEqual(obj.initial_distance_m, .02, places=5)
+        data.qpos[0] = .10
+        mujoco.mj_forward(model, data)
+        obj.follow()
+        np.testing.assert_allclose(data.geom_xpos[obj.ids[0]],
+                                   original + [.10, 0., 0.], atol=1e-7)
+        obj.detach()
+        data.qpos[0] = .20
+        mujoco.mj_forward(model, data)
+        np.testing.assert_allclose(data.geom_xpos[obj.ids[0]],
+                                   original + [.10, 0., 0.], atol=1e-7)
 
     def test_real_sim_panel(self):
         real = Image.new("RGB", (224, 168), "red")
