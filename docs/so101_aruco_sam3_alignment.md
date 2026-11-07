@@ -92,3 +92,70 @@ settings. For example, append these two flags with numbers from the report:
 The reported values already include the old baseline (4 cm left, 5 cm front).
 Do not add them to the old values again. Negative front is **away from camera**.
 The default values are unchanged so old invocations render identically.
+
+
+## 2026-11-08: Corrected axis semantics and why the first SAM3 fit was not enough
+
+**Important correction:** The first optimizer used camera-relative left/front
+directions, which translated base X and Y together. It scored **IoU only**,
+despite the 640×480 rendered table still appearing oversized and with a
+mismatched upper edge. Its previous 'suggested' offsets are NOT a validated
+3D alignment. Do not repeatedly change `--table-extra-front-cm` and
+assume that means base X.
+
+The revised tool searches **SO-101 base frame** coordinates. By default
+`--axis xy` adjusts only X and Y, holds Z and yaw fixed, and moves only
+`r2s_preview_table` plus its four legs. `--axis x`, `--axis y`, and
+`--axis z` explicitly limit the motion to one base axis (or `xyz`
+if height really must be included).
+
+Existing table size, tilt/yaw, camera, Muhi and cup remain unchanged.
+Perspective-driven size changes follow automatically from 3D projection.
+The tool reports not only IoU but **real/sim bounding rectangles,
+per-edge residuals, area ratio and centroid shift**. It warns if
+area differs by >10% or any bounding edge differs by >15 pixels.
+The rectangles are *image envelopes*, not physical 3D corners.
+
+Run using the SAM3 mask already saved from the **same Episode 4 Side image**:
+
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+python -m unittest scripts/so101_sim/test_align_previous_scene_sam3.py -v
+
+REAL="outputs/real2sim/episode4_side_640x480.png"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+
+# Edit the folder name below to the actual existing successful SAM3 run.
+# Do not confuse the mask with the composite video or another episode.
+find outputs/real2sim -name real_mask.png -print
+MASK="outputs/real2sim/sam3-episode4-YOUR-EXISTING-RUN/real_mask.png"
+
+OUT="outputs/real2sim/episode4-base-xy-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/align_previous_scene_sam3.py \
+  --real-image "$REAL" --real-mask "$MASK" \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --axis xy --output "$OUT"
+
+open "$OUT/before.png" "$OUT/after.png"
+cat "$OUT/report.json"
+```
+
+Copy **only** the reported `recommended_video_flags` into the prior video
+command, while preserving `--object-layout-json` and any other existing
+episode-specific options. The old camera-relative flags are fixed at
+their original defaults `--table-extra-left-cm 4 --table-extra-front-cm 5`,
+then the new `--table-base-{x,y,z}-cm` offsets are added. Do not combine
+new base offsets with old SAM3's `8 / 10.5` values or double-apply the shift.
+
+A lower mask IoU after moving only base X is not evidence of an error in
+the coordinate transform: the model may have wrong geometry, yaw, camera
+intrinsics, perspective or mismatched real/Sim occlusions. SAM3 yields a
+**2D segmentation**, not a metrically valid world pose. If the warning
+persists, inspect the actual visible tabletop **four sides/corners** and
+the camera/object model rather than continuing blind translations.
+
+No local user IDs, usernames or absolute home paths should be included
+in repository files.
