@@ -7,7 +7,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_id1_eye_to_hand import mujoco_camera_pose, fovy_from_intrinsics
+from PIL import Image
+from compare_id1_eye_to_hand import mujoco_camera_pose, fovy_from_intrinsics, enhance_sim_brightness
 
 
 class SideCameraTests(unittest.TestCase):
@@ -33,6 +34,18 @@ class SideCameraTests(unittest.TestCase):
         T[0, 0] = 2
         with self.assertRaises(ValueError):
             mujoco_camera_pose(T)
+
+    def test_display_brightness_only(self):
+        original = Image.fromarray(np.array([[[100, 100, 100], [250, 250, 250]]], dtype=np.uint8))
+        corrected = enhance_sim_brightness(original)
+        pixels = np.asarray(corrected)
+        self.assertGreater(int(pixels[0, 0, 0]), 100)
+        self.assertEqual(int(pixels[0, 1, 0]), 255)
+        np.testing.assert_array_equal(np.asarray(original)[0, 0], [100, 100, 100])
+        np.testing.assert_array_equal(np.asarray(enhance_sim_brightness(original, 1, 1)),
+                                      np.asarray(original))
+        with self.assertRaises(ValueError):
+            enhance_sim_brightness(original, brightness=0)
 
     def test_fovy(self):
         import math
