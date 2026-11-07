@@ -764,3 +764,22 @@ open outputs/so101-r2s-motion-20261107/real_vs_sim_episode.mp4
 ```
 
 必要な環境：既存 `so101-real2sim` に `mujoco`, `scipy`, `numpy`, `pillow`, `pyarrow`, `av`（PyAV、MP4エンコーダー）が必要。動画入力フォルダはローカルに存在する録画データのパスへ読み替える。画像も関節角も記録データを読み取るだけで実機は動かない。スクリプトは出力既存時に拒否する。連続再生はFKによる姿勢再現でありACTの推論・把持動力学・ムヒの実際の移動はまだ再現していない。
+
+### 10/25模倣学習動画の物体配置合わせ（初期値のみ）
+
+静止ArUco画像（11/7）と模倣学習動画（10/25）は別撮影。**動画での実写物体配置を、11/7の暫定カメラモデルを使って画像上で合わせる表示用の初期値**を `motion` モードだけに追加した。5姿勢の配置と物体は変更しない。
+
+初期値は動画先頭フレームから目視した、リサイズ済み640×480のRealパネルにおけるムヒ中心 `(255,360)`、透明容器中心 `(375,310)`、Muhiのベース座標Z回転 `+45°`。いずれも推定であり実測3D位置・姿勢ではない。オプション `--muhi-u 255 --muhi-v 360 --cup-u 375 --cup-v 310 --muhi-yaw-deg 45` を変更して微調整できる。写真と動画の撮影位置が違うので、画像一致からカメラやロボットのキャリブレーション精度を評価しない。
+
+```bash
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root data/so101/muhi-side-wrist-success-053-20261025-168x224 \
+  --episode 0 --stride 5 --max-frames 60 \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --muhi-u 255 --muhi-v 360 --muhi-yaw-deg 45 \
+  --cup-u 375 --cup-v 310 \
+  --output outputs/so101-r2s-motion-objects-aligned-20261107
+open outputs/so101-r2s-motion-objects-aligned-20261107/real_vs_sim_episode.mp4
+```
+
+位置合わせは*初期フレーム*基準で固定される。実動画内でムヒを持ち上げて移動する場面についてはSim側のムヒが自動追従するわけではない（把持物理・物体トラッキング未実装）。実データと推論は変更せず、出力先は新しいディレクトリを指定する。
