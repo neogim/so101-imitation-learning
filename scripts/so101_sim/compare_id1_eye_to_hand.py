@@ -126,7 +126,8 @@ def workcell_shift_left_front(T_base_cv, left_m=0.08, front_m=0.10):
 
 
 def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
-                             table_extra_xyz=(0., 0., 0.), table_yaw_deg=0.):
+                             table_extra_xyz=(0., 0., 0.), table_yaw_deg=0.,
+                             muhi_xy=(.18, .11), cup_xy=(.18, -.12), muhi_yaw_deg=0.):
     """Photo-approximate Muhi, clear cup and 65x60cm table from earlier Colab scene.
 
     These placements are historic, unmeasured approximations, not calibration.
@@ -171,18 +172,28 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
                  [.018, .018, .18], [.44, .35, .30, 1.0], table_part=True)
 
     # Earlier photo-based workcell: bottle ~100mm long, 38mm diameter.
-    # Notebook placed bottle horizontally along the y-axis.
-    x, y = .18, .11
-    side_quat = [math.sqrt(.5), math.sqrt(.5), 0., 0.]
+    # Adjust Muhi's center and yaw independently without moving table or cup.
+    if not math.isfinite(muhi_yaw_deg):
+        raise ValueError("Muhi yaw must be finite")
+    x, y = [float(v) for v in muhi_xy]
+    a = math.radians(muhi_yaw_deg)
+    ca, sa = math.cos(a), math.sin(a)
+    def along_muhi_axis(distance):
+        return [x - sa * distance, y + ca * distance, .019]
+    # Original local cylinder z axis maps to global -Y. Apply global Z yaw.
+    quat_xyzw = (Rotation.from_euler("z", muhi_yaw_deg, degrees=True)
+                 * Rotation.from_euler("x", 90, degrees=True)).as_quat()
+    side_quat = quat_xyzw[[3, 0, 1, 2]].tolist()
     geom("r2s_muhi_body", mujoco.mjtGeom.mjGEOM_CYLINDER,
-         [x, y-.0175, .019], [.019, .0325, 0],
+         along_muhi_axis(-.0175), [.019, .0325, 0],
          [.95, .95, .94, 1.], quat=side_quat)
     geom("r2s_muhi_cap", mujoco.mjtGeom.mjGEOM_CYLINDER,
-         [x, y+.0325, .019], [.019, .0175, 0],
+         along_muhi_axis(.0325), [.019, .0175, 0],
          [.82, .89, .96, 1.], quat=side_quat)
 
     # Earlier transparent container: diameter ~100mm, height ~120mm.
-    cx, cy, radius, h = .18, -.12, .05, .12
+    cx, cy = [float(v) for v in cup_xy]
+    radius, h = .05, .12
     geom("r2s_cup_base", mujoco.mjtGeom.mjGEOM_CYLINDER,
          [cx, cy, .001], [radius, .001, 0], [.70, .85, .92, .55])
     for i in range(16):
