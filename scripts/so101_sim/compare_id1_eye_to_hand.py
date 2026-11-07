@@ -46,8 +46,22 @@ def marker_center_px(marker):
     return np.mean(points, axis=0)
 
 
+def enhance_sim_brightness(image, brightness=1.35, gamma=0.9):
+    """Display-only Sim brightness correction; no change to geometry or camera pose.
+
+    The brightness multiplier is applied in sRGB pixel space before gamma.
+    1.0/1.0 disables correction. This is not physically based relighting.
+    """
+    if (not math.isfinite(brightness) or brightness <= 0
+            or not math.isfinite(gamma) or gamma <= 0):
+        raise ValueError("Brightness and gamma must be finite positive values")
+    pixels = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    corrected = np.power(np.clip(pixels * brightness, 0.0, 1.0), gamma)
+    return Image.fromarray(np.rint(corrected * 255).astype(np.uint8), mode="RGB")
+
+
 def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, output_dir,
-               marker_id=1, sample_number=None):
+               marker_id=1, sample_number=None, sim_brightness=1.35, sim_gamma=0.9):
     import mujoco
 
     if output_dir.exists():
@@ -92,7 +106,8 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
     width, height = int(cam["width"]), int(cam["height"])
     with mujoco.Renderer(model, height=height, width=width) as renderer:
         renderer.update_scene(data, camera="r2s_side_calibrated_candidate")
-        simulated = Image.fromarray(renderer.render().copy()).convert("RGB")
+        simulated_raw = Image.fromarray(renderer.render().copy()).convert("RGB")
+    simulated = enhance_sim_brightness(simulated_raw, sim_brightness, sim_gamma)
     real_path = manifest_path.parent / selected["image"]
     with Image.open(real_path) as photo:
         if photo.size != (width, height):
@@ -119,6 +134,7 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
     output_dir.mkdir(parents=True, exist_ok=False)
     canvas.save(output_dir / "real_vs_mujoco.png")
     simulated.save(output_dir / "mujoco_only.png")
+    simulated_raw.save(output_dir / "mujoco_raw.png")
     report = {
         "status": "VISUAL_CHECK_ONLY_PROVISIONAL",
         "frame_index": int(selected["frame_index"]),
@@ -129,6 +145,9 @@ def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, outpu
         "estimated_camera_quat_mujoco_wxyz": quaternion,
         "approx_fovy_deg": fovy,
         "fit_holdout_rms_mm": extr["holdout_error_mm"]["rms"],
+        "sim_display_brightness": sim_brightness,
+        "sim_display_gamma": sim_gamma,
+        "sim_brightness_note": "Display-only sRGB postprocessing; raw MuJoCo rendering saved separately as mujoco_raw.png",
         "image": str(real_path),
         "output": str(output_dir / "real_vs_mujoco.png"),
         "caveats": [
@@ -156,10 +175,14 @@ def main():
     p.add_argument("--marker-id", type=int, default=1)
     p.add_argument("--frame", type=int, default=None,
                    help="Optional known manifest frame index containing marker ID1")
+    p.add_argument("--sim-brightness", type=float, default=1.35,
+                   help="Sim-only brightness multiplier; 1 disables scaling (default: 1.35)")
+    p.add_argument("--sim-gamma", type=float, default=0.9,
+                   help="Sim-only gamma after scaling; 1 disables gamma (default: 0.9)")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args()
     r = render_one(a.manifest, a.extrinsics, a.intrinsics, a.urdf,
-                   a.output, a.marker_id, a.frame)
+                   a.output, a.marker_id, a.frame, a.sim_brightness, a.sim_gamma)
     print("Saved:", r["output"])
     print("Frame:", r["frame_index"], "FOVy:", round(r["approx_fovy_deg"], 2))
 
