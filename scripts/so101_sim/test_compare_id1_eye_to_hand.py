@@ -82,6 +82,41 @@ class SideCameraTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             workcell_shift_left_front(T, float("nan"), .1)
 
+    def test_table_only_translation_and_yaw(self):
+        # The static desk center moves, but photo-based props stay unchanged.
+        import math
+        T = np.array([[-.61650, .43981, -.65307, .49516],
+                      [.75783, .10642, -.64372, .38170],
+                      [-.21361, -.89176, -.39891, .28123],
+                      [0, 0, 0, 1]])
+        cam = {"fx": 543.17, "fy": 542.96, "cx": 316.39,
+               "cy": 229.55, "width": 640, "height": 480}
+        common = workcell_shift_left_front(T, .08, .10)
+        extra = workcell_shift_left_front(T, .04, .05)
+        before = project_reference_points(T, cam, common)
+        after = project_reference_points(T, cam, common, extra)
+        self.assertLess(after["table_center"]["pixel_approx"][0],
+                        before["table_center"]["pixel_approx"][0])
+        self.assertEqual(after["muhi_center"], before["muhi_center"])
+        self.assertEqual(after["cup_center"], before["cup_center"])
+        self.assertAlmostEqual(extra[2], 0.)
+        self.assertAlmostEqual(math.cos(math.radians(15.)), .965925826, places=6)
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco") is not None,
+                         "MuJoCo unavailable in this numerical-only environment")
+    def test_table_yaw_and_shift_compiles(self):
+        import mujoco
+        root = Path(__file__).resolve().parents[2]
+        spec = mujoco.MjSpec.from_file(str(root / "data/urdf/so101/so101_new_calib.urdf"))
+        spec.compiler.discardvisual = False
+        add_approximate_workcell(spec, (.1, -.1, 0.), (.05, .06, 0.), 15.)
+        model = spec.compile()
+        tid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_preview_table")
+        self.assertGreaterEqual(tid, 0)
+        q = model.geom_quat[tid]
+        self.assertAlmostEqual(abs(float(q[3])), math.sin(math.radians(7.5)), places=5)
+        self.assertEqual(int(model.geom_contype[tid]), 0)
+
     def test_fovy(self):
         import math
         self.assertAlmostEqual(fovy_from_intrinsics(542.957, 480),
