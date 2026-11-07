@@ -149,9 +149,14 @@ def alignment_score(real, sim, edge_x_min=440, edge_x_max=600):
     edges = m["bbox_delta_sim_minus_real_px"]
     border_penalty = sum(abs(v) / (width if i % 2 == 0 else height)
                          for i, v in enumerate(edges)) / 4.
-    boundary = visible_upper_edge_residual(real, sim, edge_x_min, edge_x_max)
-    edge_penalty = ((boundary["mean_abs_error_px"] or 0.) / height
-                    if boundary["sample_columns"] >= 20 else 0.)
+    # Synthetic unit-test masks may be smaller than the 640px Side image.
+    # For such images, disable only the optional edge term.
+    if 0 <= edge_x_min < edge_x_max <= width:
+        boundary = visible_upper_edge_residual(real, sim, edge_x_min, edge_x_max)
+        edge_penalty = ((boundary["mean_abs_error_px"] or 0.) / height
+                        if boundary["sample_columns"] >= 20 else 0.)
+    else:
+        edge_penalty = 0.
     return m["iou"] - 0.20 * area_penalty - 0.35 * border_penalty - 0.50 * edge_penalty
 
 
