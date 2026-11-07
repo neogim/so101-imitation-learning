@@ -8,11 +8,9 @@ The output should be printed at 100% (no fit-to-page).
 from __future__ import annotations
 
 import argparse
-from io import BytesIO
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 SQUARES_X = 7
 SQUARES_Y = 9
@@ -42,6 +40,7 @@ def create_pdf(image, dest):
     from reportlab.lib.utils import ImageReader
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
+    from PIL import Image
 
     pdf = canvas.Canvas(str(dest), pagesize=A4, pageCompression=1)
     page_w, page_h = A4
@@ -49,7 +48,7 @@ def create_pdf(image, dest):
     x = (page_w - board_w) / 2
     y = (page_h - board_h) / 2 + 9 * mm
     # Pixel dimensions 1400x1800 correspond to a 140x180mm board at 10px/mm.
-    pdf.drawImage(ImageReader(image), x, y, width=board_w, height=board_h, mask="auto")
+    pdf.drawImage(ImageReader(Image.fromarray(image)), x, y, width=board_w, height=board_h, mask="auto")
     pdf.setFont("Helvetica", 9)
     pdf.drawString(16 * mm, 23 * mm, "ChArUco 7x9 | DICT_4X4_50 | square 20mm | marker 14mm")
     pdf.drawString(16 * mm, 17 * mm, "Print at 100% / Actual size. Measure the 100 mm line below.")
