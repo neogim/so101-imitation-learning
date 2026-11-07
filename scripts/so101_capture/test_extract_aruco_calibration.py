@@ -6,10 +6,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from extract_aruco_calibration import (
     marker_quality, stationary_candidates, stationary_regions,
+    parse_marker_sizes_mm, MIXED_MARKER_SIZES_MM,
 )
 
 
 class StationarySelectionTests(unittest.TestCase):
+    def test_mixed_marker_size_parse(self):
+        value = "0:14,1:25,2:14,3:25,4:25,5:25"
+        self.assertEqual(parse_marker_sizes_mm(value), MIXED_MARKER_SIZES_MM)
+        self.assertEqual(parse_marker_sizes_mm(None), {i: 14. for i in range(6)})
+
+    def test_mixed_marker_sizes_must_be_complete_and_positive(self):
+        for invalid in ("0:14,1:25", "0:14,1:25,2:14,3:25,4:25,5:0",
+                        "0:14,1:25,2:14,3:25,4:25,5:nan",
+                        "0:14,1:25,2:14,3:25,4:25,5:25,5:25"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_marker_sizes_mm(invalid)
+
     def test_one_pose_after_motion(self):
         import numpy as np
         moving = np.column_stack([np.linspace(0, 20, 20), np.zeros((20, 5))])
