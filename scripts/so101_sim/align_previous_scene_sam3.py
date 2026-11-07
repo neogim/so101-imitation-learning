@@ -172,62 +172,76 @@ def apply_base_offset(model, xyz_cm):
 
 def optimize(model, data, renderer, camera, table_geom_id, real_mask,
              axes="xy", max_delta_m=.12, initial_step_m=.02, levels=4,
-             edge_x_min=440, edge_x_max=600):
-    """Search base-frame axes, no camera-relative coupled XY translation.
+             edge_x_min=440, edge_x_max=600, fit_yaw=False,
+             max_yaw_delta_deg=30., initial_yaw_step_deg=5.):
+    """Fit table XY and optionally yaw against visible mask and far-edge strip.
 
-    IoU is a visual heuristic: do not interpret this as solved 3D calibration.
+    Only tabletop and legs are transformed. Their physical 800x510mm
+    footprint, camera, robot, Muhi and cup are fixed. No guessed hidden clicks.
     """
     import mujoco
 
     if max_delta_m <= 0 or initial_step_m <= 0 or levels <= 0:
         raise ValueError("Search parameters must be positive")
+    if fit_yaw and (max_yaw_delta_deg <= 0 or initial_yaw_step_deg <= 0):
+        raise ValueError("Yaw search limits must be positive")
     if axes not in ("x", "y", "z", "xy", "xyz"):
         raise ValueError("axes must be x, y, z, xy or xyz")
-    part_ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, n)
-                for n in TABLE_PART_NAMES]
-    if any(i < 0 for i in part_ids):
-        raise ValueError("Previous preview tabletop/leg geometry not found")
-    original = model.geom_pos[part_ids].copy()
-    allowed = tuple("xyz".index(a) for a in axes)
+    ids = movie.table_geom_ids(model)
+    original = model.geom_pos[ids].copy()
+    orientations = model.geom_quat[ids].copy()
+    active = tuple("xyz".index(a) for a in axes)
     selected = np.zeros(3, dtype=float)
+    selected_yaw = 0.
 
-    def trial(delta):
-        model.geom_pos[part_ids] = original + delta
+    def trial(delta, yaw_deg):
+        movie.set_table_pose_delta(model, original, orientations, delta, yaw_deg)
         candidate = segmentation_mask(renderer, model, data, camera, table_geom_id)
         if not candidate.any():
-            return -1.0
-        # This metric is *not* proof that visible edges or camera scale align.
+            return -1.
         return alignment_score(real_mask, candidate, edge_x_min, edge_x_max)
 
-    before = trial(selected)
-    best_score = before
-    # Coordinate descent searches one physical axis at a time. For x-only
-    # there is no accidental y movement; table orientation stays unchanged.
+    before = trial(selected, selected_yaw)
+    best = before
+    # Fixed finite iterations. Keep the selection axes independent while
+    # allowing yaw and translation to re-adjust each other twice per level.
     for level in range(levels):
-        step = initial_step_m / 2 ** level
-        changed = True
-        # Repeat once per level to account for mild X/Y coupling in the view.
-        while changed:
-            changed = False
-            for axis in allowed:
-                candidate_best, candidate_score = selected.copy(), best_score
+        step = initial_step_m / (2 ** level)
+        yaw_step = initial_yaw_step_deg / (2 ** level)
+        for _ in range(2):
+            for axis in active:
+                candidate, candidate_score = selected.copy(), best
                 for d in (-2, -1, 1, 2):
-                    proposed = selected.copy()
-                    proposed[axis] += step * d
-                    if abs(proposed[axis]) > max_delta_m + 1e-10:
+                    new_delta = selected.copy()
+                    new_delta[axis] += step * d
+                    if abs(new_delta[axis]) > max_delta_m + 1e-10:
                         continue
-                    score = trial(proposed)
+                    score = trial(new_delta, selected_yaw)
                     if score > candidate_score + 1e-7:
-                        candidate_best, candidate_score = proposed, score
-                if candidate_score > best_score + 1e-7:
-                    selected, best_score = candidate_best, candidate_score
-                    changed = True
-            # Avoid unnecessary extra loops with score changes below threshold.
-    trial(selected)
+                        candidate, candidate_score = new_delta, score
+                selected, best = candidate, candidate_score
+            if fit_yaw:
+                candidate_yaw, candidate_score = selected_yaw, best
+                for d in (-2, -1, 1, 2):
+                    new_yaw = selected_yaw + yaw_step * d
+                    if abs(new_yaw) > max_yaw_delta_deg + 1e-10:
+                        continue
+                    score = trial(selected, new_yaw)
+                    if score > candidate_score + 1e-7:
+                        candidate_yaw, candidate_score = new_yaw, score
+                selected_yaw, best = candidate_yaw, candidate_score
+    trial(selected, selected_yaw)
     return {
         "axes": axes,
         "base_delta_xyz_m": selected.tolist(),
-        "objective_before": before, "objective_after": best_score,
+        "yaw_delta_deg": float(selected_yaw),
+        "table_yaw_deg": float(15. + selected_yaw),
+        "objective_before": before,
+        "objective_after": best,
+        "search_bound_hit": {
+            "xyz": any(abs(selected[j]) >= max_delta_m - 1e-8 for j in active),
+            "yaw": bool(fit_yaw and abs(selected_yaw) >= max_yaw_delta_deg - 1e-8),
+        },
     }
 
 
@@ -261,6 +275,10 @@ def main():
                    help="Use the same Muhi/cup 3-click JSON as the comparison video")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--max-delta-m", type=float, default=.12)
+    p.add_argument("--fit-yaw", action="store_true",
+                   help="Optimize tabletop yaw about its center alongside base XY")
+    p.add_argument("--max-yaw-delta-deg", type=float, default=30.)
+    p.add_argument("--initial-yaw-step-deg", type=float, default=5.)
     p.add_argument("--edge-x-min", type=int, default=440)
     p.add_argument("--edge-x-max", type=int, default=600)
     p.add_argument("--axis", choices=("x", "y", "z", "xy", "xyz"), default="xy",
@@ -316,7 +334,10 @@ def main():
             raise ValueError("Simulated tabletop not visible with existing camera")
         result = optimize(model, data, renderer, camera, geom, real_mask,
                           axes=args.axis, max_delta_m=args.max_delta_m,
-                          edge_x_min=args.edge_x_min, edge_x_max=args.edge_x_max)
+                          edge_x_min=args.edge_x_min, edge_x_max=args.edge_x_max,
+                          fit_yaw=args.fit_yaw,
+                          max_yaw_delta_deg=args.max_yaw_delta_deg,
+                          initial_yaw_step_deg=args.initial_yaw_step_deg)
         last = segmentation_mask(renderer, model, data, camera, geom)
     result["before"] = silhouette_diagnostics(real_mask, first)
     result["after"] = silhouette_diagnostics(real_mask, last)
@@ -329,7 +350,7 @@ def main():
     result["model_target"] = "r2s_preview_table_and_four_legs"
     result["matching_episode_pose"] = args.episode if recorded_first is not None else None
     result["matching_object_layout_json"] = str(args.object_layout_json) if layout is not None else None
-    result["table_yaw_deg_unchanged"] = 15.
+    result["table_yaw_deg_unchanged"] = not args.fit_yaw
     result["table_dimensions_unchanged"] = True
     result["recommended_video_flags"] = {
         "--table-extra-left-cm": 4.0,
@@ -337,8 +358,11 @@ def main():
         "--table-base-x-cm": round(result["base_delta_xyz_m"][0] * 100., 3),
         "--table-base-y-cm": round(result["base_delta_xyz_m"][1] * 100., 3),
         "--table-base-z-cm": round(result["base_delta_xyz_m"][2] * 100., 3),
+        "--table-yaw-delta-deg": round(result["yaw_delta_deg"], 3),
     }
     result["warnings"] = []
+    if result["search_bound_hit"]["xyz"] or result["search_bound_hit"]["yaw"]:
+        result["warnings"].append("Optimizer reached search boundary; pose is NOT validated.")
     if abs(result["after"]["area_ratio_sim_over_real"] - 1.) > .10:
         result["warnings"].append("Projected tabletop area still differs from SAM3 by >10%.")
     if result["after"]["bbox_max_abs_error_px"] > 15:
@@ -354,7 +378,7 @@ def main():
     result["warnings"].append(
         "SAM3 mask has occlusion holes and simulated robot pose differs; IoU is NOT a reliable 3D depth/roll estimator.")
     result["warnings"].append(
-        "Only base XYZ location is searched; camera, yaw, physical size and other objects stay fixed.")
+        "Only selected base axes and optional tabletop yaw are searched; camera, physical size and other objects stay fixed.")
     args.output.mkdir(parents=True)
     Image.fromarray(real_mask.astype("uint8") * 255).save(args.output/"real_mask.png")
     overlay(original, real_mask, first).save(args.output/"before.png")
