@@ -15,6 +15,33 @@ from pathlib import Path
 JOINT_NAMES = ("shoulder_pan", "shoulder_lift", "elbow_flex",
                "wrist_flex", "wrist_roll", "gripper")
 
+DEFAULT_MARKER_SIZES_MM = {i: 14.0 for i in range(6)}
+MIXED_MARKER_SIZES_MM = {0: 14.0, 1: 25.0, 2: 14.0, 3: 25.0, 4: 25.0, 5: 25.0}
+
+
+def parse_marker_sizes_mm(value):
+    """Parse complete per-ID size mapping, e.g. '0:14,1:25,...,5:25'."""
+    if value is None:
+        return dict(DEFAULT_MARKER_SIZES_MM)
+    result = {}
+    for entry in value.split(","):
+        parts = entry.split(":")
+        if len(parts) != 2:
+            raise ValueError("Expected comma-separated ID:mm pairs")
+        try:
+            marker_id = int(parts[0])
+            side_mm = float(parts[1])
+        except ValueError as exc:
+            raise ValueError("Invalid marker ID or dimension") from exc
+        if marker_id not in range(6) or marker_id in result:
+            raise ValueError("Marker ID must be unique and between 0 and 5")
+        if not math.isfinite(side_mm) or side_mm <= 0:
+            raise ValueError("Marker side must be finite and >0 mm")
+        result[marker_id] = side_mm
+    if set(result) != set(range(6)):
+        raise ValueError("Specify sizes for all IDs 0..5")
+    return result
+
 
 def stationary_regions(states, *, window=12, tolerance_deg=0.7):
     """Return groups of candidate *frame indices* within stationary windows.
@@ -103,11 +130,17 @@ def marker_quality(markers, *, min_edge_px):
 
 
 def extract(source, output, *, window=12, tolerance_deg=0.7, distinct_deg=3.0,
-            min_edge_px=8.0, max_poses=30):
+            min_edge_px=8.0, max_poses=30, marker_sizes_mm=None):
     import av
     import cv2
     import numpy as np
     import pyarrow.parquet as pq
+
+    if marker_sizes_mm is None:
+        marker_sizes_mm = dict(DEFAULT_MARKER_SIZES_MM)
+    if set(marker_sizes_mm) != set(range(6)) or any(
+            not math.isfinite(v) or v <= 0 for v in marker_sizes_mm.values()):
+        raise ValueError("Provide a positive measured size for every marker ID")
 
     if (window < 3 or max_poses < 1 or
             not all(math.isfinite(v) and v > 0 for v in
@@ -237,7 +270,11 @@ def extract(source, output, *, window=12, tolerance_deg=0.7, distinct_deg=3.0,
                 "stationary_frames_checked": diag["frames_checked"],
                 "timestamp_s": float(row["timestamp"]),
                 "joints": {name: float(v) for name, v in zip(JOINT_NAMES, state)},
-                "markers": best["markers"],
+                "markers": [
+                    {**marker, "marker_black_outer_edge_m":
+                     marker_sizes_mm[marker["id"]] / 1000.0}
+                    for marker in best["markers"]
+                ],
                 "image_size": [int(best["image"].shape[1]), int(best["image"].shape[0])],
                 "selection_quality": {
                     "usable_marker_count": best["rank"][0],
@@ -250,8 +287,11 @@ def extract(source, output, *, window=12, tolerance_deg=0.7, distinct_deg=3.0,
         "source_dataset_name": source.name,
         "dictionary": "DICT_4X4_50",
         "marker_ids": list(range(6)),
-        "marker_black_outer_edge_m": 0.014,
-        "marker_print_total_edge_m": 0.018,
+        "marker_black_outer_edge_m": (
+            next(iter(set(marker_sizes_mm.values()))) / 1000.0
+            if len(set(marker_sizes_mm.values())) == 1 else None),
+        "marker_print_total_edge_m": None,
+        "marker_sizes_mm_by_id": {str(i): marker_sizes_mm[i] for i in range(6)},
         "fps": fps,
         "stationary_window_frames": window,
         "stationary_max_range_deg": tolerance_deg,
@@ -286,10 +326,13 @@ def main():
     p.add_argument("--distinct-deg", type=float, default=3.0)
     p.add_argument("--min-edge-px", type=float, default=8.0)
     p.add_argument("--max-poses", type=int, default=30)
+    p.add_argument("--marker-sizes-mm", type=str, default=None,
+                   help="All six ID:outer-black-edge-mm pairs; e.g. 0:14,1:25,2:14,3:25,4:25,5:25")
     a = p.parse_args()
     extract(a.dataset.expanduser().resolve(), a.out_dir.expanduser().resolve(),
             window=a.window, tolerance_deg=a.tolerance_deg, distinct_deg=a.distinct_deg,
-            min_edge_px=a.min_edge_px, max_poses=a.max_poses)
+            min_edge_px=a.min_edge_px, max_poses=a.max_poses,
+            marker_sizes_mm=parse_marker_sizes_mm(a.marker_sizes_mm))
 
 
 if __name__ == "__main__":
