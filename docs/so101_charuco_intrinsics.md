@@ -63,3 +63,34 @@ python scripts/so101_capture/calibrate_side_charuco_offline.py \
 5. URDF角度ゼロ点・符号／ID2固定剛性を別途確認した後、ID0/1/2のPnPとEye-to-Hand推定へ。
 
 [関連：ArUco収録／FK／重複監査](so101_aruco_calibration_capture.md) ／ [Draft PR #9](https://github.com/neogim/so101-imitation-learning/pull/9)
+
+
+## 一人で撮影する方法：自動タイマー（2026-11-07追加）
+
+ターミナルで1枚ずつEnterを押さなくてよい。OBSを起動し、印刷ボードを持ち、
+**撮影開始まで8秒、以後3秒ごとに25枚**を自動保存する。
+ボードは各シャッター時点で静止させる。連続移動するとモーションブラーで検出精度が落ちる。
+
+まず **YAMLの実在場所を検索**：
+
+```bash
+find . -type f -name 'cameras.aruco-640.local.yaml' -print
+```
+
+発見したパスを正しく指定する。例えば `./scripts/so101_capture/cameras.aruco-640.local.yaml`
+と表示された場合は次のコマンド（存在しなければ推測して使わない）：
+
+```bash
+CONFIG="$(find . -type f -name 'cameras.aruco-640.local.yaml' -print -quit)"
+test -n "$CONFIG" && test -f "$CONFIG" || { echo 'ERROR: YAML not found'; exit 1; }
+PYTHONPATH="$PWD/.local/camera-deps${PYTHONPATH:+:$PYTHONPATH}" \
+python scripts/so101_capture/capture_side_charuco_stills.py \
+  --camera-config "$CONFIG" \
+  --out-dir outputs/so101-charuco-stills-timed-01 \
+  --frames 25 --start-delay-seconds 8 --interval-seconds 3 --execute
+```
+
+このブロックの `exit 1` はシェルスクリプトのときに安全停止する。対話シェルで直接貼る場合は `CONFIG` の検出結果を確認してから実行すること。
+自動撮影中はロボット／Follower／Leaderを接続・操作しない。途中停止はCtrl-C（その時点の画像は保存される）。出力先が存在すると実行拒否するので、新しい名前を指定する。
+
+**この方式は動画ファイル保存ではなくOBS連続静止画取得**。連続録画して後からフレームを選ぶ方式も可能だが、今回のコードでは所定間隔の静止画を直接保存する。必要なら画面内のボード検出率を確認して追加収集する。
