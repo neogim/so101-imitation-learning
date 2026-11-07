@@ -249,6 +249,11 @@ def main():
     p.add_argument("--intrinsics", type=Path, required=True,
                    help="Same 640x480 intrinsics JSON used for successful comparison video")
     p.add_argument("--urdf", type=Path, default=movie.DEFAULT_URDF)
+    p.add_argument("--dataset-root", type=Path,
+                   help="Use the recorded episode first joint pose in the mask scene")
+    p.add_argument("--episode", type=int, default=4)
+    p.add_argument("--object-layout-json", type=Path,
+                   help="Use the same Muhi/cup 3-click JSON as the comparison video")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--max-delta-m", type=float, default=.12)
     p.add_argument("--edge-x-min", type=int, default=440)
@@ -271,11 +276,31 @@ def main():
     if (intrinsics.get("width"), intrinsics.get("height")) != (640, 480):
         p.error("Side intrinsics must be calibrated for 640x480 pixels")
 
-    # Keep camera pose, perspective, white follower, backdrop, and fill light
-    # exactly as in the prior successful comparison branch.
+    # Use the SAME approximate object layout and first recorded joint state
+    # as the comparison movie. Otherwise differently placed Muhi/cup and
+    # default robot pose distort SAM3-vs-Sim occlusion comparisons.
+    if bool(args.dataset_root) != bool(args.object_layout_json):
+        p.error("--dataset-root and --object-layout-json are required together")
+    layout = None
+    recorded_first = None
+    if args.dataset_root is not None:
+        recorded_first = movie.r2s.read_episode(
+            args.dataset_root.resolve(strict=True), args.episode, 1, 1)["rows"][0]
+        muhi_px, cup_px, yaw = movie.read_object_targets(args.object_layout_json)
+        layout = movie.video_object_layout(extrinsics["T_base_camera"], intrinsics,
+                                           muhi_px, cup_px, yaw)
     model, camera = movie.make_calibrated_model(
-        extrinsics, intrinsics, args.urdf)
+        extrinsics, intrinsics, args.urdf, object_layout=layout)
     data = mujoco.MjData(model)
+    if recorded_first is not None:
+        joints_config = {
+            "joints": {
+                "sign": {name: 1 for name in movie.r2s.JOINTS},
+                "offset_deg": {name: 0. for name in movie.r2s.JOINTS},
+            }
+        }
+        movie.r2s.set_pose(model, data, recorded_first["state"], joints_config)
+        movie.set_visual_gripper(model, data, recorded_first["state"][5])
     geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_preview_table")
     if geom < 0:
         raise ValueError("No r2s_preview_table geom")
@@ -297,6 +322,8 @@ def main():
     result["upper_edge_after"] = visible_upper_edge_residual(real_mask, last, args.edge_x_min, args.edge_x_max)
     result["status"] = "VISUAL_CANDIDATE_NOT_3D_CALIBRATION"
     result["model_target"] = "r2s_preview_table_and_four_legs"
+    result["matching_episode_pose"] = args.episode if recorded_first is not None else None
+    result["matching_object_layout_json"] = str(args.object_layout_json) if layout is not None else None
     result["table_yaw_deg_unchanged"] = 15.
     result["table_dimensions_unchanged"] = True
     result["recommended_video_flags"] = {
