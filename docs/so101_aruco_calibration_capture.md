@@ -741,3 +741,26 @@ ID2（J5上流）を主対象としてJ1〜J4を使い、異なる3D位置と傾
 実機とURDF角度の符号・ゼロ点、
 マーカー取付剛体変換、Base-to-Sideカメラ外部変換。
 それらの推定には適切な校正ターゲットと別工程が必要。
+
+## 複数姿勢比較と実写動画・MuJoCo連続再生（オフライン）
+
+静止ArUco撮影は時間的に連続していないので、最初はID1が見える姿勢から代表5枚を比較する。
+```bash
+python scripts/so101_sim/compare_real_sim_motion.py poses \
+  --manifest outputs/so101-aruco-mixed-main-20261107/manifest.json \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --output outputs/so101-r2s-five-poses-20261107
+open outputs/so101-r2s-five-poses-20261107/five_pose_comparison.png
+```
+同じ日付の撮影とは別に、従来のLeRobotエピソードに保存されたSide映像と関節角を使った連続動作比較も可能。**こちらは動画収録時にSideカメラ位置が違っていた可能性がある**ので、位置のずれが出ても校正失敗とは即断しない。写真側の連続実写動画を新規撮影する必要はない。
+
+```bash
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root data/so101/muhi-side-wrist-success-053-20261025-168x224 \
+  --episode 0 --stride 5 --max-frames 60 \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --output outputs/so101-r2s-motion-20261107
+open outputs/so101-r2s-motion-20261107/real_vs_sim_episode.mp4
+```
+
+必要な環境：既存 `so101-real2sim` に `mujoco`, `scipy`, `numpy`, `pillow`, `pyarrow`, `av`（PyAV、MP4エンコーダー）が必要。動画入力フォルダはローカルに存在する録画データのパスへ読み替える。画像も関節角も記録データを読み取るだけで実機は動かない。スクリプトは出力既存時に拒否する。連続再生はFKによる姿勢再現でありACTの推論・把持動力学・ムヒの実際の移動はまだ再現していない。
