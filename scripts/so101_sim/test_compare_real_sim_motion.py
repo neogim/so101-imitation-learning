@@ -77,6 +77,21 @@ class MotionComparisonTests(unittest.TestCase):
         np.testing.assert_allclose(data.geom_xpos[obj.ids[0]],
                                    original + [.10, 0., 0.], atol=1e-7)
 
+    def test_measured_table_footprint_and_unaffected_props(self):
+        import mujoco
+        import compare_id1_eye_to_hand as scene
+        spec = mujoco.MjSpec.from_string("<mujoco><worldbody/></mujoco>")
+        spec.compiler.discardvisual = False
+        scene.add_approximate_workcell(spec)
+        model = spec.compile()
+        table_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM,
+                                     "r2s_preview_table")
+        np.testing.assert_allclose(model.geom_size[table_id],
+                                   [.4, .255, .02], atol=1e-8)
+        muhi_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM,
+                                    "r2s_muhi_body")
+        self.assertGreaterEqual(muhi_id, 0)
+
     def test_three_click_axis_projects_same_body_and_cap_ends(self):
         import mujoco
         from compare_real_sim_motion import muhi_axis_reprojection
