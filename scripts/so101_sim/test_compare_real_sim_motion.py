@@ -77,6 +77,25 @@ class MotionComparisonTests(unittest.TestCase):
         np.testing.assert_allclose(data.geom_xpos[obj.ids[0]],
                                    original + [.10, 0., 0.], atol=1e-7)
 
+    def test_three_click_axis_projects_same_body_and_cap_ends(self):
+        import mujoco
+        from compare_real_sim_motion import muhi_axis_reprojection
+        xml = """<mujoco><worldbody>
+        <geom name="r2s_muhi_body" type="cylinder"
+          pos="-.0175 0 1" size=".019 .0325"/>
+        <geom name="r2s_muhi_cap" type="cylinder"
+          pos=".0325 0 1" size=".019 .0175"/>
+        </worldbody></mujoco>"""
+        model = mujoco.MjModel.from_xml_string(xml)
+        T = np.eye(4)
+        K = {"fx": 500., "fy": 500., "cx": 320., "cy": 240.}
+        annotations = {
+            "muhi_body_end_px": [295., 240.],
+            "muhi_cap_end_px": [345., 240.],
+        }
+        diag = muhi_axis_reprojection(model, T, K, annotations)
+        np.testing.assert_allclose(diag["reprojection_error_px"], [0., 0.], atol=1e-5)
+
     def test_read_per_video_object_layout(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "objects.json"
