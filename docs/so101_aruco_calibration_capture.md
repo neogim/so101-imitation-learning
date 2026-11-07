@@ -20,7 +20,7 @@ python scripts/so101_sim/compare_id1_eye_to_hand.py \
   --output outputs/so101-r2s-side-preview-20261107
 ```
 
-結果：`outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png`、`mujoco_only.png`（明るさ補正済み）、`mujoco_raw.png`（元の描画）、`report.json`。Sim側のみ表示用後処理で輝度を1.35倍、ガンマ0.9に補正する。`--sim-brightness 1 --sim-gamma 1` で無補正に戻せる。**同名出力が存在したら上書きせず、出力名を変更する。** Macで画像を開く：
+結果：`outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png`、`mujoco_only.png`、`report.json`。以前のSimピクセル倍率・ガンマ補正は廃止し、MuJoCoワールドに白色の固定補助ライトを1灯加える簡易照明を標準にする（`--lighting simple`）。元の照明と比較する場合は `--lighting original`。いずれも画像後処理なし。床・背景の厳密な再現や写真測量レベルの露出合わせは行わない。既存の出力フォルダを上書きしないため、照明変更後は別の出力名を使う。**同名出力が存在したら上書きせず、出力名を変更する。** Macで画像を開く：
 
 ```bash
 open outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png
