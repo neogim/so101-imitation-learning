@@ -103,7 +103,38 @@ def silhouette_diagnostics(real, sim):
     return metrics
 
 
-def alignment_score(real, sim):
+def visible_upper_edge_residual(real, sim, x_min=440, x_max=600):
+    """Compare tabletop topmost visible pixels in a selected unobstructed strip.
+
+    This is a 2D image boundary diagnostic, NOT verified 3D tabletop corners.
+    A user-selected strip must avoid the arm, Muhi/cup and mask ambiguity.
+    """
+    real, sim = np.asarray(real, bool), np.asarray(sim, bool)
+    if real.shape != sim.shape or real.ndim != 2:
+        raise ValueError("Incompatible tabletop masks")
+    height, width = real.shape
+    if not (0 <= x_min < x_max <= width):
+        raise ValueError("Invalid edge X interval")
+    errors = []
+    for x in range(x_min, x_max):
+        r = np.flatnonzero(real[:, x])
+        s = np.flatnonzero(sim[:, x])
+        if not r.size or not s.size:
+            continue
+        # Columns with foreground touching the top border cannot give a
+        # meaningful work surface far-edge measurement.
+        if r[0] <= 2 or s[0] <= 2:
+            continue
+        errors.append(int(s[0]) - int(r[0]))
+    if not errors:
+        return {"sample_columns": 0, "mean_abs_error_px": None,
+                "median_sim_minus_real_px": None}
+    e = np.asarray(errors, dtype=float)
+    return {"sample_columns": len(errors), "mean_abs_error_px": float(np.abs(e).mean()),
+            "median_sim_minus_real_px": float(np.median(e))}
+
+
+def alignment_score(real, sim, edge_x_min=440, edge_x_max=600):
     """Image-space heuristic; IoU plus scale and visible envelope agreement.
 
     A high score is not proof of metric 3D alignment or physical corners.
@@ -118,7 +149,10 @@ def alignment_score(real, sim):
     edges = m["bbox_delta_sim_minus_real_px"]
     border_penalty = sum(abs(v) / (width if i % 2 == 0 else height)
                          for i, v in enumerate(edges)) / 4.
-    return m["iou"] - 0.20 * area_penalty - 0.35 * border_penalty
+    boundary = visible_upper_edge_residual(real, sim, edge_x_min, edge_x_max)
+    edge_penalty = ((boundary["mean_abs_error_px"] or 0.) / height
+                    if boundary["sample_columns"] >= 20 else 0.)
+    return m["iou"] - 0.20 * area_penalty - 0.35 * border_penalty - 0.50 * edge_penalty
 
 
 def offset_xy(T_base_camera, left_m, front_m):
@@ -132,7 +166,8 @@ def apply_base_offset(model, xyz_cm):
 
 
 def optimize(model, data, renderer, camera, table_geom_id, real_mask,
-             axes="xy", max_delta_m=.12, initial_step_m=.02, levels=4):
+             axes="xy", max_delta_m=.12, initial_step_m=.02, levels=4,
+             edge_x_min=440, edge_x_max=600):
     """Search base-frame axes, no camera-relative coupled XY translation.
 
     IoU is a visual heuristic: do not interpret this as solved 3D calibration.
@@ -157,7 +192,7 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
         if not candidate.any():
             return -1.0
         # This metric is *not* proof that visible edges or camera scale align.
-        return alignment_score(real_mask, candidate)
+        return alignment_score(real_mask, candidate, edge_x_min, edge_x_max)
 
     before = trial(selected)
     best_score = before
@@ -216,6 +251,8 @@ def main():
     p.add_argument("--urdf", type=Path, default=movie.DEFAULT_URDF)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--max-delta-m", type=float, default=.12)
+    p.add_argument("--edge-x-min", type=int, default=440)
+    p.add_argument("--edge-x-max", type=int, default=600)
     p.add_argument("--axis", choices=("x", "y", "z", "xy", "xyz"), default="xy",
                    help="SO-101 base-frame axis to optimize; default XY (Z remains fixed)")
     args = p.parse_args()
@@ -248,12 +285,16 @@ def main():
         if not first.any():
             raise ValueError("Simulated tabletop not visible with existing camera")
         result = optimize(model, data, renderer, camera, geom, real_mask,
-                          axes=args.axis, max_delta_m=args.max_delta_m)
+                          axes=args.axis, max_delta_m=args.max_delta_m,
+                          edge_x_min=args.edge_x_min, edge_x_max=args.edge_x_max)
         last = segmentation_mask(renderer, model, data, camera, geom)
     result["before"] = silhouette_diagnostics(real_mask, first)
     result["after"] = silhouette_diagnostics(real_mask, last)
     result["iou_before"] = result["before"]["iou"]
     result["iou_after"] = result["after"]["iou"]
+    result["edge_strip_x_px"] = [args.edge_x_min, args.edge_x_max]
+    result["upper_edge_before"] = visible_upper_edge_residual(real_mask, first, args.edge_x_min, args.edge_x_max)
+    result["upper_edge_after"] = visible_upper_edge_residual(real_mask, last, args.edge_x_min, args.edge_x_max)
     result["status"] = "VISUAL_CANDIDATE_NOT_3D_CALIBRATION"
     result["model_target"] = "r2s_preview_table_and_four_legs"
     result["table_yaw_deg_unchanged"] = 15.
@@ -270,6 +311,10 @@ def main():
         result["warnings"].append("Projected tabletop area still differs from SAM3 by >10%.")
     if result["after"]["bbox_max_abs_error_px"] > 15:
         result["warnings"].append("Projected tabletop bounding edges still differ by >15 px.")
+    if (result["upper_edge_after"]["sample_columns"] < 20):
+        result["warnings"].append("Insufficient shared columns in selected upper-edge strip; change --edge-x-min/max.")
+    elif result["upper_edge_after"]["mean_abs_error_px"] > 8:
+        result["warnings"].append("Visible upper tabletop edge differs by >8px in the selected strip.")
     if result["warnings"]:
         result["status"] = "NOT_ALIGNED_REVIEW_MASK_AND_SCENE"
     else:
