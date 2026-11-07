@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from annotate_episode_objects import targets_from_clicks
+from annotate_episode_objects import targets_from_clicks, valid_image_click
 from compare_real_sim_motion import pixel_to_base_plane
 
 
@@ -29,6 +29,29 @@ class ThreeClickAnnotationTests(unittest.TestCase):
         yaw = np.radians(result["muhi_yaw_deg"])
         expected_axis = np.array([-np.sin(yaw), np.cos(yaw)])
         self.assertGreater(np.dot(axis / np.linalg.norm(axis), expected_axis), .999)
+
+    def test_click_filter_rejects_margins_other_buttons_and_toolbar_modes(self):
+        from types import SimpleNamespace
+        from matplotlib.backend_bases import MouseButton
+        axis = object()
+        toolbar = SimpleNamespace(mode="")
+        canvas = SimpleNamespace(manager=SimpleNamespace(toolbar=toolbar))
+        event = SimpleNamespace(inaxes=axis, canvas=canvas,
+                                button=MouseButton.LEFT, xdata=250., ydata=350.)
+        self.assertTrue(valid_image_click(event, axis))
+        for x, y in [(-.1, 350.), (640., 350.), (250., -1.), (250., 480.),
+                     (float("nan"), 100.)]:
+            event.xdata, event.ydata = x, y
+            self.assertFalse(valid_image_click(event, axis))
+        event.xdata, event.ydata = 250., 350.
+        event.button = MouseButton.RIGHT
+        self.assertFalse(valid_image_click(event, axis))
+        event.button = MouseButton.LEFT
+        event.inaxes = None
+        self.assertFalse(valid_image_click(event, axis))
+        event.inaxes = axis
+        toolbar.mode = "zoom rect"
+        self.assertFalse(valid_image_click(event, axis))
 
     def test_bad_points(self):
         with self.assertRaises(ValueError):
