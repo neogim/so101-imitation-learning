@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from compare_id1_eye_to_hand import (mujoco_camera_pose, fovy_from_intrinsics,
-                                     project_reference_points, add_approximate_workcell)
+                                     project_reference_points, add_approximate_workcell, workcell_shift_left_front)
 
 
 class SideCameraTests(unittest.TestCase):
@@ -65,6 +65,22 @@ class SideCameraTests(unittest.TestCase):
             self.assertGreaterEqual(gid, 0, name)
             self.assertEqual(int(model.geom_contype[gid]), 0)
             self.assertEqual(int(model.geom_conaffinity[gid]), 0)
+
+    def test_shift_moves_workcell_left_and_closer_in_camera_image(self):
+        T = np.array([[-.61650, .43981, -.65307, .49516],
+                      [.75783, .10642, -.64372, .38170],
+                      [-.21361, -.89176, -.39891, .28123],
+                      [0, 0, 0, 1]])
+        cam = {"fx": 543.17, "fy": 542.96, "cx": 316.39,
+               "cy": 229.55, "width": 640, "height": 480}
+        shift = workcell_shift_left_front(T, .08, .10)
+        self.assertAlmostEqual(shift[2], 0.)
+        initial = project_reference_points(T, cam)["table_center"]
+        moved = project_reference_points(T, cam, shift)["table_center"]
+        self.assertLess(moved["pixel_approx"][0], initial["pixel_approx"][0])
+        self.assertLess(moved["depth_m"], initial["depth_m"])
+        with self.assertRaises(ValueError):
+            workcell_shift_left_front(T, float("nan"), .1)
 
     def test_fovy(self):
         import math
