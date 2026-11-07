@@ -78,3 +78,22 @@ python scripts/so101_capture/audit_aruco_pnp_ambiguity.py \
 - [ ] ArUco 22姿勢のPnP（2解）診断をMacで実行・レビュー
 - [ ] LeRobot角とURDFのゼロ点・符号を物理検証
 - [ ] 外部校正＋未使用姿勢の再投影評価＋MuJoCo実写比較
+
+
+## 次段階：保存済み22姿勢PNGを使うサブピクセルPnP再評価
+
+元画像が `outputs/so101-aruco-calibration-20261108/images/` に存在することをMacで確認済み。元のmanifestで四隅座標を整数pxへ丸めて保存していたため、元画像を使って `cv2.cornerSubPix` により四隅を再推定する。**差分だけでなく、ID2のほぼ同姿勢2組における3D中心の移動量が縮むか**を観察する。
+
+```bash
+git pull --ff-only
+mkdir -p outputs/so101-aruco-subpixel-01
+python scripts/so101_capture/audit_aruco_subpixel_pnp.py \
+  --manifest outputs/so101-aruco-calibration-20261108/manifest.json \
+  --intrinsics assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json \
+  --marker-mm 14 \
+  --out outputs/so101-aruco-subpixel-01/report.json
+```
+
+結果はマーカーID別のコーナー移動量、PnP再投影RMSの前後比較、ID2の631→680と1451→1510の中心移動量を表示。サブピクセル補正の最大移動が2pxを超える場合や画面端に近すぎる場合は、元の四隅を維持して除外理由を記録する。元画像、既存manifestは改変しない。
+
+**重要な制約**：再投影RMSが小さくなっただけでは、3D位置やEye-to-Handが改善したと証明できない。改善がなければ、整数丸め以外の原因（撮影同期、取り付け剛性、関節零点、同一OBS幾何、Depthの独立参照）を検証する。
