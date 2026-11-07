@@ -13,6 +13,11 @@ on:
       - "scripts/so101_capture/calibrate_side_charuco_offline.py"
       - "scripts/so101_capture/capture_side_charuco_stills.py"
       - "scripts/so101_capture/test_calibrate_side_charuco_offline.py"
+      - "scripts/so101_capture/audit_charuco_two_sessions.py"
+      - "scripts/so101_capture/audit_aruco_pnp_ambiguity.py"
+      - "scripts/so101_capture/test_audit_aruco_pnp_ambiguity.py"
+      - "assets/calibration/side_charuco_20261107_40frame_diagnostic.json"
+      - "assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
       - ".github/workflows/aruco-calibration-tests.yml"
   push:
     branches:
@@ -28,6 +33,11 @@ on:
       - "scripts/so101_capture/calibrate_side_charuco_offline.py"
       - "scripts/so101_capture/capture_side_charuco_stills.py"
       - "scripts/so101_capture/test_calibrate_side_charuco_offline.py"
+      - "scripts/so101_capture/audit_charuco_two_sessions.py"
+      - "scripts/so101_capture/audit_aruco_pnp_ambiguity.py"
+      - "scripts/so101_capture/test_audit_aruco_pnp_ambiguity.py"
+      - "assets/calibration/side_charuco_20261107_40frame_diagnostic.json"
+      - "assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
       - ".github/workflows/aruco-calibration-tests.yml"
 
 jobs:
@@ -43,9 +53,12 @@ jobs:
       - name: Install test-only numerical dependency
         run: python -m pip install numpy opencv-contrib-python-headless
       - name: Compile source
-        run: python -m py_compile scripts/so101_capture/extract_aruco_calibration.py scripts/so101_capture/test_extract_aruco_calibration.py scripts/so101_capture/audit_fk_aruco.py scripts/so101_capture/test_audit_fk_aruco.py scripts/so101_capture/audit_aruco_diversity.py scripts/so101_capture/test_audit_aruco_diversity.py scripts/so101_capture/calibrate_side_charuco_offline.py scripts/so101_capture/test_calibrate_side_charuco_offline.py scripts/so101_capture/capture_side_charuco_stills.py
+        run: python -m py_compile scripts/so101_capture/extract_aruco_calibration.py scripts/so101_capture/test_extract_aruco_calibration.py scripts/so101_capture/audit_fk_aruco.py scripts/so101_capture/test_audit_fk_aruco.py scripts/so101_capture/audit_aruco_diversity.py scripts/so101_capture/test_audit_aruco_diversity.py scripts/so101_capture/calibrate_side_charuco_offline.py scripts/so101_capture/test_calibrate_side_charuco_offline.py scripts/so101_capture/capture_side_charuco_stills.py scripts/so101_capture/audit_charuco_two_sessions.py scripts/so101_capture/audit_aruco_pnp_ambiguity.py scripts/so101_capture/test_audit_aruco_pnp_ambiguity.py
       - name: Test stationary frame selection
         run: python -m unittest discover -s scripts/so101_capture -p 'test_*aruco*.py' -v
 
       - name: Test ChArUco board offline
         run: python -m unittest discover -s scripts/so101_capture -p 'test_calibrate_side_charuco_offline.py' -v
+
+      - name: Test ArUco IPPE pose ambiguity (synthetic)
+        run: python -m unittest discover -s scripts/so101_capture -p 'test_audit_aruco_pnp_ambiguity.py' -v
