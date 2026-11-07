@@ -6,7 +6,14 @@
 ChArUcoは内部校正用。ロボットに貼ったID0/1/2のArUcoはEye-to-Hand外部校正用であり、役割を混同しない。
 
 ## ボード印刷
-A4・7×9マス、1マス20mm・ArUco正方形14mm、DICT_4X4_50、全体140×180mm（内側コーナー6×8=48）。会話内の `charuco_A4_7x9_square20mm_marker14mm.pdf` を100%／実際のサイズで印刷する（用紙に合わせるをOFF）。印刷された100mm確認線と1マスを定規で測り、硬い平板に貼り付ける。PDFをGitHubへは添付していないため、会話のファイルから入手する。
+A4・7×9マス、1マス20mm・ArUco正方形14mm、DICT_4X4_50、全体140×180mm（内側コーナー6×8=48）。Gitで管理する原本：[`assets/calibration/charuco_7x9_20mm_14mm.svg`](../assets/calibration/charuco_7x9_20mm_14mm.svg)。SVGは140×180mmの実寸ベクターボード。A4で確認線のあるPDFと1400×1800 PNGは再生成可能。
+
+```bash
+python scripts/so101_capture/generate_charuco_board.py \\
+  --out-dir outputs/charuco-board-01
+```
+
+出力 `charuco_A4_7x9_square20mm_marker14mm.pdf` は100%／実際のサイズで印刷する（用紙に合わせるをOFF）。印刷された100mm確認線と1マスを定規で測り、硬い平板に貼り付ける。既存のPDF/PNGをGitへバイナリとして直接格納したわけではない。**Git管理対象はSVG版ボードと再生成スクリプト**。
 
 ## 実機を動かさずOBSだけで収録
 これまで使った**ローカル** `scripts/so101_capture/cameras.aruco-640.local.yaml` を使用。OBS WebSocket認証、既存source UUIDと設定照合が必要。個人のカメラ設定・パスワードをGitHubへ入れない。
