@@ -206,9 +206,6 @@ def run_poses(args):
         combined.paste(picture, (0, i*picture.height))
     output = args.output / "five_pose_comparison.png"
     combined.save(output)
-    frame0 = reals[frame_ids[0]].convert("RGB").resize((640, 480))
-    draw_muhi_axis_preview(frame0, muhi_projection).save(
-        args.output / "muhi_axis_reprojection.png")
     (args.output / "report.json").write_text(json.dumps({
         "mode": "STATIC_POSE_COMPARISON_NOT_CONTINUOUS_MOTION",
         "calibration": "provisional", "frames": results,
@@ -462,6 +459,9 @@ def run_motion(args):
                     container.mux(packet)
             for packet in stream.encode():
                 container.mux(packet)
+    frame0 = reals[frame_ids[0]].convert("RGB").resize((640, 480))
+    draw_muhi_axis_preview(frame0, muhi_projection).save(
+        args.output / "muhi_axis_reprojection.png")
     (args.output / "report.json").write_text(json.dumps({
         "mode": "RECORDED_REAL_SIDE_VS_MUJOCO_FK_NOT_PHYSICS_REPLAY",
         "output": str(output), "video_source": str(video_path),
