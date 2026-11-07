@@ -20,7 +20,7 @@ python scripts/so101_sim/compare_id1_eye_to_hand.py \
   --output outputs/so101-r2s-side-preview-20261107
 ```
 
-結果：`outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png`、`mujoco_only.png`、`report.json`。**同名出力が存在したら上書きせず、出力名を変更する。** Macで画像を開く：
+結果：`outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png`、`mujoco_only.png`（明るさ補正済み）、`mujoco_raw.png`（元の描画）、`report.json`。Sim側のみ表示用後処理で輝度を1.35倍、ガンマ0.9に補正する。`--sim-brightness 1 --sim-gamma 1` で無補正に戻せる。**同名出力が存在したら上書きせず、出力名を変更する。** Macで画像を開く：
 
 ```bash
 open outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png
