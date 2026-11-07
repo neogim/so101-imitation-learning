@@ -49,6 +49,25 @@ class MaskAndGeometryTests(unittest.TestCase):
         self.assertLess(delta_near[0], 0.)
         self.assertGreater(delta_far[0], 0.)
 
+    def test_upper_edge_strip_reprojection(self):
+        real = np.zeros((40, 70), bool)
+        sim = np.zeros_like(real)
+        real[12:, 5:65] = True
+        sim[16:, 5:65] = True
+        edge = align.visible_upper_edge_residual(real, sim, 20, 50)
+        self.assertEqual(edge["sample_columns"], 30)
+        self.assertEqual(edge["median_sim_minus_real_px"], 4.)
+        self.assertEqual(edge["mean_abs_error_px"], 4.)
+
+    def test_upper_edge_ignores_cutoff_and_rejects_invalid_interval(self):
+        real = np.zeros((30, 40), bool)
+        real[:15, 5:20] = True
+        sim = real.copy()
+        edge = align.visible_upper_edge_residual(real, sim, 5, 20)
+        self.assertEqual(edge["sample_columns"], 0)
+        with self.assertRaisesRegex(ValueError, "Invalid edge"):
+            align.visible_upper_edge_residual(real, sim, 20, 5)
+
     def test_bbox_envelope_errors(self):
         real = np.zeros((20, 30), bool)
         sim = np.zeros_like(real)
