@@ -103,6 +103,24 @@ def silhouette_diagnostics(real, sim):
     return metrics
 
 
+def alignment_score(real, sim):
+    """Image-space heuristic; IoU plus scale and visible envelope agreement.
+
+    A high score is not proof of metric 3D alignment or physical corners.
+    """
+    if not sim.any():
+        return -1.
+    m = silhouette_diagnostics(real, sim)
+    import math
+    area_penalty = abs(math.log(m["area_ratio_sim_over_real"]))
+    # Normalize bbox differences by image dimensions, not by world axes.
+    height, width = real.shape
+    edges = m["bbox_delta_sim_minus_real_px"]
+    border_penalty = sum(abs(v) / (width if i % 2 == 0 else height)
+                         for i, v in enumerate(edges)) / 4.
+    return m["iou"] - 0.20 * area_penalty - 0.35 * border_penalty
+
+
 def offset_xy(T_base_camera, left_m, front_m):
     """Legacy camera-relative offset, retained only for compatibility/tests."""
     return scene.workcell_shift_left_front(T_base_camera, left_m, front_m)[:2]
@@ -139,7 +157,7 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
         if not candidate.any():
             return -1.0
         # This metric is *not* proof that visible edges or camera scale align.
-        return float((real_mask & candidate).sum() / (real_mask | candidate).sum())
+        return alignment_score(real_mask, candidate)
 
     before = trial(selected)
     best_score = before
@@ -169,7 +187,7 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
     return {
         "axes": axes,
         "base_delta_xyz_m": selected.tolist(),
-        "iou_before": before, "iou_after": best_score,
+        "objective_before": before, "objective_after": best_score,
     }
 
 
@@ -234,6 +252,8 @@ def main():
         last = segmentation_mask(renderer, model, data, camera, geom)
     result["before"] = silhouette_diagnostics(real_mask, first)
     result["after"] = silhouette_diagnostics(real_mask, last)
+    result["iou_before"] = result["before"]["iou"]
+    result["iou_after"] = result["after"]["iou"]
     result["status"] = "VISUAL_CANDIDATE_NOT_3D_CALIBRATION"
     result["model_target"] = "r2s_preview_table_and_four_legs"
     result["table_yaw_deg_unchanged"] = 15.
@@ -250,6 +270,10 @@ def main():
         result["warnings"].append("Projected tabletop area still differs from SAM3 by >10%.")
     if result["after"]["bbox_max_abs_error_px"] > 15:
         result["warnings"].append("Projected tabletop bounding edges still differ by >15 px.")
+    if result["warnings"]:
+        result["status"] = "NOT_ALIGNED_REVIEW_MASK_AND_SCENE"
+    else:
+        result["status"] = "VISUAL_ENVELOPE_MATCH_CANDIDATE_UNVERIFIED"
     result["warnings"].append(
         "SAM3 mask has occlusion holes and simulated robot pose differs; IoU is NOT a reliable 3D depth/roll estimator.")
     result["warnings"].append(
