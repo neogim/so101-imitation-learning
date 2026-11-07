@@ -24,6 +24,9 @@ python scripts/so101_sim/compare_id1_eye_to_hand.py \
 
 **配置調整（11/7）**：比較用の机・ムヒ・透明容器を一体としてカメラ画像の左方向へ8cm、カメラ手前へ10cm（ともにベースXY平面上）移動。`--workcell-left-cm 8 --workcell-front-cm 10` がデフォルト。カメラの回転から基底座標への平行移動を計算するため、ベース座標X/Yと画像左右を混同しない。元の配置に戻す場合は両方 `0`。背景板は移動しない。出力先は新しいディレクトリ名を指定する。
 
+**机の端・yaw調整**：上記共通移動とは別に、机の天板・脚だけをさらに左4cm/手前5cm（カメラ基準のベースXY移動）移し、テーブル中心周りをベースZ軸で +15° 回転する。ムヒ・容器・ロボット・カメラの位置は変更しない。実写の方向に対する暫定設定。引数は `--table-extra-left-cm 4 --table-extra-front-cm 5 --table-yaw-deg 15`。厳密合わせではなく見た目の確認後に終了する。
+
+
 
 ```bash
 open outputs/so101-r2s-side-preview-20261107/real_vs_mujoco.png
