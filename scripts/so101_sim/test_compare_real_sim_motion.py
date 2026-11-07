@@ -7,7 +7,8 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_real_sim_motion import sample_evenly, comparison_panel
+from compare_real_sim_motion import (sample_evenly, comparison_panel,
+                                     pixel_to_base_plane, video_object_layout)
 
 
 class MotionComparisonTests(unittest.TestCase):
@@ -25,6 +26,23 @@ class MotionComparisonTests(unittest.TestCase):
             sample_evenly([], 5)
         with self.assertRaises(ValueError):
             sample_evenly([1], 0)
+
+    def test_object_pixel_target_matches_projected_camera_ray(self):
+        T = np.array([[-.61650, .43981, -.65307, .49516],
+                      [.75783, .10642, -.64372, .38170],
+                      [-.21361, -.89176, -.39891, .28123],
+                      [0, 0, 0, 1]])
+        K = {"fx": 543.173, "fy": 542.957, "cx": 316.395, "cy": 229.548}
+        p = pixel_to_base_plane(T, K, 255., 360., .019)
+        xyz = T[:3, :3].T @ (p - T[:3, 3])
+        self.assertAlmostEqual(K["fx"]*xyz[0]/xyz[2]+K["cx"], 255., places=5)
+        self.assertAlmostEqual(K["fy"]*xyz[1]/xyz[2]+K["cy"], 360., places=5)
+        self.assertAlmostEqual(p[2], .019, places=5)
+        layout = video_object_layout(T, K)
+        self.assertEqual(layout["muhi_yaw_deg"], 45.)
+        self.assertEqual(len(layout["cup_xy"]), 2)
+        with self.assertRaises(ValueError):
+            pixel_to_base_plane(T, K, float("nan"), 310., .055)
 
     def test_real_sim_panel(self):
         real = Image.new("RGB", (224, 168), "red")
