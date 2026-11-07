@@ -402,7 +402,13 @@ def run_motion(args):
                                     args.table_base_z_cm))
     annotations = None
     if args.object_layout_json is not None:
-        annotations = json.loads(args.object_layout_json.read_text(encoding="utf-8").removesuffix("\\\\n"))
+        raw = args.object_layout_json.read_text(encoding="utf-8")
+        try:
+            annotations = json.loads(raw)
+        except json.JSONDecodeError:
+            if not raw.endswith("\\n"):
+                raise
+            annotations = json.loads(raw[:-2])
     muhi_projection = muhi_axis_reprojection(model, extrinsics["T_base_camera"],
                                             intrinsics, annotations)
     data = mujoco.MjData(model)
