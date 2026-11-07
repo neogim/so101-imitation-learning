@@ -1,13 +1,15 @@
 """Camera convention and image-FOV checks; no MuJoCo or hardware needed."""
 import sys
 import unittest
+import importlib.util
 from pathlib import Path
 
 import numpy as np
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_id1_eye_to_hand import mujoco_camera_pose, fovy_from_intrinsics, project_reference_points
+from compare_id1_eye_to_hand import (mujoco_camera_pose, fovy_from_intrinsics,
+                                     project_reference_points, add_approximate_workcell)
 
 
 class SideCameraTests(unittest.TestCase):
@@ -45,6 +47,24 @@ class SideCameraTests(unittest.TestCase):
         self.assertTrue(all(p["in_frame"] for p in projected.values()))
         self.assertNotEqual(projected["muhi_center"]["pixel_approx"],
                             projected["cup_center"]["pixel_approx"])
+
+    @unittest.skipUnless(importlib.util.find_spec("mujoco") is not None,
+                         "MuJoCo unavailable in this numerical-only environment")
+    def test_urdf_visual_only_objects_survive_compile(self):
+        import mujoco
+        root = Path(__file__).resolve().parents[2]
+        spec = mujoco.MjSpec.from_file(str(root / "data/urdf/so101/so101_new_calib.urdf"))
+        self.assertTrue(spec.compiler.discardvisual,
+                        "URDF import default changed; reassess this regression")
+        spec.compiler.discardvisual = False
+        add_approximate_workcell(spec)
+        model = spec.compile()
+        for name in ("r2s_preview_table", "r2s_muhi_body", "r2s_muhi_cap",
+                     "r2s_cup_base", "r2s_cup_wall_00"):
+            gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+            self.assertGreaterEqual(gid, 0, name)
+            self.assertEqual(int(model.geom_contype[gid]), 0)
+            self.assertEqual(int(model.geom_conaffinity[gid]), 0)
 
     def test_fovy(self):
         import math
