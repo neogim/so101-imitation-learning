@@ -206,7 +206,8 @@ def project_reference_points(T_base_cv, cam, shift_xyz=(0., 0., 0.)):
 
 
 def render_one(manifest_path, extrinsics_path, intrinsics_path, urdf_path, output_dir,
-               marker_id=1, sample_number=None, lighting='simple', workcell='simple',\n               workcell_left_m=0.08, workcell_front_m=0.10):
+               marker_id=1, sample_number=None, lighting='simple', workcell='simple',
+               workcell_left_m=0.08, workcell_front_m=0.10):
     import mujoco
 
     if output_dir.exists():
