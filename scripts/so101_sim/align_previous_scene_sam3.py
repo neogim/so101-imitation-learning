@@ -173,7 +173,8 @@ def apply_base_offset(model, xyz_cm):
 def optimize(model, data, renderer, camera, table_geom_id, real_mask,
              axes="xy", max_delta_m=.12, initial_step_m=.02, levels=4,
              edge_x_min=440, edge_x_max=600, fit_yaw=False,
-             max_yaw_delta_deg=30., initial_yaw_step_deg=5.):
+             max_yaw_delta_deg=30., initial_yaw_step_deg=5.,
+             robot_edge="off", robot_anchor_xy_m=(0., 0.), robot_edge_inset_m=0.):
     """Fit table XY and optionally yaw against visible mask and far-edge strip.
 
     Only tabletop and legs are transformed. Their physical 800x510mm
@@ -190,12 +191,19 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
     ids = movie.table_geom_ids(model)
     original = model.geom_pos[ids].copy()
     orientations = model.geom_quat[ids].copy()
+    if robot_edge not in ("off", "auto", "x+", "x-", "y+", "y-"):
+        raise ValueError("Invalid robot anchor edge")
+    selected_edge = (movie.nearest_table_edge(model, robot_anchor_xy_m)
+                     if robot_edge == "auto" else robot_edge)
     active = tuple("xyz".index(a) for a in axes)
     selected = np.zeros(3, dtype=float)
     selected_yaw = 0.
 
     def trial(delta, yaw_deg):
         movie.set_table_pose_delta(model, original, orientations, delta, yaw_deg)
+        if selected_edge != "off":
+            movie.anchor_table_edge_to_robot(
+                model, selected_edge, robot_anchor_xy_m, robot_edge_inset_m)
         candidate = segmentation_mask(renderer, model, data, camera, table_geom_id)
         if not candidate.any():
             return -1.
@@ -238,6 +246,14 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
         "table_yaw_deg": float(15. + selected_yaw),
         "objective_before": before,
         "objective_after": best,
+        "robot_anchor_edge": selected_edge,
+        "robot_anchor_xy_m": list(robot_anchor_xy_m),
+        "robot_edge_inset_m": robot_edge_inset_m,
+        "robot_table_edge": (
+            movie.anchor_table_edge_to_robot(
+                model, selected_edge, robot_anchor_xy_m, robot_edge_inset_m)
+            if selected_edge != "off" else None
+        ),
         "search_bound_hit": {
             "xyz": any(abs(selected[j]) >= max_delta_m - 1e-8 for j in active),
             "yaw": bool(fit_yaw and abs(selected_yaw) >= max_yaw_delta_deg - 1e-8),
@@ -275,6 +291,12 @@ def main():
                    help="Use the same Muhi/cup 3-click JSON as the comparison video")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--max-delta-m", type=float, default=.12)
+    p.add_argument("--anchor-robot-edge", choices=("off", "auto", "x+", "x-", "y+", "y-"),
+                   default="off",
+                   help="Align tabletop border to the robot clamp anchor while fitting")
+    p.add_argument("--robot-anchor-x-cm", type=float, default=0.)
+    p.add_argument("--robot-anchor-y-cm", type=float, default=0.)
+    p.add_argument("--robot-edge-inset-cm", type=float, default=0.)
     p.add_argument("--fit-yaw", action="store_true",
                    help="Optimize tabletop yaw about its center alongside base XY")
     p.add_argument("--max-yaw-delta-deg", type=float, default=30.)
@@ -337,7 +359,11 @@ def main():
                           edge_x_min=args.edge_x_min, edge_x_max=args.edge_x_max,
                           fit_yaw=args.fit_yaw,
                           max_yaw_delta_deg=args.max_yaw_delta_deg,
-                          initial_yaw_step_deg=args.initial_yaw_step_deg)
+                          initial_yaw_step_deg=args.initial_yaw_step_deg,
+                          robot_edge=args.anchor_robot_edge,
+                          robot_anchor_xy_m=(args.robot_anchor_x_cm / 100.,
+                                             args.robot_anchor_y_cm / 100.),
+                          robot_edge_inset_m=args.robot_edge_inset_cm / 100.)
         last = segmentation_mask(renderer, model, data, camera, geom)
     result["before"] = silhouette_diagnostics(real_mask, first)
     result["after"] = silhouette_diagnostics(real_mask, last)
@@ -359,8 +385,16 @@ def main():
         "--table-base-y-cm": round(result["base_delta_xyz_m"][1] * 100., 3),
         "--table-base-z-cm": round(result["base_delta_xyz_m"][2] * 100., 3),
         "--table-yaw-delta-deg": round(result["yaw_delta_deg"], 3),
+        "--anchor-robot-edge": result["robot_anchor_edge"],
+        "--robot-anchor-x-cm": args.robot_anchor_x_cm,
+        "--robot-anchor-y-cm": args.robot_anchor_y_cm,
+        "--robot-edge-inset-cm": args.robot_edge_inset_cm,
     }
     result["warnings"] = []
+    if result["robot_anchor_edge"] == "off":
+        result["warnings"] = ["Robot/table edge constraint is disabled; the simulated robot may float away from the table edge."]
+    else:
+        result["warnings"] = ["Robot anchor is assumed at configured SO-101 base XY; verify actual clamp reference before treating pose as calibrated."]
     if result["search_bound_hit"]["xyz"] or result["search_bound_hit"]["yaw"]:
         result["warnings"].append("Optimizer reached search boundary; pose is NOT validated.")
     if abs(result["after"]["area_ratio_sim_over_real"] - 1.) > .10:
@@ -378,7 +412,7 @@ def main():
     result["warnings"].append(
         "SAM3 mask has occlusion holes and simulated robot pose differs; IoU is NOT a reliable 3D depth/roll estimator.")
     result["warnings"].append(
-        "Only selected base axes and optional tabletop yaw are searched; camera, physical size and other objects stay fixed.")
+        "Only selected base axes, optional tabletop yaw and optional robot-edge constraint are fitted; camera, table dimensions, robot, and props stay fixed.")
     args.output.mkdir(parents=True)
     Image.fromarray(real_mask.astype("uint8") * 255).save(args.output/"real_mask.png")
     overlay(original, real_mask, first).save(args.output/"before.png")
