@@ -18,6 +18,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 import trimesh
+from scipy.spatial import ConvexHull
 
 import real_to_sim as r2s
 from overlay_stl_mujoco_contacts import FILES, source_to_world
@@ -66,9 +67,18 @@ def nearest_surface(mesh, points):
 
 def compute_report(source, hulls, contacts, alignment):
     rows = []
+    # ConvexHull equations classify contact points against the *closed*
+    # envelope; unsigned distance alone cannot tell inside from outside.
+    hull_planes = {
+        gid: ConvexHull(np.asarray(source[gid].vertices)).equations
+        for gid in IDS
+    }
     for item in contacts:
         a, b = item["pair"]
         p = np.asarray(item["position_world_m"], dtype=float).reshape(1, 3)
+        inside = {gid: bool(np.all(hull_planes[gid][:, :3] @ p[0]
+                                        + hull_planes[gid][:, 3] <= 1e-8))
+                  for gid in (a, b)}
         rows.append({
             "geom_a": a, "geom_b": b,
             "x_m": float(p[0, 0]), "y_m": float(p[0, 1]),
@@ -78,6 +88,8 @@ def compute_report(source, hulls, contacts, alignment):
             "raw_b_surface_mm": float(nearest_surface(source[b], p)[0]),
             "hull_a_surface_mm": float(nearest_surface(hulls[a], p)[0]),
             "hull_b_surface_mm": float(nearest_surface(hulls[b], p)[0]),
+            "inside_hull_a": inside[a],
+            "inside_hull_b": inside[b],
         })
     by_pair = {}
     for a, b in PAIRS:
@@ -101,6 +113,7 @@ def compute_report(source, hulls, contacts, alignment):
             } for g in IDS
         },
         "caveats": [
+            "inside_hull flags test geometric convex envelope inclusion, not inclusion in source STL.",
             "Both surfaces are world-frame and depicted as TRIANGLE FACES; not just vertices.",
             "Convex hull surfaces come from source STL vertices; exact MuJoCo contact representation may differ.",
             "Distances to raw/hull surfaces are UNSIGNED; contact midpoint may lie away from both surfaces.",
@@ -193,7 +206,8 @@ def run(out):
         cols = ["geom_a", "geom_b", "x_m", "y_m", "z_m",
                 "mujoco_contact_distance_mm",
                 "raw_a_surface_mm", "raw_b_surface_mm",
-                "hull_a_surface_mm", "hull_b_surface_mm"]
+                "hull_a_surface_mm", "hull_b_surface_mm",
+                "inside_hull_a", "inside_hull_b"]
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(report["contact_rows"])
