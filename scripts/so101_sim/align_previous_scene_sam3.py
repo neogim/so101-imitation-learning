@@ -365,7 +365,25 @@ def main():
         raise ValueError("No r2s_preview_table geom")
     with mujoco.Renderer(model, width=640, height=480) as renderer:
         renderer.enable_segmentation_rendering()
+        # Compare with the SAME user-specified initial pose, not the
+        # default unadjusted scene. Avoid misleading before/after reporting.
+        initial_ids = movie.table_geom_ids(model)
+        initial_pos = model.geom_pos[initial_ids].copy()
+        initial_quat = model.geom_quat[initial_ids].copy()
+        initial_offset = np.array([args.initial_base_x_cm, args.initial_base_y_cm,
+                                   args.initial_base_z_cm]) / 100.
+        movie.set_table_pose_delta(model, initial_pos, initial_quat, initial_offset,
+                                   args.initial_yaw_delta_deg)
+        if args.anchor_robot_edge != "off":
+            if args.anchor_robot_edge == "auto":
+                p.error("Do not use auto robot-edge choice; identify physical clamp edge")
+            movie.anchor_table_edge_to_robot(
+                model, args.anchor_robot_edge,
+                (args.robot_anchor_x_cm / 100., args.robot_anchor_y_cm / 100.),
+                args.robot_edge_inset_cm / 100.)
         first = segmentation_mask(renderer, model, data, camera, geom)
+        model.geom_pos[initial_ids] = initial_pos
+        model.geom_quat[initial_ids] = initial_quat
         if not first.any():
             raise ValueError("Simulated tabletop not visible with existing camera")
         result = optimize(model, data, renderer, camera, geom, real_mask,
@@ -408,6 +426,23 @@ def main():
         "--robot-anchor-y-cm": args.robot_anchor_y_cm,
         "--robot-edge-inset-cm": args.robot_edge_inset_cm,
     }
+    # The calibrated camera determines the image-space direction of
+    # SO-101 base X/Y. Do not equate either with image horizontal/depth.
+    reference_center = np.asarray(
+        model.geom_pos[movie.table_geom_ids(model)[0]], dtype=float)
+    projected_axes = {}
+    try:
+        p0 = np.asarray(movie.project_base_xyz_to_side(
+            extrinsics["T_base_camera"], intrinsics, reference_center))
+        for axis, delta in (
+            ("base_x_plus_5cm", np.array([.05, 0., 0.])),
+            ("base_y_plus_5cm", np.array([0., .05, 0.]))):
+            p1 = np.asarray(movie.project_base_xyz_to_side(
+                extrinsics["T_base_camera"], intrinsics, reference_center + delta))
+            projected_axes[axis] = [float(v) for v in (p1-p0)]
+    except ValueError as exc:
+        projected_axes["error"] = str(exc)
+    result["base_axis_projection_delta_uv_px"] = projected_axes
     result["warnings"] = []
     if result["robot_anchor_edge"] == "off":
         result["warnings"] = ["Robot/table edge constraint is disabled; the simulated robot may float away from the table edge."]
@@ -423,6 +458,10 @@ def main():
         result["warnings"].append("Insufficient shared columns in selected upper-edge strip; change --edge-x-min/max.")
     elif result["upper_edge_after"]["mean_abs_error_px"] > 8:
         result["warnings"].append("Visible upper tabletop edge differs by >8px in the selected strip.")
+    if result["after"]["iou"] + 1e-8 < result["before"]["iou"]:
+        result["warnings"].append(
+            "REGRESSION: IoU is worse than the same initial pose. Reject these fit flags.")
+        result["recommended_video_flags"] = None
     if result["warnings"]:
         result["status"] = "NOT_ALIGNED_REVIEW_MASK_AND_SCENE"
     else:
