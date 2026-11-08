@@ -181,6 +181,15 @@ class ReachEnvTests(unittest.TestCase):
                 rows = list(csv.DictReader(f))
             self.assertEqual(len(rows), 7)
             self.assertTrue((target / "pair_ablation.json").exists())
+        full_run = compare_pairs(seed=101, episode=0, max_steps=150, frame_skip=10)
+        for name, entry in full_run["results"].items():
+            print("MUJOCO_PAIR_ABLATION:", name,
+                  "success=", entry["success"],
+                  "final_tcp_m=", round(entry["final_tcp_distance_m"], 5),
+                  "joint_err_l2=", round(entry["final_joint_error_l2_rad"], 5),
+                  "saturation=", [round(v, 3) for v in entry["torque_saturation_fraction"]],
+                  "contact_frac=", round(entry["contact_substep_fraction"], 3))
+
 
 
 if __name__ == "__main__":
