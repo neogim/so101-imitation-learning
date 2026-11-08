@@ -255,6 +255,16 @@ class ReachEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result=evaluate(Path(tmp)/"overlay")
             self.assertEqual(len(result["contact_points"]),12)
+            print("MUJOCO_WORLD_ALIGNMENT:", result["alignment_p95_m"])
+            for pair in ((0,6),(1,6),(2,6)):
+                matched=[p for p in result["contact_points"] if p["pair"]==list(pair)]
+                means=[sum(p["source_surface_distance"][str(g)]["distance_to_source_stl_surface_mm"]
+                           for p in matched)/len(matched) for g in pair]
+                print("MUJOCO_STL_CONTACT_SURFACE_DISTANCE:", pair,
+                      "mean_mm=", [round(v,3) for v in means],
+                      "signed_mujoco_mm=", round(sum(p["mujoco_signed_contact_distance_mm"]
+                           for p in matched)/len(matched),3))
+
             self.assertTrue(all(float(v)<.002 for v in result["alignment_p95_m"].values()))
             self.assertTrue((Path(tmp)/"overlay"/"world_aligned_stl_contacts.png").exists())
             self.assertTrue((Path(tmp)/"overlay"/"contact_to_stl_surface.csv").exists())
