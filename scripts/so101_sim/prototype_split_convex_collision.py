@@ -57,8 +57,13 @@ def split_to_convex_parts(mesh: trimesh.Trimesh, *, min_volume_mm3=0.5):
                 if abs(float(solid.volume)) * 1e9 < min_volume_mm3:
                     continue
                 hull = solid.convex_hull
-                if not hull.is_watertight or hull.volume <= 0:
-                    raise RuntimeError("Invalid clipped convex piece")
+                # Some grid intersections are degenerate/sliver components.
+                # A non-solid hull cannot be used as a MuJoCo collision part.
+                if (not hull.is_watertight or not np.isfinite(hull.volume)
+                        or abs(float(hull.volume)) < 1e-12):
+                    continue
+                if hull.volume < 0:
+                    hull.invert()
                 parts.append(hull)
     if not parts:
         raise RuntimeError("No convex pieces created")
