@@ -104,6 +104,31 @@ class ReachEnvTests(unittest.TestCase):
                             for r in result["results"]))
         # Success is deliberately not asserted: this test diagnoses PD control.
 
+    def test_pd_trace_csv_and_graphs(self):
+        import csv
+        import json
+        from diagnose_reach_pd_trace import run_trace
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "pd_trace"
+            record = run_trace(seed=31, episode=0, out=out,
+                               near_goal_joint_rad=.35,
+                               max_steps=3, frame_skip=2)
+            self.assertEqual(record["physics_substeps"], 6)
+            self.assertEqual(record["joint_names"], list(r2s.JOINTS))
+            self.assertEqual(len(record["saturated_substep_fraction_per_joint"]), 5)
+            with (out / "pd_trace.csv").open(newline="") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), record["physics_substeps"])
+            self.assertIn("shoulder_pan_torque_applied_nm", rows[0])
+            self.assertIn("shoulder_pan_saturated", rows[0])
+            self.assertIn("contact_pairs", rows[0])
+            self.assertEqual(json.loads((out / "summary.json").read_text())["seed"], 31)
+            for name in ("joint_angles.png", "joint_torques.png",
+                         "joint_velocities.png", "tcp_distance_contacts.png"):
+                self.assertGreater((out / name).stat().st_size, 1000)
+            with self.assertRaises(ValueError):
+                run_trace(seed=31, episode=0, out=out, max_steps=1, frame_skip=1)
+
 
 if __name__ == "__main__":
     unittest.main()
