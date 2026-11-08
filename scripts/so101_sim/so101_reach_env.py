@@ -138,7 +138,7 @@ class SO101ReachEnv(gym.Env):
                                      "goal_mode": ("near" if self.goal_joint_delta_rad is not None else "full"),
                                      "status": "REACH_ONLY_NOT_PICK"}
 
-    def step(self, action):
+    def step(self, action, *, trace_hook=None):
         action = np.asarray(action, dtype=float)
         if action.shape != (5,) or not np.isfinite(action).all():
             raise ValueError("Expected finite 5D joint delta action")
@@ -152,9 +152,31 @@ class SO101ReachEnv(gym.Env):
             # qfrc_bias includes gravity and Coriolis terms (PD+feedforward).
             torques += self.data.qfrc_bias[self.dids]
             self.data.qfrc_applied[:] = 0
-            self.data.qfrc_applied[self.dids] = np.clip(
-                torques, -self.max_joint_torque, self.max_joint_torque)
+            applied = np.clip(torques, -self.max_joint_torque, self.max_joint_torque)
+            self.data.qfrc_applied[self.dids] = applied
             mujoco.mj_step(self.model, self.data)
+            if trace_hook is not None:
+                # Diagnostic-only; no extra work on the regular SAC training path.
+                contacts = []
+                for ci in range(self.data.ncon):
+                    contact = self.data.contact[ci]
+                    g1 = mujoco.mj_id2name(
+                        self.model, mujoco.mjtObj.mjOBJ_GEOM, int(contact.geom1))
+                    g2 = mujoco.mj_id2name(
+                        self.model, mujoco.mjtObj.mjOBJ_GEOM, int(contact.geom2))
+                    contacts.append((g1 or f"geom{contact.geom1}",
+                                     g2 or f"geom{contact.geom2}"))
+                trace_hook({
+                    "time_s": float(self.data.time),
+                    "joint_target_rad": self.targets.copy(),
+                    "joint_position_rad": self.data.qpos[self.qids].copy(),
+                    "joint_velocity_rad_s": self.data.qvel[self.dids].copy(),
+                    "torque_command_nm": torques.copy(),
+                    "torque_applied_nm": applied.copy(),
+                    "torque_saturated": (np.abs(torques) > self.max_joint_torque).copy(),
+                    "tcp_distance_m": float(np.linalg.norm(self.goal - self._tcp())),
+                    "contact_pairs": contacts,
+                })
         self.t += 1
         delta = float(np.linalg.norm(self.goal - self._tcp()))
         reward, success = reach_reward(delta, self.success_radius_m)
