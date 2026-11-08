@@ -189,21 +189,21 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
         raise ValueError("Yaw search limits must be positive")
     if axes not in ("x", "y", "z", "xy", "xyz"):
         raise ValueError("axes must be x, y, z, xy or xyz")
-    ids = movie.table_geom_ids(model)
-    original = model.geom_pos[ids].copy()
-    orientations = model.geom_quat[ids].copy()
     if robot_edge not in ("off", "auto", "x+", "x-", "y+", "y-"):
         raise ValueError("Invalid robot anchor edge")
     if robot_edge == "auto":
         raise ValueError("Automatic edge choice is unsafe without measured clamp geometry; select edge explicitly or off")
-    selected_edge = robot_edge
-    active = tuple("xyz".index(a) for a in axes)
     selected = np.asarray(initial_delta_xyz_m, dtype=float).copy()
     if selected.shape != (3,) or not np.isfinite(selected).all():
         raise ValueError("Initial XYZ must contain 3 finite offsets")
     selected_yaw = float(initial_yaw_delta_deg)
     if not np.isfinite(selected_yaw):
         raise ValueError("Invalid initial yaw")
+    ids = movie.table_geom_ids(model)
+    original = model.geom_pos[ids].copy()
+    orientations = model.geom_quat[ids].copy()
+    selected_edge = robot_edge
+    active = tuple("xyz".index(a) for a in axes)
     selected_start = selected.copy()
     yaw_start = selected_yaw
 
