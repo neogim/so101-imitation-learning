@@ -871,3 +871,56 @@ Existing video replay accepts these same files through
 Older GUI JSON without size fields defaults to diameter 100mm and
 height 90mm. Keep these sizes as candidates until confirmed by actual
 measurements and reprojection, not as physical ground truth.
+
+
+## 2026-11-08: User-measured object dimensions supersede visual fit estimates
+
+The user measured these physical object dimensions (not photographic
+estimates):
+- **Transparent cup outside width/diameter: 78 mm; maximum height: 83 mm**
+- **Muhi bottle total length: 97 mm; diameter/width: 35 mm**
+
+These measurements supersede previous model defaults of cup 100x90mm
+and Muhi 100x38mm. The MuJoCo scene builder uses the measured
+dimensions; Muhi retains its 65% body / 35% cap length ratio and the
+existing position/orientation from the original three-click layout.
+The cup's full-height segmented walls still omit the physical notch
+and remain an approximation.
+
+The GUI now displays **fixed measured dimensions**, without
+editable diameter/height sliders. Only cup base XYZ and overlay alpha
+remain adjustable. Existing GUI pose files are read **for XYZ only**;
+older hand-tuned size fields are ignored and replaced with the user's
+measurements. The comparison-video renderer also always uses the
+same measured cup dimensions, even for older JSON data. This avoids
+silent geometry drift between GUI and rendered video.
+
+Reopen from the previous location edit, with a fresh output filename:
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+OLD_CUP="outputs/real2sim/episode4-cup-gui-20261108-131429.json"
+NEW_CUP="outputs/real2sim/episode4-measured-objects-$(date +%Y%m%d-%H%M%S).json"
+
+python scripts/so101_sim/align_cup_gui.py \
+  --dataset-root "$DATASET" --episode 4 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$OBJECTS" \
+  --initial-pose-json "$OLD_CUP" \
+  --table-extra-left-cm 4 --table-extra-front-cm 5 \
+  --table-base-x-cm 12 --table-base-y-cm 7 \
+  --table-yaw-delta-deg -9.375 \
+  --output "$NEW_CUP"
+```
+
+The previously fitted cup base XYZ offsets (-32,-63,-1mm) are loaded,
+but those remain **visual estimates**, not physical measurements.
+Click SAVE JSON for a new pose file and comparison PNG. The original
+three-click image point and tentative camera calibration are unchanged.
+Do not tune physical geometry to hide perspective/extrinsic errors.
