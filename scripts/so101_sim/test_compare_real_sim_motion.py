@@ -92,6 +92,24 @@ class MotionComparisonTests(unittest.TestCase):
                                     "r2s_muhi_body")
         self.assertGreaterEqual(muhi_id, 0)
 
+    def test_mount_diagnostic_is_not_a_pose_correction(self):
+        import mujoco
+        import inspect_table_robot_mount as mount
+        xml = """<mujoco><worldbody>
+          <geom name="r2s_preview_table" type="box" size=".4 .255 .02" pos=".4 0 -.02"/>
+          <geom name="r2s_table_leg_mm" type="box" size=".02 .02 .1"/>
+          <geom name="r2s_table_leg_mp" type="box" size=".02 .02 .1"/>
+          <geom name="r2s_table_leg_pm" type="box" size=".02 .02 .1"/>
+          <geom name="r2s_table_leg_pp" type="box" size=".02 .02 .1"/>
+        </worldbody></mujoco>"""
+        model = mujoco.MjModel.from_xml_string(xml)
+        initial_positions = model.geom_pos.copy()
+        report = mount.analyze(model)
+        self.assertEqual(report["status"], "DIAGNOSTIC_ONLY_NOT_REAL_CLAMP_CALIBRATION")
+        self.assertAlmostEqual(report["edge_signed_inward_distance_m"]["x-"], 0., places=7)
+        self.assertFalse(report["robot_anchor_inside_table_footprint"] is False)
+        np.testing.assert_allclose(model.geom_pos, initial_positions)
+
     def test_cup_photo_estimated_height_is_shorter_than_muhi_length(self):
         import mujoco
         import compare_id1_eye_to_hand as scene
