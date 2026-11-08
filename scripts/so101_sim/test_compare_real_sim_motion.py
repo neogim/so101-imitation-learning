@@ -14,6 +14,58 @@ from compare_real_sim_motion import (sample_evenly, comparison_panel,
                                      pixel_to_base_plane, video_object_layout, MuhiGripperAttachment, read_object_targets, set_visual_gripper)
 
 
+class RobotOverlayGuiTests(unittest.TestCase):
+    def test_joint_offset_degrees_are_mapped_to_radians(self):
+        import real_to_sim as r2s
+        from compare_real_sim_robot_overlay_gui import joint_config
+        conf = joint_config([0, 2, -3, 4, -5])
+        angles = r2s.joint_radians([0, 0, 0, 0, 0, 50], conf)
+        self.assertAlmostEqual(angles["shoulder_lift"], np.deg2rad(2))
+        self.assertAlmostEqual(angles["elbow_flex"], np.deg2rad(-3))
+        self.assertTrue(all(conf["joints"]["sign"][key] == 1
+                            for key in r2s.JOINTS))
+        with self.assertRaises(ValueError):
+            joint_config([0, 0, 0, 0, 100])
+        with self.assertRaises(ValueError):
+            joint_config([0, 0, float("nan"), 0, 0])
+
+    def test_overlay_selects_original_episode_frame_numbers(self):
+        from compare_real_sim_robot_overlay_gui import selected_frame_rows
+        ep = {"rows": [{"frame_index": idx, "state": [idx] * 6}
+                       for idx in range(53)]}
+        output = selected_frame_rows(ep, (0, 24, 40, 52))
+        self.assertEqual([row["state"][0] for row in output.values()],
+                         [0, 24, 40, 52])
+        with self.assertRaisesRegex(ValueError, "Missing"):
+            selected_frame_rows(ep, [53])
+        with self.assertRaises(ValueError):
+            selected_frame_rows(ep, [24, 24])
+
+    def test_saved_robot_candidate_scene_references(self):
+        from types import SimpleNamespace
+        from compare_real_sim_robot_overlay_gui import (
+            robot_pose_payload, read_robot_pose, matches_scene)
+        old = Path("outputs/real2sim/episode4-objects-20261108-004859.json")
+        cup = Path("outputs/real2sim/episode4-cup-gui-20261108-131429.json")
+        saved = robot_pose_payload(
+            [0, 1, -1, 2, 0], 4, old, str(cup),
+            (4, 5, 12, 7, 0, -9.375), frame_index=40, overlay_alpha=.45)
+        args = SimpleNamespace(
+            episode=4, object_layout_json=old, cup_pose_json=cup,
+            table_extra_left_cm=4, table_extra_front_cm=5,
+            table_base_x_cm=12, table_base_y_cm=7, table_base_z_cm=0,
+            table_yaw_delta_deg=-9.375)
+        matches_scene(saved, args)
+        self.assertEqual(saved["source_frame_index"], 40)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "joint.json"
+            path.write_text(json.dumps(saved), encoding="utf-8")
+            self.assertEqual(read_robot_pose(path)["joint_offset_deg"]["elbow_flex"], -1)
+        args.table_base_x_cm = 14
+        with self.assertRaisesRegex(ValueError, "table_base_x_cm"):
+            matches_scene(saved, args)
+
+
 class MotionComparisonTests(unittest.TestCase):
     def test_cup_diameter_and_height_controls_preserve_other_objects(self):
         import mujoco
