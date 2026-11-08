@@ -154,6 +154,34 @@ class ReachEnvTests(unittest.TestCase):
                   "saturation=", [round(v, 3) for v in item["torque_saturation_fraction"]],
                   "contact_frac=", round(item["contact_substep_fraction"], 3))
 
+    def test_selective_base_shoulder_contact_exclusions(self):
+        import csv
+        from compare_base_shoulder_contacts import compare_pairs, save_report, CASES
+        report = compare_pairs(seed=101, episode=0, max_steps=3, frame_skip=2)
+        ref = report["results"]["baseline"]
+        remasked = report["results"]["reencoded_masks_control"]
+        self.assertEqual(ref["initial_contact_geom_pairs"],
+                         remasked["initial_contact_geom_pairs"])
+        self.assertEqual(set(CASES), set(report["results"]) - {"all_contacts_disabled_reference"})
+        for name, expected in (
+            ("exclude_geom0_6", (0, 6)),
+            ("exclude_geom1_6", (1, 6)),
+            ("exclude_geom2_6", (2, 6)),
+        ):
+            contacts = {tuple(x["geom_id_pair"])
+                        for x in report["results"][name]["initial_contact_geom_pairs"]}
+            self.assertNotIn(expected, contacts)
+            self.assertGreater(report["results"][name]["initial_contact_points"], 0)
+        final_contacts = report["results"]["exclude_all_three"]["initial_contact_geom_pairs"]
+        self.assertEqual(final_contacts, [])
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "comparison"
+            path = save_report(report, target)
+            with path.open(newline="") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), 7)
+            self.assertTrue((target / "pair_ablation.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
