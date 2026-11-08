@@ -79,7 +79,8 @@ def validate_cup_dimensions(diameter_m, height_m):
     return diameter_m, height_m
 
 
-def alignment_payload(xyz_m, object_layout, episode, table,\n                      diameter_m=.100, height_m=.090):
+def alignment_payload(xyz_m, object_layout, episode, table,
+                      diameter_m=.100, height_m=.090):
     delta = np.asarray(xyz_m, dtype=float)
     if delta.shape != (3,) or not np.isfinite(delta).all():
         raise ValueError("Cup offset must contain three finite numbers")
@@ -88,7 +89,9 @@ def alignment_payload(xyz_m, object_layout, episode, table,\n                   
     return {
         "schema": "so101_cup_pose_delta_v1",
         "episode": int(episode),
-        "cup_delta_base_m": [round(float(n), 6) for n in delta],\n        "cup_diameter_m": round(float(diameter_m), 6),\n        "cup_height_m": round(float(height_m), 6),
+        "cup_delta_base_m": [round(float(n), 6) for n in delta],
+        "cup_diameter_m": round(float(diameter_m), 6),
+        "cup_height_m": round(float(height_m), 6),
         "coordinate_frame": "so101_base",
         "reference": "existing three-click layout, no manual image scaling",
         "object_layout_json": str(object_layout),
@@ -151,7 +154,15 @@ def run(args):
     r2s.set_pose(model, data, state, config)
     movie.set_visual_gripper(model, data, state[5])
 
-    start_xyz = np.zeros(3)\n    start_diameter_m, start_height_m = .100, .090\n    if args.initial_pose_json is not None:\n        previous = read_cup_payload(args.initial_pose_json)\n        if previous.get("episode") != args.episode:\n            raise ValueError("Previous pose belongs to another episode")\n        start_xyz = np.asarray(previous["cup_delta_base_m"], dtype=float)\n        start_diameter_m = float(previous.get("cup_diameter_m", .100))\n        start_height_m = float(previous.get("cup_height_m", .090))\n\n    fig, axes = plt.subplots(1, 3, figsize=(16, 7.6), constrained_layout=False)
+    start_xyz = np.zeros(3)
+    start_diameter_m, start_height_m = .100, .090
+    if args.initial_pose_json is not None:
+        previous = read_cup_payload(args.initial_pose_json)
+        if previous.get("episode") != args.episode:
+            raise ValueError("Previous pose belongs to another episode")
+        start_xyz = np.asarray(previous["cup_delta_base_m"], dtype=float)
+        start_diameter_m = float(previous.get("cup_diameter_m", .100))
+        start_height_m = float(previous.get("cup_height_m", .090))\n\n    fig, axes = plt.subplots(1, 3, figsize=(16, 7.6), constrained_layout=False)
     fig.subplots_adjust(bottom=.43, left=.025, right=.99, top=.94, wspace=.04)
     for ax, title in zip(axes, ["REAL / Episode 4", "SIM / MuJoCo", "OVERLAY / alpha"]):
         ax.set_title(title, fontsize=11)
@@ -168,7 +179,13 @@ def run(args):
                                -300 if key != "z" else -50,
                                300 if key != "z" else 100,
                                valinit=1000 * start_xyz[("x", "y", "z").index(key)], valstep=1.)
-    dim_sliders = {}\n    for name, y, min_value, max_value, init in (\n        ("diameter", .19, 60., 130., start_diameter_m * 1000),\n        ("height", .14, 60., 140., start_height_m * 1000)):\n        axis = fig.add_axes([.18, y, .65, .032])\n        dim_sliders[name] = Slider(axis, f"cup {name} (mm)", min_value, max_value,\n                                   valinit=init, valstep=1.)\n    alpha_ax = fig.add_axes([.18, .085, .65, .025])
+    dim_sliders = {}
+    for name, y, min_value, max_value, init in (
+        ("diameter", .19, 60., 130., start_diameter_m * 1000),
+        ("height", .14, 60., 140., start_height_m * 1000)):
+        axis = fig.add_axes([.18, y, .65, .032])
+        dim_sliders[name] = Slider(axis, f"cup {name} (mm)", min_value, max_value,
+                                   valinit=init, valstep=1.)\n    alpha_ax = fig.add_axes([.18, .085, .65, .025])
     alpha_slider = Slider(alpha_ax, "overlay alpha", 0, 1, valinit=.55)
     save_ax = fig.add_axes([.85, .01, .12, .05])
     save_btn = Button(save_ax, "SAVE JSON")
@@ -181,7 +198,10 @@ def run(args):
         return np.asarray([controls[k].val / 1000. for k in ("x", "y", "z")])
 
     def redraw(_=None):
-        set_cup_dimensions(\n            model, cup_ids, original_cup, original_cup_size,\n            diameter_m=dim_sliders["diameter"].val / 1000.,\n            height_m=dim_sliders["height"].val / 1000., xyz_m=current_xyz())
+        set_cup_dimensions(
+            model, cup_ids, original_cup, original_cup_size,
+            diameter_m=dim_sliders["diameter"].val / 1000.,
+            height_m=dim_sliders["height"].val / 1000., xyz_m=current_xyz())
         mujoco.mj_forward(model, data)
         renderer.update_scene(data, camera=camera)
         rgb = renderer.render().copy()
@@ -194,7 +214,9 @@ def run(args):
         payload = alignment_payload(
             current_xyz(), args.object_layout_json.as_posix(), args.episode,
             (args.table_base_x_cm, args.table_base_y_cm,
-             args.table_yaw_delta_deg, args.table_base_z_cm),\n            diameter_m=dim_sliders["diameter"].val / 1000.,\n            height_m=dim_sliders["height"].val / 1000.)
+             args.table_yaw_delta_deg, args.table_base_z_cm),
+            diameter_m=dim_sliders["diameter"].val / 1000.,
+            height_m=dim_sliders["height"].val / 1000.)
         payload["table_extra_left_cm"] = float(args.table_extra_left_cm)
         payload["table_extra_front_cm"] = float(args.table_extra_front_cm)
         try:
