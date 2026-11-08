@@ -425,6 +425,50 @@ engineering step is a physically fitted nonconvex-friendly collision
 proxy (multiple convex parts or fitted capsules/boxes) with appropriate
 clearances and verification on several FK targets.
 
+### World-aligned STL surface vs MuJoCo contact overlay (2026-11-08)
+
+A new **offline-only** diagnostic `overlay_stl_mujoco_contacts.py`
+maps source STL triangles into the actual MuJoCo world coordinate frame
+using compiler `mesh_pos/mesh_quat/mesh_scale` and `geom_xmat/geom_xpos`.
+It verifies the reconstructed vertices against compiled mesh vertices
+(95th percentile nearest-vertex alignment error ~1-2 **nanometers** on CI)
+before trusting the overlay; a >2mm mismatch fails loudly.
+The overlay and a JSON/CSV report compare each of the 12 reset contact
+positions with the **nearest original STL triangle surface**.
+
+CI result (Linux, original zero-pose contact pairs, mean over 4 contacts):
+
+| Pair | Contact to base-side STL surface | Contact to shoulder STL surface | MuJoCo signed contact distance |
+| --- | ---: | ---: | ---: |
+| geom0-6 | 9.19mm | 9.58mm | -26.39mm |
+| geom1-6 | **15.20mm** | **0.12mm** | -27.86mm |
+| geom2-6 | 0.63mm | 4.85mm | -22.39mm |
+
+Interpretation: e.g. geom1-6 contact locations are close to the source
+shoulder surface yet far from the source base surface. This is
+**consistent with** hull-induced phantom contact, but **not definitive**
+because MuJoCo contact point coordinates may not lie on the nearest
+surface and unsigned source distances cannot establish real
+interpenetration. A real mesh-vs-mesh overlap test or geometrically
+fitted collision decompositions are still needed before claiming
+that the pair is a false contact or adopting a fix.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+python -m pip install "trimesh>=4,<5" scipy matplotlib
+OVERLAY_OUT="outputs/so101-world-overlay-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/overlay_stl_mujoco_contacts.py --out "$OVERLAY_OUT"
+open "$OVERLAY_OUT/world_aligned_stl_contacts.png"
+cat "$OVERLAY_OUT/contact_to_stl_surface.csv"
+```
+
+The diagnostic does not alter the URDF, dynamics, collision filters or
+hardware; SAC remains paused until a physically defensible collision
+model and stable PD tracking are established. Avoid another unconstrained
+parameter sweep; review the new image and the geom1-6 source-surface
+difference first.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
