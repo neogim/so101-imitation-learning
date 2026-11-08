@@ -556,8 +556,8 @@ def run_motion(args):
         set_cup_dimensions(
             model, cup_ids, model.geom_pos[cup_ids].copy(),
             model.geom_size[cup_ids].copy(),
-            diameter_m=float(cup_pose.get("cup_diameter_m", .100)),
-            height_m=float(cup_pose.get("cup_height_m", .090)),
+            diameter_m=comparison.CUP_DIAMETER_M,
+            height_m=comparison.CUP_HEIGHT_M,
             xyz_m=cup_pose["cup_delta_base_m"])
     ids = table_geom_ids(model)
     reference_positions = model.geom_pos[ids].copy()
@@ -650,8 +650,9 @@ def run_motion(args):
         "video_object_local_layout": layout,
         "cup_pose_json": str(args.cup_pose_json) if args.cup_pose_json else None,
         "cup_delta_base_m": cup_pose["cup_delta_base_m"] if cup_pose is not None else [0., 0., 0.],
-        "cup_diameter_m": float(cup_pose.get("cup_diameter_m", .100)) if cup_pose else .100,
-        "cup_height_m": float(cup_pose.get("cup_height_m", .090)) if cup_pose else .090,
+        "cup_diameter_m": comparison.CUP_DIAMETER_M,
+        "cup_height_m": comparison.CUP_HEIGHT_M,
+        "cup_dimensions_source": "user_measured_fixed_2026-11-08",
         "cup_click_reference_height_cm": args.cup_click_height_cm,
         "cup_click_point_semantics": "bottom_contact" if (annotations is not None and "cup_contact_px" in annotations) else "unverified_visual_center",
         "muhi_axis_reprojection": muhi_projection,
