@@ -86,6 +86,7 @@ def alignment_payload(xyz_m, object_layout, episode, table,
         raise ValueError("Cup offset must contain three finite numbers")
     if len(table) != 4 or not np.isfinite(table).all():
         raise ValueError("Table pose flags must be finite")
+    validate_cup_dimensions(diameter_m, height_m)
     return {
         "schema": "so101_cup_pose_delta_v1",
         "episode": int(episode),
@@ -110,6 +111,8 @@ def read_cup_payload(path):
     xyz = np.asarray(payload.get("cup_delta_base_m"), dtype=float)
     if xyz.shape != (3,) or not np.isfinite(xyz).all():
         raise ValueError("Invalid cup_delta_base_m")
+    validate_cup_dimensions(payload.get("cup_diameter_m", .100),
+                            payload.get("cup_height_m", .090))
     return payload
 
 
@@ -146,7 +149,8 @@ def run(args):
         np.asarray([args.table_base_x_cm, args.table_base_y_cm,
                     args.table_base_z_cm]) / 100., args.table_yaw_delta_deg)
     cup_ids = cup_geom_ids(model)
-    original_cup = model.geom_pos[cup_ids].copy()\n    original_cup_size = model.geom_size[cup_ids].copy()
+    original_cup = model.geom_pos[cup_ids].copy()
+    original_cup_size = model.geom_size[cup_ids].copy()
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
@@ -162,7 +166,9 @@ def run(args):
             raise ValueError("Previous pose belongs to another episode")
         start_xyz = np.asarray(previous["cup_delta_base_m"], dtype=float)
         start_diameter_m = float(previous.get("cup_diameter_m", .100))
-        start_height_m = float(previous.get("cup_height_m", .090))\n\n    fig, axes = plt.subplots(1, 3, figsize=(16, 7.6), constrained_layout=False)
+        start_height_m = float(previous.get("cup_height_m", .090))
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 7.6), constrained_layout=False)
     fig.subplots_adjust(bottom=.43, left=.025, right=.99, top=.94, wspace=.04)
     for ax, title in zip(axes, ["REAL / Episode 4", "SIM / MuJoCo", "OVERLAY / alpha"]):
         ax.set_title(title, fontsize=11)
@@ -185,7 +191,8 @@ def run(args):
         ("height", .14, 60., 140., start_height_m * 1000)):
         axis = fig.add_axes([.18, y, .65, .032])
         dim_sliders[name] = Slider(axis, f"cup {name} (mm)", min_value, max_value,
-                                   valinit=init, valstep=1.)\n    alpha_ax = fig.add_axes([.18, .085, .65, .025])
+                                   valinit=init, valstep=1.)
+    alpha_ax = fig.add_axes([.18, .085, .65, .025])
     alpha_slider = Slider(alpha_ax, "overlay alpha", 0, 1, valinit=.55)
     save_ax = fig.add_axes([.85, .01, .12, .05])
     save_btn = Button(save_ax, "SAVE JSON")
@@ -263,7 +270,9 @@ def main():
     parser.add_argument("--intrinsics", type=Path, default=movie.DEFAULT_INTRINSICS)
     parser.add_argument("--urdf", type=Path, default=movie.DEFAULT_URDF)
     parser.add_argument("--object-layout-json", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)\n    parser.add_argument("--initial-pose-json", type=Path, default=None,\n                        help="Reload previous saved GUI XYZ and dimensions")
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--initial-pose-json", type=Path, default=None,
+                        help="Reload previous saved GUI XYZ and dimensions")
     parser.add_argument("--table-extra-left-cm", type=float, default=4.)
     parser.add_argument("--table-extra-front-cm", type=float, default=5.)
     parser.add_argument("--table-base-x-cm", type=float, default=12.)
