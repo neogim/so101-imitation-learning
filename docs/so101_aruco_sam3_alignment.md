@@ -677,3 +677,66 @@ to avoid scoring rounded corners and areas of uncertain correspondence,
 **not** to hide a poorly matched straight far edge. Full-image report
 metrics remain available. Do not reapply previous +12cm offsets; only
 use the new report's proposed flags after reviewing the overlay.
+
+
+## Episode 4: prioritize cup ground-contact localization (2026-11-08)
+
+The table fit with measured curved front improved full silhouette IoU from
+0.674 to 0.813, but X reached the +12cm search bound and the far tabletop
+edge was still 26.3 pixels off (report: NOT_ALIGNED). Do not treat that
+table pose as calibrated or apply it automatically to object geometry.
+
+**Root issue in the cup's old three-click placement:** the 3rd click marks
+an unspecified *visual cup center*, while the code intersected that
+camera ray at base Z=55mm, an unverified assumption. This can shift the
+3D cup position relative to the robot/table. A table-only SAM3 objective
+cannot repair it. The new one-click refinement preserves the two Muhi
+endpoints/yaw and original cup-center pixel, but adds an explicit cup
+**tabletop contact-center** pixel.
+
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+ORIGINAL="outputs/real2sim/episode4-objects-20261108-004859.json"
+CUP_JSON="outputs/real2sim/episode4-cup-contact-$(date +%Y%m%d-%H%M%S).json"
+
+python scripts/so101_sim/refine_cup_contact.py \
+  --dataset-root "$DATASET" --episode 4 \
+  --source-json "$ORIGINAL" --output "$CUP_JSON"
+```
+
+Click **once** on the middle of the cup's *bottom footprint where it
+contacts the tabletop* in the recorded Episode 4 Side frame. Do NOT
+click the rim or visual center. If the contact is invisible, cancel
+rather than invent a point. The new JSON stores `cup_contact_px`
+separately and leaves Muhi annotations untouched.
+
+When using this new JSON, **pass**
+`--cup-click-height-cm 0.1` (base Z=1mm in the current approximate
+scene) to both image comparison and SAM3 scripts, e.g.:
+
+```bash
+OUT="outputs/real2sim/cup-check-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root "$DATASET" --episode 4 \
+  --stride 5 --max-frames 1 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$CUP_JSON" \
+  --cup-click-height-cm 0.1 \
+  --output "$OUT"
+open "$OUT/real_vs_sim_episode.mp4"
+cat "$OUT/report.json"
+```
+
+This is an **independent cup localization correction**. Keep the table
+defaults for the first diagnostic. The cup wall is still a simplified
+90mm high transparent approximation, without its real asymmetric
+cutout. A single contact pixel does not determine its orientation or
+full 6DoF pose; compare actual first-frame projection before accepting
+the new position. Do not use overhead phone photos as if they came
+from the calibrated Side camera.
