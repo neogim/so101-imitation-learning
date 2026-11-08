@@ -144,6 +144,38 @@ class MotionComparisonTests(unittest.TestCase):
         np.testing.assert_allclose(top_m, .092, atol=1e-6)
         self.assertLess(top_m, .10)
 
+    def test_refined_cup_contact_keeps_old_muhi_and_uses_new_pixel(self):
+        import tempfile
+        import json
+        import refine_cup_contact as refine
+        from compare_real_sim_motion import read_object_targets
+        payload = {
+            "image_size": [640, 480], "muhi_center_px": [401., 399.],
+            "muhi_body_end_px": [375., 455.], "muhi_cap_end_px": [430., 345.],
+            "muhi_yaw_deg": -80.691, "cup_center_px": [159., 325.],
+        }
+        result = refine.add_cup_contact(payload, [140., 345.])
+        self.assertEqual(result["cup_center_px"], [159., 325.])
+        self.assertEqual(result["cup_contact_px"], [140., 345.])
+        self.assertEqual(result["muhi_yaw_deg"], payload["muhi_yaw_deg"])
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "objects.json"
+            path.write_text(json.dumps(result), encoding="utf-8")
+            muhi, cup, yaw = read_object_targets(path)
+            self.assertEqual(muhi, (401., 399.))
+            self.assertEqual(cup, (140., 345.))
+            self.assertEqual(yaw, -80.691)
+
+    def test_cup_click_height_changes_backprojected_position(self):
+        from compare_real_sim_motion import video_object_layout
+        cam = np.eye(4)
+        cam[:3, :3] = [[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]]
+        cam[:3, 3] = [0., 0., .5]
+        K = {"fx":500., "fy":500., "cx":320., "cy":240.}
+        a = video_object_layout(cam, K, (400., 400.), (180., 300.), 0., .055)
+        b = video_object_layout(cam, K, (400., 400.), (180., 300.), 0., .001)
+        self.assertGreater(np.linalg.norm(np.asarray(a["cup_xy"]) - b["cup_xy"]), .001)
+
     def test_three_click_axis_projects_same_body_and_cap_ends(self):
         import mujoco
         from compare_real_sim_motion import muhi_axis_reprojection
