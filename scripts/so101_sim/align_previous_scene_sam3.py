@@ -78,8 +78,10 @@ def segmentation_mask(renderer, model, data, camera, table_geom_id):
     mujoco.mj_forward(model, data)
     renderer.update_scene(data, camera=camera)
     seg = renderer.render()
+    # Include curved-front pieces, exclude robot, objects and table legs.
+    table_ids = [table_geom_id] + movie.table_geom_ids(model)[5:]
     return np.logical_and(
-        seg[:, :, 0] == table_geom_id,
+        np.isin(seg[:, :, 0], table_ids),
         seg[:, :, 1] == int(mujoco.mjtObj.mjOBJ_GEOM),
     )
 
