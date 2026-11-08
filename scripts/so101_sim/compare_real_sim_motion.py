@@ -51,14 +51,15 @@ def pixel_to_base_plane(T_base_cv, intrinsics, u, v, z_m):
 
 
 def video_object_layout(T_base_cv, intrinsics, muhi_pixel=(255., 360.),
-                        cup_pixel=(375., 310.), muhi_yaw_deg=45.):
+                        cup_pixel=(375., 310.), muhi_yaw_deg=45.,
+                        cup_click_height_m=.055):
     """Approximate positions read visually from the *recorded video* first frame.
 
     These are display-only initial estimates, not measured 3D object poses.
     """
     shift = comparison.workcell_shift_left_front(T_base_cv, .08, .10)
     muhi = pixel_to_base_plane(T_base_cv, intrinsics, *muhi_pixel, .019) - shift
-    cup = pixel_to_base_plane(T_base_cv, intrinsics, *cup_pixel, .055) - shift
+    cup = pixel_to_base_plane(T_base_cv, intrinsics, *cup_pixel, cup_click_height_m) - shift
     return dict(muhi_xy=muhi[:2].tolist(), cup_xy=cup[:2].tolist(),
                 muhi_yaw_deg=muhi_yaw_deg)
 
@@ -522,7 +523,8 @@ def run_motion(args):
         muhi_pixel, cup_pixel = (args.muhi_u, args.muhi_v), (args.cup_u, args.cup_v)
         muhi_yaw = args.muhi_yaw_deg
     layout = video_object_layout(extrinsics["T_base_camera"], intrinsics,
-                                 muhi_pixel, cup_pixel, muhi_yaw)
+                                 muhi_pixel, cup_pixel, muhi_yaw,
+                                 cup_click_height_m=args.cup_click_height_cm / 100.)
     model, camera = make_calibrated_model(
         extrinsics, intrinsics, args.urdf, layout,
         table_extra_left_m=args.table_extra_left_cm / 100.,
@@ -616,6 +618,7 @@ def run_motion(args):
             "cup": list(cup_pixel),
         },
         "video_object_local_layout": layout,
+        "cup_click_reference_height_cm": args.cup_click_height_cm,
         "muhi_axis_reprojection": muhi_projection,
         "j6_mapping": {
             "status": "provisional_normalized_to_urdf_range",
@@ -670,6 +673,8 @@ def main():
             sub.add_argument("--max-frames", type=int, default=60)
             sub.add_argument("--muhi-u", type=float, default=255., help="Muhi center x in the 640-pixel Real video panel")
             sub.add_argument("--muhi-v", type=float, default=360., help="Muhi center y in 480-pixel Real video panel")
+            sub.add_argument("--cup-click-height-cm", type=float, default=5.5,
+                             help="Height of the previously clicked cup point above base z=0 in cm; 5.5 is the historical unverified default, not a measured contact point")
             sub.add_argument("--cup-u", type=float, default=375., help="Clear container center x in the 640-pixel Real video panel")
             sub.add_argument("--cup-v", type=float, default=310., help="Clear container center y in 480-pixel Real video panel")
             sub.add_argument("--muhi-yaw-deg", type=float, default=45., help="Provisional Muhi yaw around base Z; change if axis disagrees")
