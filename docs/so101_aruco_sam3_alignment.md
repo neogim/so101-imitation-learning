@@ -382,3 +382,25 @@ claim a perfect homography or metric 3D calibration. If the top edge
 still disagrees, the next meaningful input is a reviewed, visible
 physical edge reference with known correspondence—not inferred hidden
 corners, and not unbounded XY search.
+
+
+## 2026-11-08: Cup height correction from upright ruler photographs
+
+The user supplied new photos of the Muhi standing vertically in the
+transparent cup with a metric tape. Corrected inference: Muhi length
+roughly 100mm, **cup maximum height about 90mm**, not 120mm as
+previously assumed from less informative top/side photos. Cup outside
+diameter remains approximately 100mm.
+
+The simple MuJoCo cup model's nominal wall height is now **90mm**
+(wall from z=2mm to z=92mm, including the 2mm base offset).
+This is a **photo-based estimate**, not a precise caliper measurement;
+the cup's real asymmetric cut-out is still **not** modeled, so some
+silhouette differences are expected. No modification to table size,
+table XY/Yaw, camera calibration or three-click object layout.
+
+To see the change, rebuild/re-render using the existing scene CLI
+after pulling the established branch; old rendered videos will not
+change. The table SAM3 optimizer uses the same geometry module, so
+its occlusion comparison can also change slightly and should not be
+treated as identical to an earlier report.
