@@ -127,6 +127,33 @@ claim convergence. For a scientific comparison: fix evaluation
 initial-state/goal distributions, use multiple training seeds, and
 include random-policy and/or demonstration-informed baselines.
 
+### Reach SAC baseline (2026-11-08, user-local result)
+
+- Run directory: `outputs/so101-reach-sac-20261108-200308/`
+- CPU, SAC, seed 101, 5,000 training steps, Gymnasium 1.4.0, random-policy smoke test 3 episodes.
+- Final deterministic evaluation: 0/10 successful reaches within 25 mm; all 10 episodes lasted 150 steps; final TCP-proxy distance ranged ~0.157–0.437 m, mean ~0.294 m.
+- EvalCallback at 5,000 steps: 0% success, mean reward -47.80 +/- 7.93, 150 steps per episode.
+- Training rollout success_rate was 0.25 at 4 completed episodes and 0.0312 at 32. This is **consistent with** one success in the 32-episode rolling sample, **not proof** of when the success occurred or a statistically supported learning trend. Early 0.25 is from pre-learning/random exploration (learning_starts=1,000).
+- Do not label actor_loss decrease as task improvement; no measured convergence.
+- The run artifacts are on the user's Mac; not committed to GitHub.
+
+Next minimal checks: (1) drive PD to *known joint-space FK target* without learning; (2) sample nearby FK goals and train an otherwise identical SAC run; (3) compare on matched fixed goal sets and multiple seeds before claiming a method advantage.
+
+```bash
+# Direct joint-angle controller diagnostic; no RL:
+python scripts/so101_sim/diagnose_reach_pd.py \
+  --episodes 10 --seed 101 \
+  --out "outputs/so101-reach-pd-$(date +%Y%m%d-%H%M%S).json"
+
+# Near-goal curriculum on the same MuJoCo model; saves a separate run.
+NEAR_OUT="outputs/so101-reach-near-sac-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/train_reach_sac.py \
+  --steps 5000 --seed 101 --near-goal-joint-rad 0.35 --out "$NEAR_OUT"
+cat "$NEAR_OUT/summary.json"
+```
+
+Note: full-range baseline and near-goal run use **different training/evaluation goal distributions**. Their raw success rates alone are not an A/B comparison. For proper comparison, evaluate trained policies on the **same held-out goal set** and use several seeds. The near-goal sampling parameter is a starting point, not an optimized curriculum.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
