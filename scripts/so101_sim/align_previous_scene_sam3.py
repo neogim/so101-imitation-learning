@@ -174,7 +174,8 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
              axes="xy", max_delta_m=.12, initial_step_m=.02, levels=4,
              edge_x_min=440, edge_x_max=600, fit_yaw=False,
              max_yaw_delta_deg=30., initial_yaw_step_deg=5.,
-             robot_edge="off", robot_anchor_xy_m=(0., 0.), robot_edge_inset_m=0.):
+             robot_edge="off", robot_anchor_xy_m=(0., 0.), robot_edge_inset_m=0.,
+             initial_delta_xyz_m=(0., 0., 0.), initial_yaw_delta_deg=0.):
     """Fit table XY and optionally yaw against visible mask and far-edge strip.
 
     Only tabletop and legs are transformed. Their physical 800x510mm
@@ -193,11 +194,18 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
     orientations = model.geom_quat[ids].copy()
     if robot_edge not in ("off", "auto", "x+", "x-", "y+", "y-"):
         raise ValueError("Invalid robot anchor edge")
-    selected_edge = (movie.nearest_table_edge(model, robot_anchor_xy_m)
-                     if robot_edge == "auto" else robot_edge)
+    if robot_edge == "auto":
+        raise ValueError("Automatic edge choice is unsafe without measured clamp geometry; select edge explicitly or off")
+    selected_edge = robot_edge
     active = tuple("xyz".index(a) for a in axes)
-    selected = np.zeros(3, dtype=float)
-    selected_yaw = 0.
+    selected = np.asarray(initial_delta_xyz_m, dtype=float).copy()
+    if selected.shape != (3,) or not np.isfinite(selected).all():
+        raise ValueError("Initial XYZ must contain 3 finite offsets")
+    selected_yaw = float(initial_yaw_delta_deg)
+    if not np.isfinite(selected_yaw):
+        raise ValueError("Invalid initial yaw")
+    selected_start = selected.copy()
+    yaw_start = selected_yaw
 
     def trial(delta, yaw_deg):
         movie.set_table_pose_delta(model, original, orientations, delta, yaw_deg)
@@ -222,7 +230,7 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
                 for d in (-2, -1, 1, 2):
                     new_delta = selected.copy()
                     new_delta[axis] += step * d
-                    if abs(new_delta[axis]) > max_delta_m + 1e-10:
+                    if abs(new_delta[axis] - selected_start[axis]) > max_delta_m + 1e-10:
                         continue
                     score = trial(new_delta, selected_yaw)
                     if score > candidate_score + 1e-7:
@@ -232,7 +240,7 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
                 candidate_yaw, candidate_score = selected_yaw, best
                 for d in (-2, -1, 1, 2):
                     new_yaw = selected_yaw + yaw_step * d
-                    if abs(new_yaw) > max_yaw_delta_deg + 1e-10:
+                    if abs(new_yaw - yaw_start) > max_yaw_delta_deg + 1e-10:
                         continue
                     score = trial(selected, new_yaw)
                     if score > candidate_score + 1e-7:
@@ -241,6 +249,8 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
     trial(selected, selected_yaw)
     return {
         "axes": axes,
+        "initial_base_delta_xyz_m": selected_start.tolist(),
+        "initial_yaw_delta_deg": yaw_start,
         "base_delta_xyz_m": selected.tolist(),
         "yaw_delta_deg": float(selected_yaw),
         "table_yaw_deg": float(15. + selected_yaw),
@@ -255,8 +265,8 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
             if selected_edge != "off" else None
         ),
         "search_bound_hit": {
-            "xyz": any(abs(selected[j]) >= max_delta_m - 1e-8 for j in active),
-            "yaw": bool(fit_yaw and abs(selected_yaw) >= max_yaw_delta_deg - 1e-8),
+            "xyz": any(abs(selected[j] - selected_start[j]) >= max_delta_m - 1e-8 for j in active),
+            "yaw": bool(fit_yaw and abs(selected_yaw - yaw_start) >= max_yaw_delta_deg - 1e-8),
         },
     }
 
@@ -297,6 +307,10 @@ def main():
     p.add_argument("--robot-anchor-x-cm", type=float, default=0.)
     p.add_argument("--robot-anchor-y-cm", type=float, default=0.)
     p.add_argument("--robot-edge-inset-cm", type=float, default=0.)
+    p.add_argument("--initial-base-x-cm", type=float, default=0.)
+    p.add_argument("--initial-base-y-cm", type=float, default=0.)
+    p.add_argument("--initial-base-z-cm", type=float, default=0.)
+    p.add_argument("--initial-yaw-delta-deg", type=float, default=0.)
     p.add_argument("--fit-yaw", action="store_true",
                    help="Optimize tabletop yaw about its center alongside base XY")
     p.add_argument("--max-yaw-delta-deg", type=float, default=30.)
@@ -363,7 +377,11 @@ def main():
                           robot_edge=args.anchor_robot_edge,
                           robot_anchor_xy_m=(args.robot_anchor_x_cm / 100.,
                                              args.robot_anchor_y_cm / 100.),
-                          robot_edge_inset_m=args.robot_edge_inset_cm / 100.)
+                          robot_edge_inset_m=args.robot_edge_inset_cm / 100.,
+                          initial_delta_xyz_m=np.array([
+                              args.initial_base_x_cm, args.initial_base_y_cm,
+                              args.initial_base_z_cm]) / 100.,
+                          initial_yaw_delta_deg=args.initial_yaw_delta_deg)
         last = segmentation_mask(renderer, model, data, camera, geom)
     result["before"] = silhouette_diagnostics(real_mask, first)
     result["after"] = silhouette_diagnostics(real_mask, last)
