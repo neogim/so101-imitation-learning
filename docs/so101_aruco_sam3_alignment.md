@@ -404,3 +404,56 @@ after pulling the established branch; old rendered videos will not
 change. The table SAM3 optimizer uses the same geometry module, so
 its occlusion comparison can also change slightly and should not be
 treated as identical to an earlier report.
+
+
+## 2026-11-08: SO-101 MUST be clamped at the table edge
+
+Critical physical constraint from the actual workcell: **SO-101 is
+fixed to the edge of the real 800×510mm tabletop**, not floating
+outside it. The first SAM3 optimizers freely translated the tabletop
+without constraining its position relative to the robot, causing the
+same unrealistic apparent scale and robot/table separation to persist.
+
+The updated alignment adds an explicit edge constraint. For each
+table XY/Yaw candidate, the tabletop+legs are shifted so a selected
+table edge passes through the designated SO-101 base-frame anchor.
+The camera, URDF, Muhi and cup stay fixed. The axis of the edge
+(`x+`, `x-`, `y+`, `y-`) is **table local**, not a Side-frame axis.
+Use `auto` to choose the nearest edge from the initial provisional
+table pose, then review `report.json.robot_anchor_edge`. This
+automatic choice is a **hypothesis**, not a verified physical clamp edge.
+
+IMPORTANT: SO-101 base-frame origin may not coincide with the clamp
+contact point. The defaults `--robot-anchor-x-cm 0`,
+`--robot-anchor-y-cm 0`, `--robot-edge-inset-cm 0` are **diagnostic
+assumptions**, not measurements. If the real clamp point relative to
+the robot base is known, supply those offsets. There is no hardware
+movement or automatic arm recalibration. Do not claim metric accuracy.
+
+Use the existing Episode 4 input paths from above and run:
+
+```bash
+OUT="outputs/real2sim/table-robot-edge-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/align_previous_scene_sam3.py \
+  --real-image "$REAL" --real-mask "$MASK" \
+  --dataset-root "$DATASET" --episode 4 \
+  --object-layout-json "$OBJECTS" \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --axis xy --fit-yaw --anchor-robot-edge auto \
+  --edge-x-min 440 --edge-x-max 600 --output "$OUT"
+
+open "$OUT/before.png" "$OUT/after.png"
+cat "$OUT/report.json"
+```
+
+The new `report.json.recommended_video_flags` includes the selected
+edge and clamp-anchor assumptions, in addition to XY and yaw. For
+the comparison movie, pass all those flags **together**. If the
+selected edge is physically wrong, replace `auto` with the correct
+table-local edge after inspecting the top-view photo. Never move
+the robot or change camera intrinsics to make an edge look correct.
+
+Note: a 2D realistic picture (or image-to-illustration conversion)
+does NOT recover physical depth or coordinates from a single photo.
+This rigid edge constraint plus known dimensions is a geometric
+assumption to reduce ambiguity, not exact real-to-sim calibration.
