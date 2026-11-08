@@ -545,6 +545,8 @@ def run_motion(args):
             "table_base_y_cm": args.table_base_y_cm,
             "table_base_z_cm": args.table_base_z_cm,
             "table_yaw_delta_deg": args.table_yaw_delta_deg,
+            "table_extra_left_cm": args.table_extra_left_cm,
+            "table_extra_front_cm": args.table_extra_front_cm,
         }
         for key, value in comparisons.items():
             if not np.isclose(float(cup_pose.get(key, np.nan)), value, atol=1e-6):
