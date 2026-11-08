@@ -558,6 +558,54 @@ self-collision. Test initial and a small set of arm poses, then compare
 PD tracking before restarting SAC. Original URDF and normal training
 model are untouched.
 
+### Step B prototype (2026-11-08): one split-convex diagnostic model
+
+A minimal, **disposable** collision prototype was created to exit the
+repetitive diagnostic loop. See
+`scripts/so101_sim/prototype_split_convex_collision.py`.
+
+- Split the original STL *solids* for
+  `base_motor_holder_so101_v1.stl`, `base_so101_v2.stl`,
+  and `rotation_pitch_so101_v1.stl` by a 2×2×2 grid, convexifying
+  each occupied volume chunk: **8 + 8 + 4 = 20** convex pieces.
+- Produce a temporary generated URDF plus STL chunks under `outputs/`.
+  Original source URDF/STL, joint transforms/inertias and visual meshes
+  remain unchanged. The script only uses MuJoCo PD-oracle evaluation,
+  not training or hardware.
+- A degenerate clipped piece initially raised a test error; it is
+  now skipped, and subsequent CI passed.
+
+**Linux GitHub Actions (seed 101, episode 0, 150 control steps):**
+
+| Metric | Original source URDF | Split-convex diagnostic URDF |
+| --- | ---: | ---: |
+| Initial MuJoCo contact points | 12 | **0** |
+| Final TCP proxy distance | 304.68 mm | 124.77 mm |
+| Mean per-joint torque saturation | 94.4% | 76.2% |
+| Fraction of physics substeps with contacts | 100% | 97.3% |
+| Reach success (<25 mm) | False | False |
+
+**Decision:** Initial phantom contacts are reduced and final distance
+improves, but contacts recur during motion, torque saturation remains
+substantial, and the prototype fails Reach. Do NOT adopt as the
+production collision model or restart SAC. These are CI/Linux
+results; local Mac may differ.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+PROXY_OUT="outputs/so101-split-convex-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/prototype_split_convex_collision.py --out "$PROXY_OUT"
+cat "$PROXY_OUT/pd_comparison.csv"
+```
+
+To keep the learning project moving, **stop here rather than tuning grid
+splits**. Only revisit physical collision realism when adding contact-rich
+Pick/Place or when an experiment specifically requires validated self
+collisions. For simpler Reach learning, consider a clearly labeled
+collision-simplified **simulation-only** environment with collision
+limitations recorded; never equate it to a safe Sim-to-Real model.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
