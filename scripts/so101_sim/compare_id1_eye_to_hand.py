@@ -196,9 +196,11 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
          along_muhi_axis(.0325), [.019, .0175, 0],
          [.82, .89, .96, 1.], quat=side_quat)
 
-    # Earlier transparent container: diameter ~100mm, height ~120mm.
+    # Photo/ruler estimate (2026-11-08): diameter ~100mm, maximum height
+    # ~90mm, NOT the former 120mm. This remains a provisional measurement;
+    # the side cut-out in the real cup is not represented by these walls.
     cx, cy = [float(v) for v in cup_xy]
-    radius, h = .05, .12
+    radius, h = .05, .09
     geom("r2s_cup_base", mujoco.mjtGeom.mjGEOM_CYLINDER,
          [cx, cy, .001], [radius, .001, 0], [.70, .85, .92, .55])
     for i in range(16):
@@ -207,7 +209,7 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
         quat = [math.cos((a+math.pi/2)/2), 0., 0.,
                 math.sin((a+math.pi/2)/2)]
         geom(f"r2s_cup_wall_{i:02d}", mujoco.mjtGeom.mjGEOM_BOX,
-             [px, py, .055], [.010, .0015, h/2],
+             [px, py, .002 + h/2], [.010, .0015, h/2],
              [.70, .86, .92, .62], quat=quat)
 
 
