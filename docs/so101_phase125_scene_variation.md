@@ -316,6 +316,72 @@ Decision:
 - CI on Linux confirms script validity; repeat the comparison locally on
   the Mac before diagnosing numerical sensitivity.
 
+### Base/shoulder mesh visualization and primitive collision proxy experiment
+
+**2026-11-08 / diagnostics only.** First-phase findings:
+
+- A compiled zero-pose mesh/contact snapshot of `geom0`, `geom1`,
+  `geom2` (base) and `geom6` (shoulder) revealed three initial
+  contact pairs. CI's signed MuJoCo contact distances were approximately
+  **-26.4mm (0–6), -27.9mm (1–6), and -22.4mm (2–6)**, each with
+  four contact points. Negative values indicate significant interpenetration
+  according to MuJoCo's compiled collision geometry. This is *not*
+  necessarily an equal amount of true CAD-STL physical penetration:
+  MuJoCo can convexify imported collision meshes.
+- `visualize_base_shoulder_contacts.py` generates a 3D plot showing
+  compiled collision-mesh vertices and the exact MuJoCo contact points
+  and writes signed distances to CSV. Inspect the local PNG before
+  inferring which STL triangles overlap.
+- `compare_collision_proxies.py` runs *in-memory* collision-primitive
+  substitutions: only geom6 as scaled box/sphere/capsule; or geom0,
+  geom1, geom2 and geom6 as boxes. All original contacts remain
+  enabled. These are **illustrative approximations**, *not* validated
+  collision shapes, and they are deliberately not installed in SAC.
+
+#### Initial Linux CI baseline (seed 101, Episode 0, 150 steps)
+
+| Collision condition | Final TCP error | Joint error L2 | Contact substep rate | Mean saturation |
+| --- | ---: | ---: | ---: | ---: |
+| Original compiled mesh | 304.68 mm | 2.791 rad | 100% | 94.4% |
+| geom6 box at scale 0.65 | 223.34 mm | 2.200 rad | 100% | 74.5% |
+| geom6 sphere at scale 0.65 | 224.81 mm | 3.459 rad | 100% | 76.2% |
+| geom6 capsule at scale 0.65 | 225.00 mm | 3.197 rad | 100% | 76.4% |
+| geoms 0,1,2,6 as boxes scale 0.65 | 225.27 mm | 3.282 rad | 100% | 76.3% |
+
+None passed the 25mm reach threshold. Primitive sizing is based on
+the compiled mesh's origin-centered vertex extents and a shrink
+factor, not a physical fit. Lower error alone is **not** proof of
+a better or safe collision representation. Collisions remained
+active throughout all runs. Re-evaluate on the user's Mac.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+VIS_OUT="outputs/so101-contact-visual-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/visualize_base_shoulder_contacts.py --out "$VIS_OUT"
+open "$VIS_OUT/base_shoulder_contacts_3d.png"
+cat "$VIS_OUT/contacts.csv"
+
+PROXY_OUT="outputs/so101-proxy-compare-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_collision_proxies.py \
+  --seed 101 --episode 0 --scale 0.65 --out "$PROXY_OUT"
+cat "$PROXY_OUT/proxy_comparison.csv"
+```
+
+#### Decision gate before SAC
+
+Do **not** restart SAC on the current mesh/proxy collision model.
+First check on the local Mac whether substantial zero-pose penetrations
+are reproduced, and review actual base/shoulder mesh fitting.
+Next build a **physically defensible** collision proxy with verified
+clearance (separate visual meshes from simplified collision geoms),
+and require the PD oracle to track multiple FK targets without
+persistent large contact reactions and torque saturation. Only then
+test RL again; track Reach success using a common goal distribution
+and multiple training seeds. For time-efficient learning, defer
+contact-rich Pick/Place mechanics until the small Reach controller is
+stable.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
