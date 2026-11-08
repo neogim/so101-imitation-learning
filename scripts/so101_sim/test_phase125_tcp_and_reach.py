@@ -291,6 +291,15 @@ class ReachEnvTests(unittest.TestCase):
                 rows = list(csv.DictReader(f))
             self.assertEqual(len(rows), 12)
             self.assertIn("hull_b_surface_mm", rows[0])
+            self.assertIn("inside_hull_a", rows[0])
+            self.assertIn("inside_hull_b", rows[0])
+            for pair in ((0,6),(1,6),(2,6)):
+                sub=[x for x in result["contact_rows"]
+                     if (x["geom_a"], x["geom_b"]) == pair]
+                print("MUJOCO_STEP_A_INSIDE_HULL:", pair,
+                      "inside_a=", [x["inside_hull_a"] for x in sub],
+                      "inside_b=", [x["inside_hull_b"] for x in sub])
+
             for pair, metrics in result["mean_by_pair"].items():
                 print("MUJOCO_STEP_A_SURFACE:", pair,
                       "raw_a_mm=", round(metrics["raw_a_surface_mm"], 3),
