@@ -220,6 +220,14 @@ class ReachEnvTests(unittest.TestCase):
             dest = export(report, Path(tmp) / "proxies")
             self.assertTrue(dest.is_file())
             self.assertTrue((dest.parent / "proxy_comparison.json").is_file())
+        full = compare_proxies(seed=101, episode=0, max_steps=150, frame_skip=10, scale=.65)
+        for key, entry in full["results"].items():
+            print("MUJOCO_PRIMITIVE_PROXY:", key,
+                  "final_tcp_m=", round(entry["final_tcp_distance_m"], 5),
+                  "joint_err_l2=", round(entry["final_joint_error_l2_rad"], 5),
+                  "contact_frac=", round(entry["contact_substep_fraction"], 3),
+                  "mean_sat=", round(float(np.mean(entry["torque_saturation_fraction"])), 3))
+
 
 
 if __name__ == "__main__":
