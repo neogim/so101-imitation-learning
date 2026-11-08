@@ -352,5 +352,37 @@ class ReachEnvTests(unittest.TestCase):
             })
 
 
+    def test_learning_kinematic_fk_reach_baselines(self):
+        import json
+        from learn_reach_kinematic import KinematicReachEnv, run_experiment, save
+        env = KinematicReachEnv(seed=4)
+        try:
+            obs, info = env.reset(seed=4)
+            self.assertEqual(obs.shape, (9,))
+            self.assertEqual(info["status"], "KINEMATIC_REFERENCE_NOT_PHYSICAL_SIM")
+            self.assertTrue(np.isfinite(obs).all())
+            with self.assertRaises(ValueError):
+                env.step(np.zeros(4))
+            with self.assertRaises(ValueError):
+                env.step(np.full(5, np.nan))
+        finally:
+            env.close()
+        result = run_experiment(seed=101, episodes=3)
+        self.assertEqual(len(result["results"]), 6)
+        stationary = [r for r in result["results"] if r["policy"] == "zero_action"]
+        oracle = [r for r in result["results"] if r["policy"] == "known_joint_oracle"]
+        self.assertFalse(any(r["success"] for r in stationary))
+        self.assertTrue(all(r["success"] for r in oracle))
+        self.assertTrue(all(r["final_tcp_mm"] <= 25 for r in oracle))
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "kinematic"
+            save(result, out)
+            self.assertTrue((out/"reach_baselines.csv").is_file())
+            self.assertEqual(json.loads((out/"summary.json").read_text())["seed"],101)
+            with self.assertRaises(ValueError):
+                save(result, out)
+        print("MUJOCO_KINEMATIC_LEARNING_REACH:", result["results"])
+
+
 if __name__ == "__main__":
     unittest.main()
