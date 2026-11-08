@@ -924,3 +924,78 @@ but those remain **visual estimates**, not physical measurements.
 Click SAVE JSON for a new pose file and comparison PNG. The original
 three-click image point and tentative camera calibration are unchanged.
 Do not tune physical geometry to hide perspective/extrinsic errors.
+
+
+## 2026-11-08: SO-101 five-joint pose inspection GUI (frame 0 / 24 / 40 / 52)
+
+The earlier 15-second overlay shows an arm silhouette mismatch even
+at frame 0, and the mismatch persists at frames 24, 40, and 52. The
+source motion renderer assumes all five joint signs +1 and offsets 0deg.
+This is *unverified*; do not immediately blame ArUco or re-do desk
+fitting. A new **offline diagnostic** Matplotlib GUI
+`scripts/so101_sim/compare_real_sim_robot_overlay_gui.py` keeps
+previous camera, measured table, Muhi, cup dimensions and **saved cup
+XYZ pose** frozen. It exposes five temporary joint-offset sliders
+(±25deg, 0.25deg increments), frame selector and alpha blending.
+The same values persist across all four frames. No robot control,
+no new data capture, no SAM3/Quest setup. The initial pose overlay
+is only a *visual candidate*, not a mechanical calibration.
+
+Use the exact already saved objects and cup pose (repository-relative
+paths) to avoid silently discarding previous placement work:
+
+```bash
+cd ~/Documents/AI/physicalAI2026_docker/so101-imitation-learning
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+CUP_POSE="outputs/real2sim/episode4-cup-gui-20261108-131429.json"
+JOINTS="outputs/real2sim/episode4-robot-joints-$(date +%Y%m%d-%H%M%S).json"
+
+python scripts/so101_sim/compare_real_sim_robot_overlay_gui.py \
+  --dataset-root "$DATASET" --episode 4 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$OBJECTS" --cup-pose-json "$CUP_POSE" \
+  --table-extra-left-cm 4 --table-extra-front-cm 5 \
+  --table-base-x-cm 12 --table-base-y-cm 7 \
+  --table-yaw-delta-deg -9.375 \
+  --output "$JOINTS"
+```
+
+Compare **frame 0** first. Adjust J1-J5 only as diagnostic
+candidates; check **24, 40, 52 with unchanged offsets** before clicking
+SAVE JSON + PNG. Save exports the offsets and a single complete four-row,
+three-column Real / Sim / Overlay contact sheet
+(`"$JOINTS"` and `"${JOINTS%.json}.png"`).
+If the initial frame fits but the later frames do not, stop tuning
+static joint offsets and investigate frame timestamps / servo mapping
+instead of forcing scene geometry to match.
+
+Re-render with the **same** scene and candidate offsets:
+
+```bash
+VIDEO_OUT="outputs/real2sim/episode4-robot-pose-video-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root "$DATASET" --episode 4 --stride 5 --max-frames 60 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$OBJECTS" --cup-pose-json "$CUP_POSE" \
+  --robot-joint-offsets-json "$JOINTS" \
+  --table-extra-left-cm 4 --table-extra-front-cm 5 \
+  --table-base-x-cm 12 --table-base-y-cm 7 \
+  --table-yaw-delta-deg -9.375 --output "$VIDEO_OUT"
+
+open "$VIDEO_OUT/real_vs_sim_episode.mp4"
+```
+
+The replay script validates episode, object annotations, cup pose,
+and table settings against the saved offset JSON to prevent mixing
+calibration states. Do **not** apply this file directly to SO-101 motors;
+it is only a rendering diagnostic. If the GUI cannot open interactively
+on macOS, run with a native Matplotlib backend such as
+`MPLBACKEND=MacOSX python ...` after verifying the environment supports
+it.
