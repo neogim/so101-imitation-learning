@@ -141,6 +141,75 @@ def set_table_pose_delta(model, reference_positions, reference_quats,
     model.geom_quat[ids] = rotated[:, [3, 0, 1, 2]]
 
 
+def nearest_table_edge(model, anchor_xy_m=(0., 0.)):
+    """Find nearest tabletop edge to robot anchor, using its current world pose.
+
+    Returns a local edge identifier, not a calibrated attachment measurement.
+    """
+    from scipy.spatial.transform import Rotation
+
+    ids = table_geom_ids(model)
+    center = model.geom_pos[ids[0], :2]
+    q = model.geom_quat[ids[0]]
+    rotation = Rotation.from_quat(q[[1, 2, 3, 0]]).as_matrix()
+    anchor = np.asarray(anchor_xy_m, dtype=float)
+    if anchor.shape != (2,) or not np.isfinite(anchor).all():
+        raise ValueError("Invalid robot anchor xy")
+    local = rotation[:2, :2].T @ (anchor - center)
+    half = model.geom_size[ids[0], :2]
+    options = {
+        "x+": abs(local[0] - half[0]), "x-": abs(local[0] + half[0]),
+        "y+": abs(local[1] - half[1]), "y-": abs(local[1] + half[1]),
+    }
+    return min(options, key=options.get)
+
+
+def anchor_table_edge_to_robot(model, edge="auto", anchor_xy_m=(0., 0.),
+                               inset_m=0.):
+    """Move table+legs ONLY so robot's specified anchor is on a desk edge.
+
+    The geometric constraint uses measured 800x510mm footprint. It does NOT
+    move or rotate the robot or camera. The robot origin may not coincide
+    with its real clamp point, so an explicit anchor/inset can be supplied.
+    """
+    from scipy.spatial.transform import Rotation
+
+    if not np.isfinite(inset_m) or inset_m < 0:
+        raise ValueError("Invalid robot edge inset")
+    selected = nearest_table_edge(model, anchor_xy_m) if edge == "auto" else edge
+    if selected not in ("x+", "x-", "y+", "y-"):
+        raise ValueError("edge must be auto, x+, x-, y+ or y-")
+    ids = table_geom_ids(model)
+    table = ids[0]
+    center = model.geom_pos[table, :2].copy()
+    q = model.geom_quat[table]
+    rotation = Rotation.from_quat(q[[1, 2, 3, 0]]).as_matrix()[:2, :2]
+    anchor = np.asarray(anchor_xy_m, dtype=float)
+    if anchor.shape != (2,) or not np.isfinite(anchor).all():
+        raise ValueError("Invalid robot anchor xy")
+    axis = 0 if selected[0] == "x" else 1
+    sign = 1. if selected[1] == "+" else -1.
+    half = float(model.geom_size[table, axis])
+    if inset_m >= half:
+        raise ValueError("Inset must be smaller than table half extent")
+    local = rotation.T @ (anchor - center)
+    target_local = sign * (half - inset_m)
+    displacement = (local[axis] - target_local) * rotation[:, axis]
+    model.geom_pos[ids, :2] += displacement
+    # Recompute residual and include selection, since this is a constraint,
+    # not a guarantee that the specified robot point is the real clamp.
+    updated_center = model.geom_pos[table, :2]
+    after_local = rotation.T @ (anchor - updated_center)
+    return {
+        "edge": selected,
+        "anchor_xy_m": anchor.tolist(),
+        "inset_m": float(inset_m),
+        "correction_xy_m": displacement.tolist(),
+        "edge_constraint_residual_m": float(after_local[axis] - target_local),
+        "table_center_xy_m": updated_center.tolist(),
+    }
+
+
 def project_base_xyz_to_side(T_base_cv, intrinsics, xyz):
     """Project a base-frame 3D point through the same candidate Side camera."""
     T = np.asarray(T_base_cv, dtype=float)
@@ -441,6 +510,12 @@ def run_motion(args):
         base_xyz_m=np.array([args.table_base_x_cm, args.table_base_y_cm,
                              args.table_base_z_cm]) / 100.,
         yaw_delta_deg=args.table_yaw_delta_deg)
+    robot_table_edge = None
+    if args.anchor_robot_edge != "off":
+        robot_table_edge = anchor_table_edge_to_robot(
+            model, args.anchor_robot_edge,
+            (args.robot_anchor_x_cm / 100., args.robot_anchor_y_cm / 100.),
+            args.robot_edge_inset_cm / 100.)
     annotations = None
     if args.object_layout_json is not None:
         raw = args.object_layout_json.read_text(encoding="utf-8")
@@ -538,6 +613,7 @@ def run_motion(args):
         "table_base_xyz_cm": [args.table_base_x_cm, args.table_base_y_cm, args.table_base_z_cm],
         "table_yaw_delta_deg": args.table_yaw_delta_deg,
         "table_yaw_deg": 15. + args.table_yaw_delta_deg,
+        "robot_table_edge": robot_table_edge,
         "limitations": [
             "The Side calibration dates to 2026-11-07 and may not match the recording setup.",
             "J6 normalized [0,100] is mapped linearly to URDF gripper joint limits for visualization only.",
@@ -576,6 +652,16 @@ def main():
                              help="Tabletop offset camera-left in cm (default: 4)")
             sub.add_argument("--table-extra-front-cm", type=float, default=5.,
                              help="Tabletop offset toward camera in cm (negative moves farther; default: 5)")
+            sub.add_argument("--anchor-robot-edge",
+                             choices=("off", "auto", "x+", "x-", "y+", "y-"),
+                             default="off",
+                             help="Constrain tabletop edge at robot anchor; auto picks nearest baseline edge")
+            sub.add_argument("--robot-anchor-x-cm", type=float, default=0.,
+                             help="Base-frame X of actual clamp anchor (default origin)")
+            sub.add_argument("--robot-anchor-y-cm", type=float, default=0.,
+                             help="Base-frame Y of actual clamp anchor (default origin)")
+            sub.add_argument("--robot-edge-inset-cm", type=float, default=0.,
+                             help="Clamp anchor inset from tabletop edge, cm")
             sub.add_argument("--table-yaw-delta-deg", type=float, default=0.,
                              help="Additional tabletop yaw around own center (deg); default 0")
             sub.add_argument("--table-base-x-cm", type=float, default=0.,
