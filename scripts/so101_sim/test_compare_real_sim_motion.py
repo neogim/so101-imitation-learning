@@ -92,6 +92,19 @@ class MotionComparisonTests(unittest.TestCase):
                                     "r2s_muhi_body")
         self.assertGreaterEqual(muhi_id, 0)
 
+    def test_cup_photo_estimated_height_is_shorter_than_muhi_length(self):
+        import mujoco
+        import compare_id1_eye_to_hand as scene
+        spec = mujoco.MjSpec.from_string("<mujoco><worldbody/></mujoco>")
+        scene.add_approximate_workcell(spec)
+        model = spec.compile()
+        cup = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_cup_wall_00")
+        self.assertGreaterEqual(cup, 0)
+        # Full uncut wall height including the base plate is approximately 92mm.
+        top_m = model.geom_pos[cup, 2] + model.geom_size[cup, 2]
+        np.testing.assert_allclose(top_m, .092, atol=1e-6)
+        self.assertLess(top_m, .10)
+
     def test_three_click_axis_projects_same_body_and_cap_ends(self):
         import mujoco
         from compare_real_sim_motion import muhi_axis_reprojection
