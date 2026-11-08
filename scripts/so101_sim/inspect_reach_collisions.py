@@ -99,13 +99,63 @@ def install_selective_geom_filter(model, excluded_pairs):
     return sorted(pairs)
 
 
+def install_primitive_proxy(model, gid, primitive, shrink=0.65):
+    """Replace a mesh collision geom with a primitive in *this* MjModel only.
+
+    Build conservative example sizes from origin-centered compiled-mesh
+    vertex extents. This is a physics sensitivity experiment, NOT a
+    validated SO-101 collision shape or an asset edit.
+    """
+    gid = int(gid)
+    if not 0 <= gid < model.ngeom or not 0 < shrink <= 1:
+        raise ValueError("Invalid geom id or shrink factor")
+    if int(model.geom_type[gid]) != int(mujoco.mjtGeom.mjGEOM_MESH):
+        raise ValueError("Expected original mesh geometry")
+    mid = int(model.geom_dataid[gid])
+    start = int(model.mesh_vertadr[mid])
+    end = start + int(model.mesh_vertnum[mid])
+    vertices = np.asarray(model.mesh_vert[start:end], dtype=float)
+    if vertices.size == 0:
+        raise ValueError("Empty mesh")
+    # Absolute coordinates bound geometry about its current compiled geom frame;
+    # not a fitted OBB or a validated collision proxy.
+    half = np.maximum(np.max(np.abs(vertices), axis=0) * shrink, .001)
+    sizes = np.zeros(3, dtype=float)
+    if primitive == "box":
+        geom_type = mujoco.mjtGeom.mjGEOM_BOX
+        sizes[:] = half
+        radius_bound = float(np.linalg.norm(half))
+    elif primitive == "sphere":
+        geom_type = mujoco.mjtGeom.mjGEOM_SPHERE
+        sizes[0] = float(np.linalg.norm(half))
+        radius_bound = float(sizes[0])
+    elif primitive == "capsule":
+        geom_type = mujoco.mjtGeom.mjGEOM_CAPSULE
+        sizes[0] = float(max(half[0], half[1]))
+        sizes[1] = float(max(.001, half[2] - sizes[0]))
+        radius_bound = float(sizes[0] + sizes[1])
+    else:
+        raise ValueError("primitive must be box/sphere/capsule")
+    model.geom_type[gid] = int(geom_type)
+    model.geom_size[gid, :3] = sizes
+    model.geom_rbound[gid] = radius_bound
+    return {"geom_id": gid, "primitive": primitive,
+            "shrink": float(shrink), "size_m": sizes.tolist(),
+            "rbound_m": radius_bound}
+
+
 def rollout(model, seed, episode, max_steps, frame_skip, contact_disabled,
-            near_goal_joint_rad=None, excluded_geom_pairs=None):
+            near_goal_joint_rad=None, excluded_geom_pairs=None,
+            primitive_proxies=None):
     env = SO101ReachEnv(seed=seed, max_steps=max_steps, frame_skip=frame_skip,
                         goal_joint_delta_rad=near_goal_joint_rad)
     try:
         if excluded_geom_pairs is not None:
             install_selective_geom_filter(env.model, excluded_geom_pairs)
+        proxy_metadata = [
+            install_primitive_proxy(env.model, gid, shape, shrink)
+            for gid, shape, shrink in (primitive_proxies or [])
+        ]
         if contact_disabled:
             env.model.opt.disableflags = (
                 int(env.model.opt.disableflags)
@@ -149,6 +199,7 @@ def rollout(model, seed, episode, max_steps, frame_skip, contact_disabled,
 
         return {
             "contact_disabled": contact_disabled,
+            "primitive_proxies": proxy_metadata,
             "excluded_geom_pairs": [list(v) for v in (excluded_geom_pairs or ())],
             "goal_joint_rad": desired.tolist(),
             "initial_joint_rad": initial_pose.tolist(),
