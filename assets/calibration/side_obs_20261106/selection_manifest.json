@@ -1,0 +1,195 @@
+{
+  "note": "Chessboard inner corners 7x5. Calibration candidate images only. No independently validated intrinsics.",
+  "source": "OBS screenshots (black padding cropped). Do not equate this crop with ACT 224x168 pipeline without checking transformations.",
+  "images": [
+    {
+      "filename": "Screenshot 2026-11-06 00-08-44.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": false,
+      "crop": null,
+      "full_size": "1280x480",
+      "calibration_size": null,
+      "original_sha256": "8e43beed9722e1b32413eb14112b2f29489f3ae592909354273616e9ed7505cd"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-09-39.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "9d8d4dfbb6fca0e1bc0516cfe16ecf77f53f509e7d15541334724e1ddb670ae7"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-17-35.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "2ec9dbfc9ff98edb940f95b0dd4ac26a9a241abb544643543c1b7ff99cba6596"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-18-02.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "23dc9b1ab238ebf7f81caa2a0b1c43ec9595dc331d052db09842506605570bc5"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-18-23.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": false,
+      "crop": null,
+      "full_size": "1280x480",
+      "calibration_size": null,
+      "original_sha256": "04b85846c075b8077146d12c293fd6350e92ef119e5136de79374a7969b6f6cd"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-18-44.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "bc6074d20d09c7096c21ec67a6ecf0900e843604aa58b7deba7b1809595ac216"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-19-09.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "d8b391b14cbe5a3f0202ad56d46123e83140a49fa211c804647254caf6291456"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-19-59.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "047d9766840fc43311c35ae1b2d22c47e0b79e8e4af7a70585fdb1b0b2a6c8c6"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-20-26.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "180ab9da8888a6c6feb7b6a76ed7b6dbdafc10c42123edcd76028990306bef1f"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-20-46.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "0f4c94c9d665307ccd711eddb46c895aaa984446bf54de9ff8640bd195f653ce"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-21-28.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "adfc90534522057c1ab2578fde1adf7f4f2e4fc33bd256f4e8bc3bd20d6b83c8"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-21-54.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "f73eece5be9baf0434f537e61b642c51fd0260edb223cf6131a863b9bb1cfa36"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-22-23.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": false,
+      "crop": null,
+      "full_size": "1280x480",
+      "calibration_size": null,
+      "original_sha256": "6c11496d09cf2255a06bb7f09ceac716a22218edc8772b0c904fbc7dda2664e8"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-22-45.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": false,
+      "crop": null,
+      "full_size": "1280x480",
+      "calibration_size": null,
+      "original_sha256": "9c550c4caa3ea5e268518bc674c83e37c99292ac677b2a20439a30dfde0b1d9d"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-23-24.png",
+      "source_zip": "アーカイブ(1).zip",
+      "accepted": false,
+      "crop": null,
+      "full_size": "1280x480",
+      "calibration_size": null,
+      "original_sha256": "75c2b9ee491338545a6782dfd4ea977552b9159928cd405be0c59b46d06689cb"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-29-10.png",
+      "source_zip": "アーカイブ 2(2).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "626a3da4bbd03528e46f64c9afe795c5b193964d20f00cf11cd792418e054763"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-29-27.png",
+      "source_zip": "アーカイブ 2(2).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "d34a82359063460fa14db64a1bee26cd1c96c937cd70cab0f510f4458088e158"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-29-43.png",
+      "source_zip": "アーカイブ 2(2).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "e2fdb83db269f475d0dae39964e6b8ad940fc8fa8be68411a5c249263b08c9ee"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-29-58.png",
+      "source_zip": "アーカイブ 2(2).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "52f4a2affdd1ea53b3bf69f64a040095120e6fb0d92561a4a0d37c1e01e1b346"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-30-18.png",
+      "source_zip": "アーカイブ 2(2).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "af625a39548134d5c822d9c637d1952f814bd5f1dd57c69425d1e145af8c91a1"
+    },
+    {
+      "filename": "Screenshot 2026-11-06 00-30-40.png",
+      "source_zip": "アーカイブ 2(2).zip",
+      "accepted": true,
+      "crop": "x=320:960,y=0:480",
+      "full_size": "1280x480",
+      "calibration_size": "640x480",
+      "original_sha256": "df5800615efb644d161505dbe176ba5cb46d9859af185cd8e4fda0a3bf46eaa5"
+    }
+  ]
+}
