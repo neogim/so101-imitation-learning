@@ -201,6 +201,7 @@ class ReachEnvTests(unittest.TestCase):
         self.assertTrue(all(v.shape[1] == 3 for v in vertices.values()))
         self.assertTrue(all(np.isfinite(v).all() for v in vertices.values()))
         self.assertTrue(any(x["pair"] == [0, 6] for x in contacts))
+        print("MUJOCO_BASE_SHOULDER_SIGNED_CONTACT_DISTANCES:", [(x["pair"], round(x["signed_distance_m"], 6)) for x in contacts])
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "collision_plot"
             snap = save_snapshot(path)
