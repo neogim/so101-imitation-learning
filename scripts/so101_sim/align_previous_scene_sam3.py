@@ -310,6 +310,8 @@ def main():
     p.add_argument("--dataset-root", type=Path,
                    help="Use the recorded episode first joint pose in the mask scene")
     p.add_argument("--episode", type=int, default=4)
+    p.add_argument("--cup-click-height-cm", type=float, default=5.5,
+                   help="Historical assumed 3-click cup point height in cm, NOT verified")
     p.add_argument("--object-layout-json", type=Path,
                    help="Use the same Muhi/cup 3-click JSON as the comparison video")
     p.add_argument("--output", type=Path, required=True)
@@ -362,7 +364,8 @@ def main():
             args.dataset_root.resolve(strict=True), args.episode, 1, 1)["rows"][0]
         muhi_px, cup_px, yaw = movie.read_object_targets(args.object_layout_json)
         layout = movie.video_object_layout(extrinsics["T_base_camera"], intrinsics,
-                                           muhi_px, cup_px, yaw)
+                                           muhi_px, cup_px, yaw,
+                                           cup_click_height_m=args.cup_click_height_cm / 100.)
     model, camera = movie.make_calibrated_model(
         extrinsics, intrinsics, args.urdf, object_layout=layout)
     data = mujoco.MjData(model)
@@ -429,6 +432,7 @@ def main():
     result["model_target"] = "r2s_preview_table_and_four_legs"
     result["matching_episode_pose"] = args.episode if recorded_first is not None else None
     result["matching_object_layout_json"] = str(args.object_layout_json) if layout is not None else None
+    result["cup_click_reference_height_cm"] = args.cup_click_height_cm
     result["table_yaw_deg_unchanged"] = not args.fit_yaw
     result["table_dimensions_unchanged"] = True
     result["recommended_video_flags"] = {
