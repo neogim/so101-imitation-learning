@@ -133,6 +133,8 @@ class ReachEnvTests(unittest.TestCase):
     def test_compiled_collision_inventory_and_contact_ablation(self):
         from inspect_reach_collisions import run_audit
         report = run_audit(seed=101, episode=0, max_steps=3, frame_skip=2)
+        print("MUJOCO_COLLISION_GEOMS:", [(g["geom_id"], g["body_name"], g["mesh_name"]) for g in report["geoms"]])
+        print("MUJOCO_INITIAL_CONTACTS:", report["baseline_contact_enabled"]["initial_contact_geom_pairs"])
         self.assertGreater(report["model"]["ngeom"], 0)
         self.assertEqual(len(report["geoms"]), report["model"]["ngeom"])
         self.assertTrue(all(g["body_name"] for g in report["geoms"]))
