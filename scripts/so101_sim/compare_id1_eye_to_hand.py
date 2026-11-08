@@ -146,39 +146,30 @@ def tabletop_front_y_m(x_m, width_m=.80, center_depth_m=.505,
     return -center_depth_m / 2 + depth
 
 
-def tabletop_mesh_geometry(width_m=.80, center_depth_m=.505,
-                           edge_depth_m=.470, thickness_m=.04,
-                           front_segments=32):
-    """Watertight triangulated tabletop, with its rear edge fixed.
+def tabletop_front_strip_boxes(width_m=.80, center_depth_m=.505,
+                               edge_depth_m=.470, segments=32):
+    """Rectangular visual strips approximating the measured curved front.
 
-    Returns uservert/userface flattened arrays for MjSpec.add_mesh.
-    Local origin stays at the maximal-depth footprint midpoint (0, 0).
+    Each strip lies *inside* the ideal parabolic footprint. This avoids
+    MuJoCo mesh inertial-axis normalization rotating the geom's frame.
     """
-    if (front_segments < 4 or not isinstance(front_segments, int)
-            or thickness_m <= 0 or not np.isfinite(thickness_m)):
-        raise ValueError("Invalid tabletop mesh resolution/thickness")
-    half = width_m / 2
-    rear_y = -center_depth_m / 2
-    # Counter-clockwise boundary when viewed from above.
-    perimeter = [(-half, rear_y), (half, rear_y)]
-    for x in np.linspace(half, -half, front_segments + 1):
-        perimeter.append((float(x), float(tabletop_front_y_m(
-            x, width_m, center_depth_m, edge_depth_m))))
-    n = len(perimeter)
-    bottom = [(x, y, -thickness_m / 2) for x, y in perimeter]
-    top = [(x, y, thickness_m / 2) for x, y in perimeter]
-    vertices = bottom + top + [(0., 0., -thickness_m / 2),
-                               (0., 0., thickness_m / 2)]
-    center_bottom, center_top = 2 * n, 2 * n + 1
-    faces = []
-    for i in range(n):
-        j = (i + 1) % n
-        faces.extend((center_top, n + i, n + j))
-        faces.extend((center_bottom, j, i))
-        faces.extend((i, j, n + j))
-        faces.extend((i, n + j, n + i))
-    return ([float(v) for vertex in vertices for v in vertex],
-            [int(k) for k in faces])
+    if not isinstance(segments, int) or segments < 4:
+        raise ValueError("Need at least four front-edge segments")
+    front_min = -center_depth_m / 2 + edge_depth_m
+    xs = np.linspace(-width_m / 2, width_m / 2, segments + 1)
+    strips = []
+    for i, (left, right) in enumerate(zip(xs[:-1], xs[1:])):
+        front_y = min(float(tabletop_front_y_m(left, width_m, center_depth_m,
+                                               edge_depth_m)),
+                      float(tabletop_front_y_m(right, width_m, center_depth_m,
+                                               edge_depth_m)))
+        extra = front_y - front_min
+        if extra > 1e-8:
+            strips.append((f"r2s_table_front_{i:02d}",
+                           [(float(left) + float(right)) / 2,
+                            front_min + extra / 2, -.025],
+                           [(float(right) - float(left)) / 2, extra / 2, .02]))
+    return strips
 
 
 def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
@@ -225,18 +216,20 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
             kwargs["quat"] = quat
         world.add_geom(**kwargs)
 
-    # Verified from the rear edge: 470mm deep at both lateral ends,
-    # 505mm at the center, width 800mm. Keep the historical 510mm
-    # bounding-box parameter as a compatibility alias; the new measured
-    # maximal depth is 505mm, not 510mm.
-    # 40mm thickness remains provisional. Position/yaw remain unchanged.
-    mesh_vertices, mesh_faces = tabletop_mesh_geometry(
-        width_m=table_width_m, center_depth_m=.505, edge_depth_m=.470)
-    spec.add_mesh(name="r2s_measured_curved_tabletop",
-                  uservert=mesh_vertices, userface=mesh_faces)
-    geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_MESH,
-         [0, 0, -.025], None, [.63, .46, .33, 1.0],
-         table_part=True, meshname="r2s_measured_curved_tabletop")
+    # Measured tabletop: width 800mm, rear-to-front depth 470mm at the
+    # ends and 505mm at its middle. Keep MuJoCo BOX orientation stable.
+    # Base rectangle is 470mm deep and keeps the rear edge at y=-252.5mm.
+    # Add inset strips to approach the curved 35mm front projection.
+    # Thickness (40mm) and local yaw remain provisional/unchanged.
+    rear_y = -.505 / 2
+    edge_depth = .470
+    main_center_y = rear_y + edge_depth / 2
+    geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_BOX,
+         [0, main_center_y, -.025], [table_width_m / 2, edge_depth / 2, .02],
+         [.63, .46, .33, 1.0], table_part=True)
+    for name, pos, size in tabletop_front_strip_boxes(width_m=table_width_m):
+        geom(name, mujoco.mjtGeom.mjGEOM_BOX, pos, size,
+             [.63, .46, .33, 1.0], table_part=True)
     # Keep all four legs inset from the curved board boundary.
     for x in (-(table_width_m / 2 - .035), table_width_m / 2 - .035):
         for y in (-.505 / 2 + .035,
