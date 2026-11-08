@@ -82,5 +82,28 @@ class ReachEnvTests(unittest.TestCase):
             env.close()
 
 
+    def test_near_goal_sampling_and_pd_oracle(self):
+        from so101_reach_env import SO101ReachEnv
+        from diagnose_reach_pd import run_diagnostic
+        env = SO101ReachEnv(goal_joint_delta_rad=.35, frame_skip=2)
+        try:
+            _, info = env.reset(seed=73)
+            self.assertEqual(info["goal_mode"], "near")
+            self.assertTrue(np.all(np.abs(env.goal_joint_angles - env.targets) <= .35 + 1e-9))
+            _, again = env.reset(seed=73)
+            np.testing.assert_allclose(again["goal_base_m"], info["goal_base_m"])
+        finally:
+            env.close()
+        result = run_diagnostic(seed=73, episodes=2,
+                                near_goal_joint_rad=.35, max_steps=20,
+                                frame_skip=2)
+        self.assertEqual(len(result["results"]), 2)
+        self.assertTrue(all(np.isfinite(r["final_tcp_distance_m"])
+                            for r in result["results"]))
+        self.assertTrue(all(np.isfinite(r["final_joint_error_rad_l2"])
+                            for r in result["results"]))
+        # Success is deliberately not asserted: this test diagnoses PD control.
+
+
 if __name__ == "__main__":
     unittest.main()
