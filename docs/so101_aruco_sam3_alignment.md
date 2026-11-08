@@ -819,3 +819,55 @@ Meta Quest 3 is *not* a shortcut to metric SO-101 workcell calibration.
 MuJoCo Studio itself supports a native macOS app (.dmg) as of 2026;
 the GUI in this repository uses the established MuJoCo Python bindings
 and Matplotlib instead, to compare the exact recorded Episode 4 frame.
+
+
+## Cup diameter/height GUI controls (after episode4 GUI alignment)
+
+The saved prior cup adjustment from the user's Episode 4 report is
+`[-32,-63,-1]mm` in SO-101 base X/Y/Z, stored at repository-relative
+`outputs/real2sim/episode4-cup-gui-20261108-131429.json`.
+The visual comparison suggested that the *projected cup width was
+too large and its maximum height slightly too low* even after this
+position adjustment. This does NOT by itself prove physical dimensions
+were measured incorrectly: perspective and the simplified geometry
+may contribute. Edit the geometry in 3D and compare the same image.
+
+The GUI now includes **cup diameter (60–130mm)** and **cup height
+(60–140mm)** sliders, in addition to XYZ and overlay alpha. The
+height adjustment anchors the cup's bottom and moves the top; diameter
+scales the 16 walls radially and updates the base cylinder radius.
+No 2D image-scale manipulation. All cup geometry parts are updated
+rigidly in translation while the robot, Muhi, camera and table remain
+fixed. The simplified cup still does not model the real rim cutout.
+
+To keep the **previous GUI position** instead of starting from zero,
+pass `--initial-pose-json` and choose a NEW output path:
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+OLD_CUP="outputs/real2sim/episode4-cup-gui-20261108-131429.json"
+NEW_CUP="outputs/real2sim/episode4-cup-size-$(date +%Y%m%d-%H%M%S).json"
+
+python scripts/so101_sim/align_cup_gui.py \
+  --dataset-root "$DATASET" --episode 4 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$OBJECTS" \
+  --initial-pose-json "$OLD_CUP" \
+  --table-extra-left-cm 4 --table-extra-front-cm 5 \
+  --table-base-x-cm 12 --table-base-y-cm 7 \
+  --table-yaw-delta-deg -9.375 \
+  --output "$NEW_CUP"
+```
+
+Click SAVE JSON to retain both size and location, plus an aligned PNG.
+Existing video replay accepts these same files through
+`--cup-pose-json "$NEW_CUP"` with the same episode and table flags.
+Older GUI JSON without size fields defaults to diameter 100mm and
+height 90mm. Keep these sizes as candidates until confirmed by actual
+measurements and reprojection, not as physical ground truth.
