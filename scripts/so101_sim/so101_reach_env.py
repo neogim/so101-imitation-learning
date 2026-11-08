@@ -56,12 +56,16 @@ class SO101ReachEnv(gym.Env):
 
     def __init__(self, urdf=r2s.DEFAULT_URDF, seed=None, max_steps=150,
                  action_delta_rad=.045, success_radius_m=.025,
-                 frame_skip=10, kp=12., kd=1.1, max_joint_torque=3.):
+                 frame_skip=10, kp=12., kd=1.1, max_joint_torque=3.,
+                 goal_joint_delta_rad=None):
         super().__init__()
         if max_steps <= 0 or frame_skip <= 0 or action_delta_rad <= 0:
             raise ValueError("Invalid horizon or controller resolution")
         if kp <= 0 or kd < 0 or max_joint_torque <= 0 or success_radius_m <= 0:
             raise ValueError("Invalid reach or controller parameters")
+        if goal_joint_delta_rad is not None and not (0 < goal_joint_delta_rad <= np.pi):
+            raise ValueError("goal_joint_delta_rad must be in (0, pi]")
+        self.goal_joint_delta_rad = goal_joint_delta_rad
         spec = mujoco.MjSpec.from_file(str(Path(urdf).resolve(strict=True)))
         spec.compiler.discardvisual = True
         self.model = spec.compile()
@@ -80,6 +84,7 @@ class SO101ReachEnv(gym.Env):
         self.frame_skip = int(frame_skip)
         self.kp, self.kd, self.max_joint_torque = float(kp), float(kd), float(max_joint_torque)
         self.goal = np.zeros(3)
+        self.goal_joint_angles = np.zeros(5)
         self.targets = np.zeros(5)
         self.t = 0
         self.np_random = np.random.default_rng(seed)
@@ -105,6 +110,11 @@ class SO101ReachEnv(gym.Env):
         # This is only kinematic reachability; no obstacle/physics guarantee.
         margin = np.minimum(.15, (self.qmax - self.qmin) * .1)
         low, high = self.qmin + margin, self.qmax - margin
+        if self.goal_joint_delta_rad is not None:
+            low = np.maximum(low, mid - self.goal_joint_delta_rad)
+            high = np.minimum(high, mid + self.goal_joint_delta_rad)
+            if np.any(low >= high):
+                raise ValueError("No valid near-goal joint sampling interval")
         sampled = self.np_random.uniform(low, high)
         self.data.qpos[self.qids] = sampled
         mujoco.mj_forward(self.model, self.data)
@@ -117,13 +127,15 @@ class SO101ReachEnv(gym.Env):
             self.data.qpos[self.qids] = sampled
             mujoco.mj_forward(self.model, self.data)
             sampled_goal = self._tcp()
-        self.goal = sampled_goal
+        self.goal = sampled_goal.copy()
+        self.goal_joint_angles = sampled.copy()
         self.data.qpos[self.qids] = mid
         self.data.qvel[:] = 0
         mujoco.mj_forward(self.model, self.data)
         self.targets = mid.copy()
         self.t = 0
         return self._observation(), {"goal_base_m": self.goal.tolist(),
+                                     "goal_mode": ("near" if self.goal_joint_delta_rad is not None else "full"),
                                      "status": "REACH_ONLY_NOT_PICK"}
 
     def step(self, action):
