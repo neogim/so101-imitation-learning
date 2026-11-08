@@ -15,6 +15,51 @@ from compare_real_sim_motion import (sample_evenly, comparison_panel,
 
 
 class MotionComparisonTests(unittest.TestCase):
+    def test_gui_cup_delta_preserves_other_geometries(self):
+        import mujoco
+        from align_cup_gui import cup_geom_ids, set_cup_delta
+        geoms = ["<geom name='r2s_cup_base' type='sphere' size='.01' pos='.2 -.1 .001'/>"]
+        geoms += [f"<geom name='r2s_cup_wall_{i:02d}' type='sphere' size='.01' pos='.2 -.1 .04'/>"
+                  for i in range(16)]
+        geoms += ["<geom name='r2s_muhi_body' type='sphere' size='.01'/>",
+                  "<geom name='r2s_preview_table' type='box' size='.4 .25 .02'/>"]
+        model = mujoco.MjModel.from_xml_string("<mujoco><worldbody>" +
+                                               "".join(geoms) + "</worldbody></mujoco>")
+        ids = cup_geom_ids(model)
+        original = model.geom_pos[ids].copy()
+        before = model.geom_pos.copy()
+        set_cup_delta(model, ids, original, [.10, -.07, .02])
+        np.testing.assert_allclose(model.geom_pos[ids], original + [.10, -.07, .02])
+        other = [i for i in range(model.ngeom) if i not in ids]
+        np.testing.assert_allclose(model.geom_pos[other], before[other])
+        set_cup_delta(model, ids, original, [0., 0., 0.])
+        np.testing.assert_allclose(model.geom_pos[ids], original)
+
+    def test_gui_saved_cup_pose_schema_and_validation(self):
+        from align_cup_gui import alignment_payload, read_cup_payload
+        payload = alignment_payload([.12, -.03, .015], Path("outputs/real2sim/objects.json"),
+                                    4, (12., 7., -9.375, 0.))
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "cup_pose.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            loaded = read_cup_payload(path)
+            self.assertEqual(loaded["cup_delta_base_m"], [.12, -.03, .015])
+            self.assertEqual(loaded["coordinate_frame"], "so101_base")
+            self.assertEqual(loaded["table_yaw_delta_deg"], -9.375)
+            path.write_text('{"schema": "other", "cup_delta_base_m":[0,0,0]}')
+            with self.assertRaisesRegex(ValueError, "Unsupported"):
+                read_cup_payload(path)
+        with self.assertRaises(ValueError):
+            alignment_payload([float("nan"), 0, 0], Path("a"), 4, (12, 7, 0, 0))
+
+    def test_perspective_projection_uses_depth_not_image_scale(self):
+        from compare_real_sim_motion import project_base_xyz_to_side
+        T = np.eye(4)
+        intr = {"fx":500., "fy":500., "cx":320., "cy":240.}
+        near = project_base_xyz_to_side(T, intr, [0.05, 0., 0.5])
+        far = project_base_xyz_to_side(T, intr, [0.05, 0., 1.0])
+        self.assertAlmostEqual(near[0] - 320., 2 * (far[0] - 320.))
+
     def test_sample_five_spread_across_twenty(self):
         rows = [{"frame_index": i} for i in range(20)]
         chosen = sample_evenly(rows, 5)
