@@ -175,7 +175,7 @@ def tabletop_front_strip_boxes(width_m=.80, center_depth_m=.505,
 def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
                              table_extra_xyz=(0., 0., 0.), table_yaw_deg=0.,
                              muhi_xy=(.18, .11), cup_xy=(.18, -.12), muhi_yaw_deg=0.,
-                             table_width_m=.80, table_depth_m=.51):
+                             table_width_m=.80, table_depth_m=.505):
     """Photo-approximate Muhi/cup with measured curved-edge tabletop.
 
     These placements are historic, unmeasured approximations, not calibration.
@@ -190,6 +190,8 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
     extra = np.asarray(table_extra_xyz, dtype=float)
     if extra.shape != (3,) or not np.isfinite(extra).all() or not math.isfinite(table_yaw_deg):
         raise ValueError("Invalid table-only translation/yaw")
+    if table_depth_m <= .035:
+        raise ValueError("Depth must exceed the measured 35mm curvature")
     if not (math.isfinite(table_width_m) and math.isfinite(table_depth_m)
             and table_width_m > 0 and table_depth_m > 0):
         raise ValueError("Invalid tabletop width/depth")
@@ -221,19 +223,22 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
     # Base rectangle is 470mm deep and keeps the rear edge at y=-252.5mm.
     # Add inset strips to approach the curved 35mm front projection.
     # Thickness (40mm) and local yaw remain provisional/unchanged.
-    rear_y = -.505 / 2
-    edge_depth = .470
+    rear_y = -table_depth_m / 2
+    edge_depth = table_depth_m - .035
     main_center_y = rear_y + edge_depth / 2
     geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_BOX,
          [0, main_center_y, -.025], [table_width_m / 2, edge_depth / 2, .02],
          [.63, .46, .33, 1.0], table_part=True)
-    for name, pos, size in tabletop_front_strip_boxes(width_m=table_width_m):
+    for name, pos, size in tabletop_front_strip_boxes(
+            width_m=table_width_m, center_depth_m=table_depth_m,
+            edge_depth_m=edge_depth):
         geom(name, mujoco.mjtGeom.mjGEOM_BOX, pos, size,
              [.63, .46, .33, 1.0], table_part=True)
     # Keep all four legs inset from the curved board boundary.
     for x in (-(table_width_m / 2 - .035), table_width_m / 2 - .035):
-        for y in (-.505 / 2 + .035,
-                  float(tabletop_front_y_m(x, table_width_m, .505, .470)) - .035):
+        for y in (-table_depth_m / 2 + .035,
+                  float(tabletop_front_y_m(x, table_width_m,
+                                            table_depth_m, edge_depth)) - .035):
             geom(f"r2s_table_leg_{'p' if x>0 else 'm'}{'p' if y>0 else 'm'}",
                  mujoco.mjtGeom.mjGEOM_BOX, [x, y, -.225],
                  [.018, .018, .18], [.44, .35, .30, 1.0], table_part=True)
