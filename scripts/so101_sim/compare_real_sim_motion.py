@@ -534,7 +534,8 @@ def run_motion(args):
         table_extra_front_m=args.table_extra_front_cm / 100.)
     cup_pose = None
     if args.cup_pose_json is not None:
-        from align_cup_gui import read_cup_payload, cup_geom_ids, set_cup_delta
+        from align_cup_gui import (read_cup_payload, cup_geom_ids,
+                                   set_cup_dimensions)
         cup_pose = read_cup_payload(args.cup_pose_json)
         if cup_pose.get("episode") != args.episode:
             raise ValueError("Cup pose JSON belongs to another episode")
@@ -552,8 +553,12 @@ def run_motion(args):
             if not np.isclose(float(cup_pose.get(key, np.nan)), value, atol=1e-6):
                 raise ValueError(f"Cup pose was saved under another {key}; use matching table flags")
         cup_ids = cup_geom_ids(model)
-        set_cup_delta(model, cup_ids, model.geom_pos[cup_ids].copy(),
-                      cup_pose["cup_delta_base_m"])
+        set_cup_dimensions(
+            model, cup_ids, model.geom_pos[cup_ids].copy(),
+            model.geom_size[cup_ids].copy(),
+            diameter_m=float(cup_pose.get("cup_diameter_m", .100)),
+            height_m=float(cup_pose.get("cup_height_m", .090)),
+            xyz_m=cup_pose["cup_delta_base_m"])
     ids = table_geom_ids(model)
     reference_positions = model.geom_pos[ids].copy()
     reference_quats = model.geom_quat[ids].copy()
@@ -645,6 +650,8 @@ def run_motion(args):
         "video_object_local_layout": layout,
         "cup_pose_json": str(args.cup_pose_json) if args.cup_pose_json else None,
         "cup_delta_base_m": cup_pose["cup_delta_base_m"] if cup_pose is not None else [0., 0., 0.],
+        "cup_diameter_m": float(cup_pose.get("cup_diameter_m", .100)) if cup_pose else .100,
+        "cup_height_m": float(cup_pose.get("cup_height_m", .090)) if cup_pose else .090,
         "cup_click_reference_height_cm": args.cup_click_height_cm,
         "cup_click_point_semantics": "bottom_contact" if (annotations is not None and "cup_contact_px" in annotations) else "unverified_visual_center",
         "muhi_axis_reprojection": muhi_projection,
