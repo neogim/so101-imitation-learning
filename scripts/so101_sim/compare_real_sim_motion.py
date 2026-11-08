@@ -156,11 +156,22 @@ def nearest_table_edge(model, anchor_xy_m=(0., 0.)):
     if anchor.shape != (2,) or not np.isfinite(anchor).all():
         raise ValueError("Invalid robot anchor xy")
     local = rotation[:2, :2].T @ (anchor - center)
-    half = model.geom_size[ids[0], :2]
-    options = {
-        "x+": abs(local[0] - half[0]), "x-": abs(local[0] + half[0]),
-        "y+": abs(local[1] - half[1]), "y-": abs(local[1] + half[1]),
-    }
+    table_is_mesh = int(model.geom_type[ids[0]]) == int(__import__("mujoco").mjtGeom.mjGEOM_MESH)
+    if table_is_mesh:
+        half_x = .400
+        rear_y = -.505 / 2
+        bounded_x = float(np.clip(local[0], -half_x, half_x))
+        front_y = float(comparison.tabletop_front_y_m(bounded_x))
+        options = {
+            "x+": abs(local[0] - half_x), "x-": abs(local[0] + half_x),
+            "y+": abs(local[1] - front_y), "y-": abs(local[1] - rear_y),
+        }
+    else:
+        half = model.geom_size[ids[0], :2]
+        options = {
+            "x+": abs(local[0] - half[0]), "x-": abs(local[0] + half[0]),
+            "y+": abs(local[1] - half[1]), "y-": abs(local[1] + half[1]),
+        }
     return min(options, key=options.get)
 
 
@@ -189,11 +200,27 @@ def anchor_table_edge_to_robot(model, edge="auto", anchor_xy_m=(0., 0.),
         raise ValueError("Invalid robot anchor xy")
     axis = 0 if selected[0] == "x" else 1
     sign = 1. if selected[1] == "+" else -1.
-    half = float(model.geom_size[table, axis])
-    if inset_m >= half:
-        raise ValueError("Inset must be smaller than table half extent")
     local = rotation.T @ (anchor - center)
-    target_local = sign * (half - inset_m)
+    if int(model.geom_type[table]) == int(__import__("mujoco").mjtGeom.mjGEOM_MESH):
+        # For the measured curved desk, the front (+Y) depends on X.
+        if axis == 0:
+            boundary = sign * .400
+            extent = .400
+        elif sign > 0:
+            boundary = float(comparison.tabletop_front_y_m(
+                float(np.clip(local[0], -.400, .400))))
+            extent = .505
+        else:
+            boundary = -.505 / 2
+            extent = .505
+        if inset_m >= extent:
+            raise ValueError("Inset must be smaller than table extent")
+        target_local = boundary - sign * inset_m
+    else:
+        half = float(model.geom_size[table, axis])
+        if inset_m >= half:
+            raise ValueError("Inset must be smaller than table half extent")
+        target_local = sign * (half - inset_m)
     displacement = (local[axis] - target_local) * rotation[:, axis]
     model.geom_pos[ids, :2] += displacement
     # Recompute residual and include selection, since this is a constraint,
