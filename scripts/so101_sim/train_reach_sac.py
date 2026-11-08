@@ -24,11 +24,15 @@ def main():
     parser.add_argument("--seed", type=int, default=101)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--urdf", type=Path, default=r2s.DEFAULT_URDF)
+    parser.add_argument("--near-goal-joint-rad", type=float, default=None,
+                        help="Curriculum: sample FK goal from joints near reset pose (e.g. 0.35 rad)")
     args = parser.parse_args()
     if args.steps <= 0 or args.out.exists():
         raise ValueError("steps must be positive and output directory must be new")
-    train = Monitor(SO101ReachEnv(urdf=args.urdf, seed=args.seed))
-    evaluation = Monitor(SO101ReachEnv(urdf=args.urdf, seed=args.seed + 1000))
+    train = Monitor(SO101ReachEnv(urdf=args.urdf, seed=args.seed,
+                                  goal_joint_delta_rad=args.near_goal_joint_rad))
+    evaluation = Monitor(SO101ReachEnv(urdf=args.urdf, seed=args.seed + 1000,
+                                       goal_joint_delta_rad=args.near_goal_joint_rad))
     args.out.mkdir(parents=True, exist_ok=False)
     try:
         model = SAC("MlpPolicy", train, seed=args.seed, verbose=1,
@@ -56,6 +60,8 @@ def main():
             "algorithm": "SAC",
             "train_steps": args.steps,
             "seed": args.seed,
+            "goal_joint_delta_rad": args.near_goal_joint_rad,
+            "goal_distribution": ("near" if args.near_goal_joint_rad is not None else "full"),
             "evaluation_count": len(records),
             "evaluation_reach_rate": sum(v["success"] for v in records) / len(records),
             "evaluation": records,
