@@ -169,7 +169,7 @@ class MotionComparisonTests(unittest.TestCase):
     def test_cup_click_height_changes_backprojected_position(self):
         from compare_real_sim_motion import video_object_layout
         cam = np.eye(4)
-        cam[:3, :3] = [[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]]
+        cam[:3, :3] = [[0., 0., 1.], [-1., 0., 0.], [0., -1., 0.]]
         cam[:3, 3] = [0., 0., .5]
         K = {"fx":500., "fy":500., "cx":320., "cy":240.}
         a = video_object_layout(cam, K, (400., 400.), (180., 300.), 0., .055)
