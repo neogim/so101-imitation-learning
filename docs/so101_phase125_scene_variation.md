@@ -6,7 +6,7 @@
 
 - Preserve existing physical SO-101 mounting at table edge and real Side/Wrist cameras.
 - Preserve all original LeRobot recordings. No robot or camera devices opened by this PoC.
-- Start from measured Muhi (97×35 mm), cup (78 mm diameter × 83 mm high), curved tabletop, Episode 4 scene and the **previously saved cup alignment**.
+- Start from measured Muhi (97×35 mm), cup (78 mm diameter × 83 mm high), curved tabletop, Episode 4 scene and the **previously saved cup alignment**. Default fixed yaw deltas are **0°, +30°, -30°, +60°, -60°, +90°, -90°**; the first seven scenes exercise these exact angles with unchanged XY positions. The remaining 13 scenes exercise XY/cup perturbations and mixed layouts.
 - Scene transformation is in the **SO-101 base XY plane**, rotating Muhi about its own center and translating the cup without rotating it.
 - Baseline and independently varied placements are generated with deterministic RNG seed. No unrestricted exploration around robot collisions.
 - Scene previews are **not** ACT training datasets; there are no labeled correct actions until separate IK and evaluation steps pass.
@@ -54,10 +54,13 @@ Outputs: `scene_000.png` through `scene_019.png`, `contact_sheet.png`, and `mani
 - [ ] Kinematic Pick/Lift/Place replay and geometric success checks
 - [ ] Optional physical grasp test and ACT-ready export, **only after** preceding criteria
 
-## Main integration policy
+## Main integration status (2026-11-08)
 
-Current Phase 1.25 branch was deliberately created from `feature/aruco-calibration-capture-20261107` to reuse the finished Real2Sim geometry while its ancestor PRs are still Draft.
+Phase 1 prerequisite PRs are **merged into main** in dependency order:
 
-Dependencies: `main` → `fix/isolate-multicam-episode-encoding` (3 commits) → `feature/mujoco-real-to-sim` (Draft PR #8, 41 commits) → `feature/aruco-calibration-capture-20261107` (Draft PR #9, 203 commits) → this Phase 1.25 branch.
+- [PR #11](https://github.com/neogim/so101-imitation-learning/pull/11): multicamera recording safety changes (merged).
+- [PR #8](https://github.com/neogim/so101-imitation-learning/pull/8): Real2Sim MuJoCo MVP (merged).
+- [PR #9](https://github.com/neogim/so101-imitation-learning/pull/9): ArUco/camera, measured workcell and GUI (merged).
+- [PR #12](https://github.com/neogim/so101-imitation-learning/pull/12): this Phase 1.25 development, **still Draft / unmerged**, now targeting main.
 
-**Do not directly squash the top feature branch into main without resolving the staged PRs and reviewing the full file list**, including calibration screenshots, audit scripts, and dataset/privacy checks. The head is linear with main but it is a large (247-commit) unmerged change. After the prerequisites have landed, retarget or rebase this branch onto main and let the PR show only Phase 1.25 changes.
+The working branch was created on the former PR #9 head, but GitHub now correctly shows only this Phase 1.25 document, generator and unit-test files in the diff against main. Do not merge #12 before IK trajectory generation and real-data smoke inspection.
