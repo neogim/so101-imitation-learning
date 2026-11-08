@@ -130,5 +130,20 @@ class ReachEnvTests(unittest.TestCase):
                 run_trace(seed=31, episode=0, out=out, max_steps=1, frame_skip=1)
 
 
+    def test_compiled_collision_inventory_and_contact_ablation(self):
+        from inspect_reach_collisions import run_audit
+        report = run_audit(seed=101, episode=0, max_steps=3, frame_skip=2)
+        self.assertGreater(report["model"]["ngeom"], 0)
+        self.assertEqual(len(report["geoms"]), report["model"]["ngeom"])
+        self.assertTrue(all(g["body_name"] for g in report["geoms"]))
+        full = report["baseline_contact_enabled"]
+        no_contact = report["contact_disabled_diagnostic_only"]
+        np.testing.assert_allclose(full["goal_joint_rad"], no_contact["goal_joint_rad"])
+        np.testing.assert_allclose(full["goal_tcp_base_m"], no_contact["goal_tcp_base_m"])
+        self.assertEqual(no_contact["contact_substep_fraction"], 0.)
+        self.assertTrue(np.isfinite(full["final_tcp_distance_m"]))
+        self.assertTrue(np.isfinite(no_contact["final_tcp_distance_m"]))
+
+
 if __name__ == "__main__":
     unittest.main()
