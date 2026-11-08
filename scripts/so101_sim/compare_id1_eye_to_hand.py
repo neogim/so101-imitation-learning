@@ -125,11 +125,67 @@ def workcell_shift_left_front(T_base_cv, left_m=0.08, front_m=0.10):
     return np.r_[left_m * left + front_m * front, 0.]
 
 
+def tabletop_front_y_m(x_m, width_m=.80, center_depth_m=.505,
+                        edge_depth_m=.470):
+    """Local +Y front edge, measured from the fixed rear edge.
+
+    Back edge is y=-center_depth/2; at x=0 the front depth is
+    center_depth, and at +/-width/2 it is edge_depth. A parabola is
+    an interpolation through the three measured depths, not a claim
+    of the exact manufacturing profile.
+    """
+    if not (np.isfinite(width_m) and np.isfinite(center_depth_m)
+            and np.isfinite(edge_depth_m)
+            and width_m > 0 and 0 < edge_depth_m <= center_depth_m):
+        raise ValueError("Invalid tabletop measurements")
+    x = np.asarray(x_m, dtype=float)
+    if not np.isfinite(x).all() or np.any(np.abs(x) > width_m / 2 + 1e-9):
+        raise ValueError("Table x must be within measured width")
+    depth = center_depth_m - (center_depth_m - edge_depth_m) * (
+        2 * x / width_m) ** 2
+    return -center_depth_m / 2 + depth
+
+
+def tabletop_mesh_geometry(width_m=.80, center_depth_m=.505,
+                           edge_depth_m=.470, thickness_m=.04,
+                           front_segments=32):
+    """Watertight triangulated tabletop, with its rear edge fixed.
+
+    Returns uservert/userface flattened arrays for MjSpec.add_mesh.
+    Local origin stays at the maximal-depth footprint midpoint (0, 0).
+    """
+    if (front_segments < 4 or not isinstance(front_segments, int)
+            or thickness_m <= 0 or not np.isfinite(thickness_m)):
+        raise ValueError("Invalid tabletop mesh resolution/thickness")
+    half = width_m / 2
+    rear_y = -center_depth_m / 2
+    # Counter-clockwise boundary when viewed from above.
+    perimeter = [(-half, rear_y), (half, rear_y)]
+    for x in np.linspace(half, -half, front_segments + 1):
+        perimeter.append((float(x), float(tabletop_front_y_m(
+            x, width_m, center_depth_m, edge_depth_m))))
+    n = len(perimeter)
+    bottom = [(x, y, -thickness_m / 2) for x, y in perimeter]
+    top = [(x, y, thickness_m / 2) for x, y in perimeter]
+    vertices = bottom + top + [(0., 0., -thickness_m / 2),
+                               (0., 0., thickness_m / 2)]
+    center_bottom, center_top = 2 * n, 2 * n + 1
+    faces = []
+    for i in range(n):
+        j = (i + 1) % n
+        faces.extend((center_top, n + i, n + j))
+        faces.extend((center_bottom, j, i))
+        faces.extend((i, j, n + j))
+        faces.extend((i, n + j, n + i))
+    return ([float(v) for vertex in vertices for v in vertex],
+            [int(k) for k in faces])
+
+
 def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
                              table_extra_xyz=(0., 0., 0.), table_yaw_deg=0.,
                              muhi_xy=(.18, .11), cup_xy=(.18, -.12), muhi_yaw_deg=0.,
                              table_width_m=.80, table_depth_m=.51):
-    """Photo-approximate Muhi, clear cup and 65x60cm table from earlier Colab scene.
+    """Photo-approximate Muhi/cup with measured curved-edge tabletop.
 
     These placements are historic, unmeasured approximations, not calibration.
     No grasp physics: all geoms are static and collision-disabled.
@@ -151,7 +207,7 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
     yaw_rot = np.array([[c, -sn], [sn, c]], dtype=float)
     yaw_quat = [math.cos(yaw_rad / 2), 0., 0., math.sin(yaw_rad / 2)]
 
-    def geom(name, shape, pos, size, rgba, *, quat=None, table_part=False):
+    def geom(name, shape, pos, size, rgba, *, quat=None, table_part=False, meshname=None):
         p = np.asarray(pos, dtype=float).copy()
         if table_part:
             p[:2] = yaw_rot @ p[:2]
@@ -159,19 +215,32 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
             if quat is not None:
                 raise ValueError("Table parts should not have their own rotation")
             quat = yaw_quat
-        kwargs = dict(name=name, type=shape, pos=(p + shift).tolist(), size=size, rgba=rgba,
+        kwargs = dict(name=name, type=shape, pos=(p + shift).tolist(), rgba=rgba,
                       contype=0, conaffinity=0)
+        if size is not None:
+            kwargs["size"] = size
+        if meshname is not None:
+            kwargs["meshname"] = meshname
         if quat is not None:
             kwargs["quat"] = quat
         world.add_geom(**kwargs)
 
-    # Measured tabletop footprint 0.80 x 0.51m; thickness 0.04m remains approximate.
-    geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_BOX,
-         [0, 0, -.025], [table_width_m / 2, table_depth_m / 2, .02],
-         [.63, .46, .33, 1.0], table_part=True)
-    # Contrast between the tabletop and the background helps identify the edge.
+    # Verified from the rear edge: 470mm deep at both lateral ends,
+    # 505mm at the center, width 800mm. Keep the historical 510mm
+    # bounding-box parameter as a compatibility alias; the new measured
+    # maximal depth is 505mm, not 510mm.
+    # 40mm thickness remains provisional. Position/yaw remain unchanged.
+    mesh_vertices, mesh_faces = tabletop_mesh_geometry(
+        width_m=table_width_m, center_depth_m=.505, edge_depth_m=.470)
+    spec.add_mesh(name="r2s_measured_curved_tabletop",
+                  uservert=mesh_vertices, userface=mesh_faces)
+    geom("r2s_preview_table", mujoco.mjtGeom.mjGEOM_MESH,
+         [0, 0, -.025], None, [.63, .46, .33, 1.0],
+         table_part=True, meshname="r2s_measured_curved_tabletop")
+    # Keep all four legs inset from the curved board boundary.
     for x in (-(table_width_m / 2 - .035), table_width_m / 2 - .035):
-        for y in (-(table_depth_m / 2 - .035), table_depth_m / 2 - .035):
+        for y in (-.505 / 2 + .035,
+                  float(tabletop_front_y_m(x, table_width_m, .505, .470)) - .035):
             geom(f"r2s_table_leg_{'p' if x>0 else 'm'}{'p' if y>0 else 'm'}",
                  mujoco.mjtGeom.mjGEOM_BOX, [x, y, -.225],
                  [.018, .018, .18], [.44, .35, .30, 1.0], table_part=True)
