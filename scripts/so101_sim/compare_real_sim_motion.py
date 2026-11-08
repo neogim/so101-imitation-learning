@@ -471,7 +471,10 @@ def read_object_targets(path):
     yaw = float(payload["muhi_yaw_deg"])
     if not np.isfinite(yaw):
         raise ValueError("muhi_yaw_deg must be finite")
-    return center("muhi_center_px"), center("cup_center_px"), yaw
+    # New one-click refinement may supply an actual bottom contact center,
+    # while preserving the original three-click visual-center annotation.
+    cup_key = "cup_contact_px" if "cup_contact_px" in payload else "cup_center_px"
+    return center("muhi_center_px"), center(cup_key), yaw
 
 
 def set_visual_gripper(model, data, raw_value, invert=False):
@@ -619,6 +622,7 @@ def run_motion(args):
         },
         "video_object_local_layout": layout,
         "cup_click_reference_height_cm": args.cup_click_height_cm,
+        "cup_click_point_semantics": "bottom_contact" if (annotations is not None and "cup_contact_px" in annotations) else "unverified_visual_center",
         "muhi_axis_reprojection": muhi_projection,
         "j6_mapping": {
             "status": "provisional_normalized_to_urdf_range",
