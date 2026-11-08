@@ -678,6 +678,45 @@ Next learning step: implement an observation-driven learner in the *same*
 kinematic 5D-action/9D-observation task, then compare to Jacobian DLS.
 Avoid reopening mesh/PD investigations unless an experiment requires them.
 
+### SAC learning pilot on the kinematic Reach lesson (2026-11-09)
+
+This is the first *actual learning* trial after the analytic Jacobian DLS
+baseline. **No physical dynamics, self collision, or hardware control**.
+
+Implementation:
+`scripts/so101_sim/train_sac_kinematic_reach.py`
+- Uses the **unchanged** 9D observation / 5D continuous action
+  `KinematicReachEnv` from `learn_reach_kinematic.py`.
+- Stable-Baselines3 SAC `MlpPolicy`, small 64x64 MLP, CPU,
+  3,000 training steps for a single exploratory run.
+- Evaluates the *untrained* SAC policy, *post-training* SAC policy
+  and *analytic Jacobian DLS* controller with the **same ten goal seeds**
+  10001..10010, max 60 steps per episode, 25mm success threshold.
+- Saves `evaluation.csv`, `summary.json`, and `sac_kinematic_reach.zip`
+  containing the trained policy; logs training+setup elapsed wall time.
+  Evaluation policy uses deterministic actions and **does not** access
+  the hidden goal joint values.
+- The existing CI verifies evaluation logic and DLS baseline *without*
+  an optional SAC/PyTorch dependency. CI passing is **not proof SAC was
+  trained or became successful**; the actual Mac training result must
+  be collected separately.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+python -m pip install "stable-baselines3>=2.4,<3"
+SAC_OUT="outputs/so101-sac-kinematic-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/train_sac_kinematic_reach.py --out "$SAC_OUT"
+cat "$SAC_OUT/evaluation.csv"
+cat "$SAC_OUT/summary.json"
+```
+
+**Stop rule:** Compare pre/post success, final TCP distance and training
+time after **one** 3,000-step run. Do not tune collision models, PD,
+or endlessly search SAC hyperparameters if improvement is weak.
+As a learning exercise this remains **kinematic**, not a safe
+real-robot or Sim-to-Real policy.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
