@@ -587,6 +587,14 @@ def run_motion(args):
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
+    joint_offset_candidate = None
+    if args.robot_joint_offsets_json is not None:
+        from compare_real_sim_robot_overlay_gui import (
+            joint_config, read_robot_pose, matches_scene)
+        joint_offset_candidate = read_robot_pose(args.robot_joint_offsets_json)
+        matches_scene(joint_offset_candidate, args)
+        config = joint_config([joint_offset_candidate["joint_offset_deg"][name]
+                               for name in r2s.JOINTS])
     if args.attach_frame is not None:
         if args.attach_frame < 0 or (args.release_frame is not None
                                      and args.release_frame <= args.attach_frame):
@@ -653,6 +661,11 @@ def run_motion(args):
         "cup_diameter_m": comparison.CUP_DIAMETER_M,
         "cup_height_m": comparison.CUP_HEIGHT_M,
         "cup_dimensions_source": "user_measured_fixed_2026-11-08",
+        "robot_joint_offsets_json": str(args.robot_joint_offsets_json)
+            if args.robot_joint_offsets_json else None,
+        "robot_joint_offset_deg": dict(config["joints"]["offset_deg"]),
+        "robot_joint_offset_status": "VISUAL_CANDIDATE_NOT_CALIBRATED"
+            if joint_offset_candidate is not None else "UNVERIFIED_ZERO_DEFAULT",
         "cup_click_reference_height_cm": args.cup_click_height_cm,
         "cup_click_point_semantics": "bottom_contact" if (annotations is not None and "cup_contact_px" in annotations) else "unverified_visual_center",
         "muhi_axis_reprojection": muhi_projection,
@@ -736,6 +749,8 @@ def main():
                              help="Additional base Y translation of table+legs, cm; no rotation")
             sub.add_argument("--table-base-z-cm", type=float, default=0.,
                              help="Additional base Z translation of table+legs, cm; no rotation")
+            sub.add_argument("--robot-joint-offsets-json", type=Path, default=None,
+                             help="Candidate five-joint offsets from robot overlay GUI (offline only)")
             sub.add_argument("--cup-pose-json", type=Path, default=None,
                              help="Saved cup XYZ adjustment from align_cup_gui.py")
             sub.add_argument("--object-layout-json", type=Path, default=None,
