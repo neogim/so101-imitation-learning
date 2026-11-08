@@ -26,6 +26,26 @@ class SceneVariationTests(unittest.TestCase):
             self.assertTrue(np.all(np.abs(row["cup_xy_delta_mm"]) <= 20.))
             self.assertLessEqual(abs(row["muhi_yaw_delta_deg"]), 30.)
 
+    def test_explicit_yaw_angles_cover_90_and_minus_90(self):
+        from generate_scene_variations import DEFAULT_YAW_ANGLES_DEG
+        angles = list(DEFAULT_YAW_ANGLES_DEG)
+        rows = generate_offsets(20, seed=101, yaw_angles_deg=angles)
+        self.assertEqual([r["muhi_yaw_delta_deg"] for r in rows[:7]], angles)
+        self.assertTrue(all(r["muhi_xy_delta_mm"] == [0., 0.]
+                            and r["cup_xy_delta_mm"] == [0., 0.]
+                            for r in rows[:7]))
+        self.assertEqual(rows, generate_offsets(20, seed=101,
+                                               yaw_angles_deg=angles))
+        self.assertEqual(len(rows), 20)
+        with self.assertRaisesRegex(ValueError, "Count"):
+            generate_offsets(6, yaw_angles_deg=angles)
+        with self.assertRaises(ValueError):
+            generate_offsets(20, yaw_angles_deg=[0, 90, 90])
+        with self.assertRaises(ValueError):
+            generate_offsets(20, yaw_angles_deg=[-90, 90])
+        with self.assertRaises(ValueError):
+            generate_offsets(20, yaw_angles_deg=[0, float("nan")])
+
     def test_four_modes_and_ranges(self):
         x = generate_offsets(5, seed=1)
         self.assertEqual(x[1]["cup_xy_delta_mm"], [0., 0.])
