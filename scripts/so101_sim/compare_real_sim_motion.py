@@ -95,24 +95,24 @@ def apply_table_base_offset(model, base_xyz_cm=(0., 0., 0.)):
     delta = np.asarray(base_xyz_cm, dtype=float)
     if delta.shape != (3,) or not np.isfinite(delta).all():
         raise ValueError("Expected three finite table base offsets in centimeters")
-    names = ("r2s_preview_table",) + tuple(
-        f"r2s_table_leg_{x}{y}" for x in ("m", "p") for y in ("m", "p"))
-    ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) for name in names]
-    if any(index < 0 for index in ids):
-        raise ValueError("Missing table geom; refusing partial translation")
-    model.geom_pos[ids] += delta / 100.
+    model.geom_pos[table_geom_ids(model)] += delta / 100.
 
 
 def table_geom_ids(model):
-    """All five preview table parts; other scene objects are never included."""
+    """Principal tabletop, four legs and all curved-front segments."""
     import mujoco
-
     names = ("r2s_preview_table",) + tuple(
         f"r2s_table_leg_{x}{y}" for x in ("m", "p") for y in ("m", "p"))
-    ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name) for name in names]
-    if any(index < 0 for index in ids):
+    ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+           for name in names]
+    if any(i < 0 for i in ids):
         raise ValueError("Preview tabletop or legs missing")
-    return ids
+    extras = sorted(
+        (name, i) for i in range(model.ngeom)
+        if (name := (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) or "")
+            ).startswith("r2s_table_front_"))
+    return ids + [i for _, i in extras]
+
 
 
 def set_table_pose_delta(model, reference_positions, reference_quats,
@@ -156,12 +156,10 @@ def nearest_table_edge(model, anchor_xy_m=(0., 0.)):
     if anchor.shape != (2,) or not np.isfinite(anchor).all():
         raise ValueError("Invalid robot anchor xy")
     local = rotation[:2, :2].T @ (anchor - center)
-    table_is_mesh = int(model.geom_type[ids[0]]) == int(__import__("mujoco").mjtGeom.mjGEOM_MESH)
-    if table_is_mesh:
-        half_x = .400
-        rear_y = -.505 / 2
-        bounded_x = float(np.clip(local[0], -half_x, half_x))
-        front_y = float(comparison.tabletop_front_y_m(bounded_x))
+    if len(ids) > 5:
+        half_x, rear_y = .400, -.505 / 2
+        front_y = float(comparison.tabletop_front_y_m(
+            float(np.clip(local[0], -half_x, half_x))))
         options = {
             "x+": abs(local[0] - half_x), "x-": abs(local[0] + half_x),
             "y+": abs(local[1] - front_y), "y-": abs(local[1] - rear_y),
@@ -201,7 +199,7 @@ def anchor_table_edge_to_robot(model, edge="auto", anchor_xy_m=(0., 0.),
     axis = 0 if selected[0] == "x" else 1
     sign = 1. if selected[1] == "+" else -1.
     local = rotation.T @ (anchor - center)
-    if int(model.geom_type[table]) == int(__import__("mujoco").mjtGeom.mjGEOM_MESH):
+    if len(ids) > 5:
         # For the measured curved desk, the front (+Y) depends on X.
         if axis == 0:
             boundary = sign * .400
