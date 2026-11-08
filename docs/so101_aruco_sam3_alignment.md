@@ -740,3 +740,82 @@ cutout. A single contact pixel does not determine its orientation or
 full 6DoF pose; compare actual first-frame projection before accepting
 the new position. Do not use overhead phone photos as if they came
 from the calibrated Side camera.
+
+
+## 2026-11-08: Real / Sim cup-position editor (recommended next step)
+
+The prior SAM3 table-only alignment overfitted a partially occluded,
+rounded tabletop silhouette. The cup center had been back-projected from
+a *single image point at an arbitrary height*. Do not try more invented
+bottom contact clicks. Instead edit the MuJoCo cup pose visually with
+the fixed camera, the existing three-click Muhi annotation and recorded
+Episode 4 robot joints. New script:
+
+`scripts/so101_sim/align_cup_gui.py`
+
+- Left: **recorded 640x480 Real**, middle: **640x480 MuJoCo Sim**,
+  right: **semi-transparent overlay** of both.
+- Sliders: base-frame X / Y (±300mm) and Z (-50..+100mm),
+  plus overlay alpha. They move **only the cup's 17 preview geoms**.
+- Each slider update re-renders the same virtual perspective camera:
+  depth motion changes projected size **naturally**, unlike resizing
+  a 2D overlay. SO-101 base X is not necessarily camera depth.
+- The adjusted pose is expressed as an additive displacement from
+  the *unchanged legacy three-click layout* and saved as standalone
+  JSON; moving other objects/URDF or actual hardware is forbidden.
+- Saved pose specifies Episode, input annotations and table offset
+  settings for reproducible replay. No local username or absolute path.
+
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+CUP_POSE="outputs/real2sim/episode4-cup-gui-$(date +%Y%m%d-%H%M%S).json"
+
+python scripts/so101_sim/align_cup_gui.py \
+  --dataset-root "$DATASET" --episode 4 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$OBJECTS" \
+  --table-extra-left-cm 4 --table-extra-front-cm 5 \
+  --table-base-x-cm 12 --table-base-y-cm 7 \
+  --table-yaw-delta-deg -9.375 \
+  --output "$CUP_POSE"
+```
+
+Drag the cup base-XYZ sliders until Real and Sim appear aligned; check
+both real/sim and overlay. Then click **SAVE JSON** before closing.
+The existing table pose is a *visual candidate*, not validated 3D
+calibration; changing the table changes this alignment reference.
+
+Re-render the episode with the **same** table flags and original
+annotation JSON, adding the saved cup pose. Note that the GUI does
+not include SAM3: use SAM3 masks later as **an optional fit score**
+for the selected cup, not as the authority for unverified 3D geometry.
+
+```bash
+VIDEO_OUT="outputs/real2sim/episode4-cup-gui-video-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_real_sim_motion.py motion \
+  --dataset-root "$DATASET" --episode 4 --stride 5 --max-frames 60 \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --object-layout-json "$OBJECTS" \
+  --cup-pose-json "$CUP_POSE" \
+  --table-extra-left-cm 4 --table-extra-front-cm 5 \
+  --table-base-x-cm 12 --table-base-y-cm 7 \
+  --table-yaw-delta-deg -9.375 \
+  --output "$VIDEO_OUT"
+open "$VIDEO_OUT/real_vs_sim_episode.mp4"
+```
+
+If Matplotlib launches without an interactive window on macOS,
+choose a native GUI backend (e.g. `MPLBACKEND=MacOSX`) rather than
+installing unrelated GPU/Quest tooling.
+
+Meta Quest 3 is *not* a shortcut to metric SO-101 workcell calibration.
+MuJoCo Studio itself supports a native macOS app (.dmg) as of 2026;
+the GUI in this repository uses the established MuJoCo Python bindings
+and Matplotlib instead, to compare the exact recorded Episode 4 frame.
