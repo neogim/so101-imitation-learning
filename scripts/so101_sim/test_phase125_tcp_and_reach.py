@@ -328,6 +328,26 @@ class ReachEnvTests(unittest.TestCase):
                 print("MUJOCO_SOURCE_MESH_BOOLEAN:", item)
             self.assertTrue((Path(td)/"mesh_intersections"/"source_mesh_intersection.csv").is_file())
 
+    def test_single_split_convex_prototype(self):
+        from prototype_split_convex_collision import compare, TARGETS
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "prototype"
+            result = compare(out, steps=4, seed=101, episode=0)
+            self.assertEqual(set(result["pieces"]), {f"{a}:{b}" for a,b in TARGETS})
+            self.assertTrue(all(1 <= len(v) <= 8 for v in result["pieces"].values()))
+            self.assertGreater(result["collision_geoms"], 17)
+            self.assertTrue(Path(result["generated_urdf"]).exists())
+            self.assertTrue((out/"pd_comparison.csv").exists())
+            self.assertEqual(len(result["evaluation"]), 2)
+            np.testing.assert_allclose(
+                result["evaluation"][0]["goal_xyz_m"],
+                result["evaluation"][1]["goal_xyz_m"], atol=1e-7)
+            print("MUJOCO_SPLIT_CONVEX_PROTOTYPE:", {
+                "chunks": {k:len(v) for k,v in result["pieces"].items()},
+                "initial_contacts": [v["initial_contact_points"] for v in result["evaluation"]],
+                "final_tcp_mm": [round(v["final_tcp_mm"],2) for v in result["evaluation"]],
+            })
+
 
 if __name__ == "__main__":
     unittest.main()
