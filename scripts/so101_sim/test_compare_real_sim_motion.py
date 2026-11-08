@@ -77,6 +77,25 @@ class MotionComparisonTests(unittest.TestCase):
         np.testing.assert_allclose(data.geom_xpos[obj.ids[0]],
                                    original + [.10, 0., 0.], atol=1e-7)
 
+    def test_curved_tabletop_mesh_is_watertight_and_measured(self):
+        import compare_id1_eye_to_hand as scene
+        verts_flat, faces_flat = scene.tabletop_mesh_geometry()
+        verts = np.asarray(verts_flat).reshape(-1, 3)
+        faces = np.asarray(faces_flat).reshape(-1, 3)
+        self.assertAlmostEqual(verts[:, 0].max() - verts[:, 0].min(), .800, places=6)
+        self.assertAlmostEqual(verts[:, 1].min(), -.2525, places=6)
+        self.assertAlmostEqual(verts[:, 1].max(), .2525, places=6)
+        self.assertAlmostEqual(verts[:, 2].max() - verts[:, 2].min(), .04, places=6)
+        counts = {}
+        for a, b, d in faces:
+            for edge in ((a, b), (b, d), (d, a)):
+                key = tuple(sorted(map(int, edge)))
+                counts[key] = counts.get(key, 0) + 1
+        self.assertTrue(counts)
+        self.assertEqual(set(counts.values()), {2})
+        with self.assertRaises(ValueError):
+            scene.tabletop_front_y_m(.41)
+
     def test_measured_table_footprint_and_unaffected_props(self):
         import mujoco
         import compare_id1_eye_to_hand as scene
@@ -86,8 +105,11 @@ class MotionComparisonTests(unittest.TestCase):
         model = spec.compile()
         table_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM,
                                      "r2s_preview_table")
-        np.testing.assert_allclose(model.geom_size[table_id],
-                                   [.4, .255, .02], atol=1e-8)
+        self.assertEqual(model.geom_type[table_id], int(mujoco.mjtGeom.mjGEOM_MESH))
+        self.assertAlmostEqual(scene.tabletop_front_y_m(-.4), .2175, places=6)
+        self.assertAlmostEqual(scene.tabletop_front_y_m(0.), .2525, places=6)
+        self.assertAlmostEqual(scene.tabletop_front_y_m(.4), .2175, places=6)
+        self.assertAlmostEqual(-.2525, -.505 / 2, places=6)
         muhi_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM,
                                     "r2s_muhi_body")
         self.assertGreaterEqual(muhi_id, 0)
