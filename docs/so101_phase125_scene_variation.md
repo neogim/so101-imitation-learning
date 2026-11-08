@@ -517,6 +517,47 @@ source mesh triangle intersections/contained volumes are checked.
 **Do not treat this as authorization to modify collision checks or
 restart SAC.**
 
+### Step A final: original STL solid intersections vs convex-hull collisions
+
+Offline, source STL solids were transformed to the same MuJoCo world
+frame and evaluated using `trimesh.boolean.intersection` with
+`manifold3d` for *volumetric solid* overlap. The method was unit-tested
+using synthetic overlapping/non-overlapping cubes; it compares true
+STL solids against their convex envelopes, rather than interpreting
+unsigned contact-point-to-surface distances as clearance.
+
+| initial zero-pose pair | original STL solid intersection (mm³) | convex hull solid intersection (mm³) |
+| --- | ---: | ---: |
+| geom0–geom6 | 0 | 14,631.04 |
+| geom1–geom6 | 0 | 20,099.55 |
+| geom2–geom6 | 1.64 | 17,528.23 |
+
+On GitHub Actions / Linux CI (2026-11-08) the first two source-solid
+intersections were empty, while all three convex-hull pairs had large
+overlap. Therefore convexification contributes substantial *artificial
+occupied volume* in the initial pose. The geom2–geom6 source STL
+intersection was tiny (1.64mm³), though it is not exactly zero.
+Surface-only touching (zero volume), the physical calibration, and
+dynamic joint-range clearance remain unverified.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+python -m pip install "manifold3d>=3,<4" "trimesh>=4,<5"
+INTERSECT_OUT="outputs/so101-stl-intersection-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/audit_source_mesh_intersection.py \
+  --out "$INTERSECT_OUT" --export-intersection-mesh
+cat "$INTERSECT_OUT/source_mesh_intersection.csv"
+```
+
+This closes the **zero-pose volumetric collision audit** of Step A.
+Next (Step B): replace overlarge single-convex collision representation
+with geometry that preserves the known base-shoulder recess and
+has been checked against the source STL; do not blindly turn off
+self-collision. Test initial and a small set of arm poses, then compare
+PD tracking before restarting SAC. Original URDF and normal training
+model are untouched.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
