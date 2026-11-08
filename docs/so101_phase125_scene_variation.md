@@ -213,6 +213,57 @@ force demand is not an actual servo torque measurement, contact events
 are not yet categorized as unsafe collisions, and FK-reachable goals
 are not guaranteed obstacle-free.
 
+### SO-101 compiled collision model audit
+
+The source URDF has 17 `<collision>` mesh elements across eight links
+(one dummy gripper-frame link has no collision geom). On the compiled
+MuJoCo collision-only model, the **first four meshes are fused into
+`world`** as the fixed `base_link`; the remaining geometry is attached
+to dynamic link bodies. Real compiled IDs—not a guess from XML ordering:
+
+| MuJoCo geom | Link/body | Compiled mesh name |
+| --- | --- | --- |
+| 0 | world (fixed base_link) | base_motor_holder_so101_v1 |
+| 1 | world (fixed base_link) | base_so101_v2 |
+| 2 | world (fixed base_link) | sts3215_03a_v1 |
+| 3 | world (fixed base_link) | waveshare_mounting_plate_so101_v2 |
+| 4–6 | shoulder_link | sts3215_03a_v1; motor_holder_so101_base_v1; rotation_pitch_so101_v1 |
+| 7–8 | upper_arm_link | sts3215_03a_v1; upper_arm_so101_v1 |
+| 9–11 | lower_arm_link | under_arm_so101_v1; motor_holder_so101_wrist_v1; sts3215_03a_v1 |
+| 12–13 | wrist_link | sts3215_03a_no_horn_v1; wrist_roll_pitch_so101_v2 |
+| 14–15 | gripper_link | sts3215_03a_v1; wrist_roll_follower_so101_v1 |
+| 16 | moving_jaw_so101_v1_link | moving_jaw_so101_v1 |
+
+CI verified that **before any PD movement**, at zero joint angles,
+MuJoCo emits 4 contact points for each of these three pairs:
+`geom0-geom6`, `geom1-geom6`, `geom2-geom6`. This matches
+the persistent base/shoulder contact records from the 2026-11-08 local
+PD trace. It is strong evidence that the current collision model
+has overlaps/contacts near the shoulder's rotation-pitch part,
+but does NOT prove those are illegitimate physical penetrations
+or that the contact forces are the entire cause of PD failure.
+
+Diagnostic-only script and fixed-goal A/B comparison:
+
+```bash
+git pull --ff-only origin feature/so101-sim-data-augmentation
+AUDIT_OUT="outputs/so101-collision-audit-$(date +%Y%m%d-%H%M%S).json"
+python scripts/so101_sim/inspect_reach_collisions.py \
+  --seed 101 --episode 0 --out "$AUDIT_OUT"
+cat "$AUDIT_OUT"
+```
+
+The output maps `geom0`–`geom16` to the *compiled* body and
+mesh names, logs initial contacts, and repeats the same FK-goal
+PD oracle **with contacts enabled** and with all contact physics
+**temporarily disabled only in the second simulation**. It makes
+no changes to the URDF or the normal SAC environment.
+Do NOT use the contact-disabled result to certify model realism or
+safe hardware operation. If enabling/disabling contacts materially
+changes torque demand or FK target convergence, inspect base/shoulder
+collision meshes and adjacent-link exclusions before changing PD
+gains or starting more SAC training.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
