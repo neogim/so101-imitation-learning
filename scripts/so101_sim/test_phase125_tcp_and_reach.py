@@ -192,5 +192,35 @@ class ReachEnvTests(unittest.TestCase):
 
 
 
+    def test_compiled_collision_snapshot_and_primitive_proxy(self):
+        from visualize_base_shoulder_contacts import collision_snapshot, save_snapshot
+        from compare_collision_proxies import compare_proxies, export
+        geom_map, vertices, contacts = collision_snapshot()
+        self.assertEqual(len(vertices), 4)
+        self.assertEqual(set(vertices), {0, 1, 2, 6})
+        self.assertTrue(all(v.shape[1] == 3 for v in vertices.values()))
+        self.assertTrue(all(np.isfinite(v).all() for v in vertices.values()))
+        self.assertTrue(any(x["pair"] == [0, 6] for x in contacts))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "collision_plot"
+            snap = save_snapshot(path)
+            self.assertGreater((path / "base_shoulder_contacts_3d.png").stat().st_size, 1000)
+            self.assertTrue((path / "geometry_snapshot.json").exists())
+            self.assertGreater(len(snap["contact_points"]), 0)
+            report = compare_proxies(seed=101, episode=0, max_steps=3,
+                                     frame_skip=2, scale=.65)
+            self.assertEqual(len(report["results"]), 5)
+            original = report["results"]["original_meshes"]
+            self.assertFalse(original["primitive_proxies"])
+            for key, entry in report["results"].items():
+                self.assertTrue(np.isfinite(entry["final_tcp_distance_m"]))
+                np.testing.assert_allclose(entry["goal_joint_rad"], original["goal_joint_rad"])
+                if key != "original_meshes":
+                    self.assertTrue(entry["primitive_proxies"])
+            dest = export(report, Path(tmp) / "proxies")
+            self.assertTrue(dest.is_file())
+            self.assertTrue((dest.parent / "proxy_comparison.json").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
