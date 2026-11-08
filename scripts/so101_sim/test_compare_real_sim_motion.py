@@ -41,7 +41,8 @@ class MotionComparisonTests(unittest.TestCase):
             .049 * .8, places=6)
         self.assertTrue(np.allclose(model.geom_pos[-1], before_positions[-1]))
         self.assertTrue(np.allclose(model.geom_size[-1], before_sizes[-1]))
-        set_cup_dimensions(model, ids, before_positions[ids], before_sizes[ids])
+        set_cup_dimensions(model, ids, before_positions[ids], before_sizes[ids],
+                           diameter_m=.100, height_m=.090)
         np.testing.assert_allclose(model.geom_pos[ids], before_positions[ids])
         np.testing.assert_allclose(model.geom_size[ids], before_sizes[ids])
 
@@ -82,6 +83,14 @@ class MotionComparisonTests(unittest.TestCase):
         np.testing.assert_allclose(model.geom_pos[other], before[other])
         set_cup_delta(model, ids, original, [0., 0., 0.])
         np.testing.assert_allclose(model.geom_pos[ids], original)
+
+    def test_fixed_measured_size_overrides_old_gui_size(self):
+        from compare_id1_eye_to_hand import CUP_DIAMETER_M, CUP_HEIGHT_M
+        from align_cup_gui import alignment_payload
+        payload = alignment_payload([-.032, -.063, -.001], Path("old.json"),
+                                    4, (12, 7, -9.375, 0))
+        self.assertEqual(payload["cup_diameter_m"], CUP_DIAMETER_M)
+        self.assertEqual(payload["cup_height_m"], CUP_HEIGHT_M)
 
     def test_gui_saved_cup_pose_schema_and_validation(self):
         from align_cup_gui import alignment_payload, read_cup_payload
@@ -224,7 +233,7 @@ class MotionComparisonTests(unittest.TestCase):
         self.assertFalse(report["robot_anchor_inside_table_footprint"] is False)
         np.testing.assert_allclose(model.geom_pos, initial_positions)
 
-    def test_cup_photo_estimated_height_is_shorter_than_muhi_length(self):
+    def test_user_measured_cup_and_muhi_dimensions(self):
         import mujoco
         import compare_id1_eye_to_hand as scene
         spec = mujoco.MjSpec.from_string("<mujoco><worldbody/></mujoco>")
@@ -232,10 +241,17 @@ class MotionComparisonTests(unittest.TestCase):
         model = spec.compile()
         cup = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_cup_wall_00")
         self.assertGreaterEqual(cup, 0)
-        # Full uncut wall height including the base plate is approximately 92mm.
+        # Cup wall extends 83mm above its 2mm baseline offset.
         top_m = model.geom_pos[cup, 2] + model.geom_size[cup, 2]
-        np.testing.assert_allclose(top_m, .092, atol=1e-6)
-        self.assertLess(top_m, .10)
+        np.testing.assert_allclose(top_m, .085, atol=1e-6)
+        base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_cup_base")
+        np.testing.assert_allclose(model.geom_size[base_id, 0], .039, atol=1e-8)
+        body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_muhi_body")
+        cap_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_muhi_cap")
+        np.testing.assert_allclose(model.geom_size[body_id, 0], .0175, atol=1e-8)
+        np.testing.assert_allclose(model.geom_size[cap_id, 0], .0175, atol=1e-8)
+        self.assertAlmostEqual(2*(model.geom_size[body_id, 1]+model.geom_size[cap_id, 1]),
+                               .097, places=8)
 
     def test_refined_cup_contact_keeps_old_muhi_and_uses_new_pixel(self):
         import tempfile
