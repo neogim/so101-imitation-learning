@@ -155,6 +155,8 @@ def run(args):
             current_xyz(), args.object_layout_json.as_posix(), args.episode,
             (args.table_base_x_cm, args.table_base_y_cm,
              args.table_yaw_delta_deg, args.table_base_z_cm))
+        payload["table_extra_left_cm"] = float(args.table_extra_left_cm)
+        payload["table_extra_front_cm"] = float(args.table_extra_front_cm)
         try:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("x", encoding="utf-8") as file:
@@ -164,7 +166,17 @@ def run(args):
             status.set_text("File already exists — refusing overwrite")
             fig.canvas.draw_idle()
             return
-        status.set_text(f"Saved: {args.output}")
+        # Export a human-readable reproducible PNG with the exact current
+        # render so a GUI screenshot is unnecessary when seeking feedback.
+        sim_rgb = np.asarray(sim_artist.get_array(), dtype=np.uint8)
+        overlay_rgb = np.clip(
+            (1 - alpha_slider.val) * real.astype(float)
+            + alpha_slider.val * sim_rgb.astype(float), 0, 255).astype(np.uint8)
+        preview = np.concatenate([real, sim_rgb, overlay_rgb], axis=1)
+        preview_file = args.output.with_suffix(".png")
+        Image.fromarray(preview).save(preview_file)
+        print("Preview:", preview_file)
+        status.set_text(f"Saved: {args.output} and {preview_file}")
         print("Saved:", args.output)
         fig.canvas.draw_idle()
 
