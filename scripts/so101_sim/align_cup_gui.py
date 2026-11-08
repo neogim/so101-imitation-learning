@@ -39,7 +39,47 @@ def set_cup_delta(model, ids, original_positions, xyz_m):
     model.geom_pos[ids] = original + change
 
 
-def alignment_payload(xyz_m, object_layout, episode, table):
+
+def set_cup_dimensions(model, ids, reference_positions, reference_sizes,
+                       diameter_m=.100, height_m=.090, xyz_m=(0., 0., 0.)):
+    """Resize diameter/height of the cup in *3D* about its bottom-center.
+
+    Preserve the existing 16 radial wall orientations, base thickness,
+    and baseline cup center. Bottom stays at the original z position.
+    Every redraw starts from immutable positions/sizes (no cumulative drift).
+    """
+    xyz = np.asarray(xyz_m, dtype=float)
+    orig = np.asarray(reference_positions, dtype=float)
+    sizes = np.asarray(reference_sizes, dtype=float)
+    if (orig.shape != (17, 3) or sizes.shape != (17, 3)
+            or np.asarray(ids).shape != (17,) or xyz.shape != (3,)
+            or not np.isfinite(orig).all() or not np.isfinite(sizes).all()
+            or not np.isfinite(xyz).all() or not np.isfinite([diameter_m, height_m]).all()
+            or not (.04 <= diameter_m <= .20 and .04 <= height_m <= .20)):
+        raise ValueError("Invalid cup geometry or dimensions")
+    radial_scale = diameter_m / .100
+    base_center = orig[0]
+    centers = orig.copy()
+    centers[:, :2] = base_center[:2] + radial_scale * (orig[:, :2] - base_center[:2])
+    # Bottom of wall is baseline original wall center - original half height.
+    bottom_z = orig[1:, 2] - sizes[1:, 2]
+    centers[1:, 2] = bottom_z + height_m / 2
+    model.geom_pos[ids] = centers + xyz
+    adjusted = sizes.copy()
+    adjusted[0, 0] = diameter_m / 2
+    adjusted[1:, 0] = sizes[1:, 0] * radial_scale  # tangential coverage
+    adjusted[1:, 2] = height_m / 2
+    model.geom_size[ids] = adjusted
+
+
+def validate_cup_dimensions(diameter_m, height_m):
+    if (not np.isfinite([diameter_m, height_m]).all()
+            or not .04 <= diameter_m <= .20 or not .04 <= height_m <= .20):
+        raise ValueError("Cup dimensions must be 40-200 mm")
+    return diameter_m, height_m
+
+
+def alignment_payload(xyz_m, object_layout, episode, table,\n                      diameter_m=.100, height_m=.090):
     delta = np.asarray(xyz_m, dtype=float)
     if delta.shape != (3,) or not np.isfinite(delta).all():
         raise ValueError("Cup offset must contain three finite numbers")
@@ -48,7 +88,7 @@ def alignment_payload(xyz_m, object_layout, episode, table):
     return {
         "schema": "so101_cup_pose_delta_v1",
         "episode": int(episode),
-        "cup_delta_base_m": [round(float(n), 6) for n in delta],
+        "cup_delta_base_m": [round(float(n), 6) for n in delta],\n        "cup_diameter_m": round(float(diameter_m), 6),\n        "cup_height_m": round(float(height_m), 6),
         "coordinate_frame": "so101_base",
         "reference": "existing three-click layout, no manual image scaling",
         "object_layout_json": str(object_layout),
@@ -103,7 +143,7 @@ def run(args):
         np.asarray([args.table_base_x_cm, args.table_base_y_cm,
                     args.table_base_z_cm]) / 100., args.table_yaw_delta_deg)
     cup_ids = cup_geom_ids(model)
-    original_cup = model.geom_pos[cup_ids].copy()
+    original_cup = model.geom_pos[cup_ids].copy()\n    original_cup_size = model.geom_size[cup_ids].copy()
     data = mujoco.MjData(model)
     config = {"joints": {"sign": {name: 1 for name in r2s.JOINTS},
                          "offset_deg": {name: 0. for name in r2s.JOINTS}}}
@@ -111,8 +151,8 @@ def run(args):
     r2s.set_pose(model, data, state, config)
     movie.set_visual_gripper(model, data, state[5])
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 6), constrained_layout=False)
-    fig.subplots_adjust(bottom=.33, left=.025, right=.99, top=.91, wspace=.04)
+    start_xyz = np.zeros(3)\n    start_diameter_m, start_height_m = .100, .090\n    if args.initial_pose_json is not None:\n        previous = read_cup_payload(args.initial_pose_json)\n        if previous.get("episode") != args.episode:\n            raise ValueError("Previous pose belongs to another episode")\n        start_xyz = np.asarray(previous["cup_delta_base_m"], dtype=float)\n        start_diameter_m = float(previous.get("cup_diameter_m", .100))\n        start_height_m = float(previous.get("cup_height_m", .090))\n\n    fig, axes = plt.subplots(1, 3, figsize=(16, 7.6), constrained_layout=False)
+    fig.subplots_adjust(bottom=.43, left=.025, right=.99, top=.94, wspace=.04)
     for ax, title in zip(axes, ["REAL / Episode 4", "SIM / MuJoCo", "OVERLAY / alpha"]):
         ax.set_title(title, fontsize=11)
         ax.axis("off")
@@ -122,13 +162,13 @@ def run(args):
     axes[2].imshow(real)
     overlay_artist = axes[2].imshow(blank, alpha=.55)
     controls = {}
-    for key, y in (("x", .235), ("y", .185), ("z", .135)):
+    for key, y in (("x", .34), ("y", .29), ("z", .24)):
         axis = fig.add_axes([.18, y, .65, .032])
         controls[key] = Slider(axis, f"base {key.upper()} delta (mm)",
                                -300 if key != "z" else -50,
                                300 if key != "z" else 100,
-                               valinit=0., valstep=1.)
-    alpha_ax = fig.add_axes([.18, .08, .65, .025])
+                               valinit=1000 * start_xyz[("x", "y", "z").index(key)], valstep=1.)
+    dim_sliders = {}\n    for name, y, min_value, max_value, init in (\n        ("diameter", .19, 60., 130., start_diameter_m * 1000),\n        ("height", .14, 60., 140., start_height_m * 1000)):\n        axis = fig.add_axes([.18, y, .65, .032])\n        dim_sliders[name] = Slider(axis, f"cup {name} (mm)", min_value, max_value,\n                                   valinit=init, valstep=1.)\n    alpha_ax = fig.add_axes([.18, .085, .65, .025])
     alpha_slider = Slider(alpha_ax, "overlay alpha", 0, 1, valinit=.55)
     save_ax = fig.add_axes([.85, .01, .12, .05])
     save_btn = Button(save_ax, "SAVE JSON")
@@ -141,7 +181,7 @@ def run(args):
         return np.asarray([controls[k].val / 1000. for k in ("x", "y", "z")])
 
     def redraw(_=None):
-        set_cup_delta(model, cup_ids, original_cup, current_xyz())
+        set_cup_dimensions(\n            model, cup_ids, original_cup, original_cup_size,\n            diameter_m=dim_sliders["diameter"].val / 1000.,\n            height_m=dim_sliders["height"].val / 1000., xyz_m=current_xyz())
         mujoco.mj_forward(model, data)
         renderer.update_scene(data, camera=camera)
         rgb = renderer.render().copy()
@@ -154,7 +194,7 @@ def run(args):
         payload = alignment_payload(
             current_xyz(), args.object_layout_json.as_posix(), args.episode,
             (args.table_base_x_cm, args.table_base_y_cm,
-             args.table_yaw_delta_deg, args.table_base_z_cm))
+             args.table_yaw_delta_deg, args.table_base_z_cm),\n            diameter_m=dim_sliders["diameter"].val / 1000.,\n            height_m=dim_sliders["height"].val / 1000.)
         payload["table_extra_left_cm"] = float(args.table_extra_left_cm)
         payload["table_extra_front_cm"] = float(args.table_extra_front_cm)
         try:
@@ -180,7 +220,7 @@ def run(args):
         print("Saved:", args.output)
         fig.canvas.draw_idle()
 
-    for slider in controls.values():
+    for slider in list(controls.values()) + list(dim_sliders.values()):
         slider.on_changed(redraw)
     alpha_slider.on_changed(lambda _: (overlay_artist.set_alpha(alpha_slider.val),
                                        fig.canvas.draw_idle()))
@@ -201,7 +241,7 @@ def main():
     parser.add_argument("--intrinsics", type=Path, default=movie.DEFAULT_INTRINSICS)
     parser.add_argument("--urdf", type=Path, default=movie.DEFAULT_URDF)
     parser.add_argument("--object-layout-json", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)\n    parser.add_argument("--initial-pose-json", type=Path, default=None,\n                        help="Reload previous saved GUI XYZ and dimensions")
     parser.add_argument("--table-extra-left-cm", type=float, default=4.)
     parser.add_argument("--table-extra-front-cm", type=float, default=5.)
     parser.add_argument("--table-base-x-cm", type=float, default=12.)
