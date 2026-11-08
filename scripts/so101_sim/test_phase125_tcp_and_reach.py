@@ -231,5 +231,25 @@ class ReachEnvTests(unittest.TestCase):
 
 
 
+    def test_source_stl_convexity_audit(self):
+        import json
+        from audit_stl_convexity import MESHES, run
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "convexity"
+            result = run(out, plot=True)
+            self.assertEqual(set(result["meshes"]), set(MESHES))
+            for geom, row in result["meshes"].items():
+                self.assertGreater(row["vertices"], 100)
+                self.assertGreater(row["convex_hull_volume_in_stl_units_cubed"], 0)
+                self.assertGreater((out / f"{geom}_stl_vs_hull.png").stat().st_size, 500)
+                print("MUJOCO_STL_CONVEXITY:", geom,
+                      "watertight=", row["watertight"],
+                      "valid_volume=", row["is_valid_volume"],
+                      "hull_ratio=", row["hull_to_source_volume_ratio"],
+                      "mesh_extents=", row["extents_in_stl_units"])
+            self.assertEqual(json.loads((out / "stl_convexity.json").read_text())["status"],
+                             result["status"])
+
+
 if __name__ == "__main__":
     unittest.main()
