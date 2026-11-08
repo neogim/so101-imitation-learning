@@ -154,6 +154,65 @@ cat "$NEAR_OUT/summary.json"
 
 Note: full-range baseline and near-goal run use **different training/evaluation goal distributions**. Their raw success rates alone are not an A/B comparison. For proper comparison, evaluate trained policies on the **same held-out goal set** and use several seeds. The near-goal sampling parameter is a starting point, not an optimized curriculum.
 
+### PD control failure: substep tracing and diagnosis strategy (2026-11-08)
+
+The **user's** 10-episode known-joint-target PD oracle reached its FK TCP
+goal only once (1/10; mean final distance about 0.305 m). A subsequent
+near-goal SAC run (`--near-goal-joint-rad 0.35`, 5,000 steps, seed 101)
+still scored 0/10 in its separate evaluation. This does **not** prove
+that SAC is inherently unstable. Investigate the control/physics layer
+before simply increasing learning steps.
+
+`scripts/so101_sim/diagnose_reach_pd_trace.py` instruments the *same*
+`SO101ReachEnv.step` PD controller used in the RL task via an optional
+per-physics-substep callback. The normal RL path remains uninstrumented.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+python -m pip install "matplotlib>=3.7,<4"
+
+TRACE_OUT="outputs/so101-pd-trace-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/diagnose_reach_pd_trace.py \
+  --seed 101 --episode 0 --out "$TRACE_OUT"
+open "$TRACE_OUT/joint_angles.png"
+open "$TRACE_OUT/joint_torques.png"
+open "$TRACE_OUT/joint_velocities.png"
+open "$TRACE_OUT/tcp_distance_contacts.png"
+cat "$TRACE_OUT/summary.json"
+```
+
+Files: `pd_trace.csv` (physics-substep time, per-joint target/actual
+angles and velocities, raw PD+bias generalized torque demand and
+clipped applied torque, saturation flags, contact geom pairs, TCP distance),
+`summary.json` (per-joint saturation fractions, contact-pair counts
+and final errors), plus four separate PNG charts.
+
+For contrast, re-run with `--episode 3` in a **different output
+directory**; this was the successful episode in the prior 10-trial run.
+Keep all other controller parameters fixed until the primary failure
+mechanism is understood.
+
+Diagnostic decision ladder (hypotheses, not confirmed causes):
+
+1. **Frequent clipped torques**: validate units, gravity/bias forces,
+   model mass/inertia and joint torque budget; only then vary a single
+   parameter in Sim and compare.
+2. **Oscillating joint angles without saturation**: study P/D gains,
+   damping, control timestep and velocity.
+3. **Movement halts with recurring contact pairs**: inspect collision
+   geometry and joint limits; not all reported contact pairs are harmful.
+4. **No saturation/contact, but tracking still poor**: inspect task
+   time horizon, joint-name/axis mapping and FK implementation.
+5. **PD tracks known joint targets reliably**: freeze controller and
+   revisit the Reach SAC learning problem using matched goal evaluation
+   sets and multiple seeds.
+
+These traces are **offline simulation diagnostics**: MuJoCo generalized
+force demand is not an actual servo torque measurement, contact events
+are not yet categorized as unsafe collisions, and FK-reachable goals
+are not guaranteed obstacle-free.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
