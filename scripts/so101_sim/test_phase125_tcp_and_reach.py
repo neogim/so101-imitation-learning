@@ -308,5 +308,26 @@ class ReachEnvTests(unittest.TestCase):
                       "hull_b_mm=", round(metrics["hull_b_surface_mm"], 3))
 
 
+    def test_source_stl_boolean_interference(self):
+        import trimesh
+        from audit_source_mesh_intersection import volume_interference, audit
+        cube_a = trimesh.creation.box(extents=[.02, .02, .02])
+        cube_b = cube_a.copy()
+        cube_b.apply_translation([.01, 0, 0])
+        _mesh, v = volume_interference(cube_a, cube_b)
+        self.assertAlmostEqual(v, .01*.02*.02, delta=1e-9)
+        cube_b.apply_translation([.03, 0, 0])
+        _mesh, nonoverlap = volume_interference(cube_a, cube_b)
+        self.assertAlmostEqual(nonoverlap, 0, delta=1e-12)
+        with tempfile.TemporaryDirectory() as td:
+            report = audit(Path(td)/"mesh_intersections")
+            self.assertEqual(len(report["pairs"]), 3)
+            for item in report["pairs"]:
+                self.assertGreaterEqual(item["source_stl_overlap_volume_mm3"], 0)
+                self.assertGreater(item["convex_hull_overlap_volume_mm3"], 0)
+                print("MUJOCO_SOURCE_MESH_BOOLEAN:", item)
+            self.assertTrue((Path(td)/"mesh_intersections"/"source_mesh_intersection.csv").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
