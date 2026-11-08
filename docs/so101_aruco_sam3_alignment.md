@@ -616,3 +616,64 @@ fit only the visible straight rear edge. Confirm both end depths if exact
 geometry is required. Keep the camera, 3-click Muhi/cup and robot pose fixed.
 Existing 800×510mm rectangle remains in code until the geometry change is
 implemented and separately tested.
+
+
+## 2026-11-08: Measured curved desk geometry (supersedes rectangular approximation)
+
+The user confirmed **rear-to-front depths measured from the same straight rear edge**:
+left end **470mm**, center **505mm**, right end **470mm**; width **800mm**.
+Earlier "510mm depth everywhere" was a rectangular approximation. The
+new physical footprint keeps the rear edge fixed and approximates the
+front edge with
+`D(x) = 505mm - 35mm * (x / 400mm)^2`,
+where x is table-local lateral position and `|x| <= 400mm`.
+This interpolates three measured positions; detailed curvature and corner
+radii were **not measured**.
+
+For compatibility with the established camera/robot/Yaw code, the
+MuJoCo tabletop now consists of the original named **BOX**
+`r2s_preview_table` covering the shared 470mm rear portion plus
+32 narrow BOX strips representing the extra curved 0-35mm front
+projection. All pieces share the same brown appearance, transform
+together with the four legs and are included in the SAM3 tabletop
+segmentation mask. The visual contour is piecewise approximate rather
+than a perfect smooth mesh. The bottom shelf/corners are not fitted.
+
+This replaces a trial single-mesh approach that changed the
+compiled geom orientation through MuJoCo mesh principal-axis
+normalization. The stable BOX implementation passed the Real2Sim and
+ArUco CI tests before this final parameter/documentation revision.
+
+**Run again after pulling** the main established branch. The old
+alignment and rendered videos used a different table footprint and
+should **not** be used to validate this one. Recommended command:
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+REAL="outputs/real2sim/episode4_side_640x480.png"
+MASK="outputs/real2sim/sam3-episode4-20261108-003728/real_mask.png"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+OUT="outputs/real2sim/table-measured-curve-$(date +%Y%m%d-%H%M%S)"
+
+python scripts/so101_sim/align_previous_scene_sam3.py \
+  --real-image "$REAL" --real-mask "$MASK" \
+  --dataset-root "$DATASET" --episode 4 \
+  --object-layout-json "$OBJECTS" \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --axis xy --fit-yaw --max-yaw-delta-deg 30 \
+  --edge-x-min 400 --edge-x-max 550 \
+  --ignore-right-px 80 --output "$OUT"
+
+open "$OUT/before.png" "$OUT/after.png"
+cat "$OUT/report.json"
+```
+The right-edge exclusion is optional and provisional: its purpose is
+to avoid scoring rounded corners and areas of uncertain correspondence,
+**not** to hide a poorly matched straight far edge. Full-image report
+metrics remain available. Do not reapply previous +12cm offsets; only
+use the new report's proposed flags after reviewing the overlay.
