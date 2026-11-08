@@ -63,8 +63,12 @@ class SceneVariationTests(unittest.TestCase):
                    size=[.0175, .02, 0], pos=[.1, .15, .02], contype=0, conaffinity=0)
         w.add_geom(name="r2s_cup_base", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                    size=[.039, .001, 0], pos=[.3, .3, .001], contype=0, conaffinity=0)
-        w.add_geom(name="r2s_cup_wall_00", type=mujoco.mjtGeom.mjGEOM_BOX,
-                   size=[.01, .002, .04], pos=[.339, .3, .04], contype=0, conaffinity=0)
+        for i in range(16):
+            w.add_geom(name=f"r2s_cup_wall_{i:02d}", type=mujoco.mjtGeom.mjGEOM_BOX,
+                       size=[.01, .002, .04],
+                       pos=[.3 + .039 * np.cos(i * np.pi / 8),
+                            .3 + .039 * np.sin(i * np.pi / 8), .04],
+                       contype=0, conaffinity=0)
         w.add_geom(name="r2s_preview_table", type=mujoco.mjtGeom.mjGEOM_BOX,
                    size=[.4, .25, .02], pos=[0, 0, -.04], contype=0, conaffinity=0)
         model = spec.compile()
