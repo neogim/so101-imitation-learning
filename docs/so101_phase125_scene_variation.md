@@ -382,6 +382,49 @@ and multiple training seeds. For time-efficient learning, defer
 contact-rich Pick/Place mechanics until the small Reach controller is
 stable.
 
+### Source STL versus convex hull (2026-11-08)
+
+Following the user's upload of the real MuJoCo contact plot to Notion, we
+tested the hypothesis that importing nonconvex STL as convex collision
+geometry closes up necessary base/shoulder clearances. New offline tool:
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+python -m pip install "trimesh>=4,<5"
+CONVEX_OUT="outputs/so101-convexity-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/audit_stl_convexity.py --out "$CONVEX_OUT"
+cat "$CONVEX_OUT/stl_convexity.json"
+open "$CONVEX_OUT/geom0_stl_vs_hull.png"
+open "$CONVEX_OUT/geom6_stl_vs_hull.png"
+```
+
+Source-STL geometry tests (GitHub Actions, Linux):
+
+| geom | Part | STL watertight and valid volume | convex hull / STL volume |
+| --- | --- | --- | ---: |
+| 0 | base_motor_holder_so101_v1 | yes | 3.965 |
+| 1 | base_so101_v2 | yes | 3.045 |
+| 2 | sts3215_03a_v1 | yes | 1.109 |
+| 6 | rotation_pitch_so101_v1 | yes | 2.200 |
+
+All four are volume-valid STL meshes. The large hull-to-source ratios for
+geoms 0, 1 and 6 indicate sizeable concavities/open spaces in the
+original meshes that a convex envelope can fill. **This does not by
+itself prove** that each MuJoCo contact is false. The STL/hull images
+are in *STL-local coordinates*, not the MuJoCo world frame, and are
+not overlays of the contact points. To directly diagnose phantom
+contacts, compare *world-aligned* STL surface geometry against compiled
+collision hull at the reported contact coordinates, respecting the URDF
+origin and mesh transforms.
+
+We have **not** modified the production collision geometry or restarted
+SAC. Existing box/sphere/capsule diagnostics remained in contact
+and failed the 25mm Reach success threshold. The next meaningful
+engineering step is a physically fitted nonconvex-friendly collision
+proxy (multiple convex parts or fitted capsules/boxes) with appropriate
+clearances and verification on several FK targets.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
