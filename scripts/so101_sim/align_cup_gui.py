@@ -14,6 +14,7 @@ import numpy as np
 from PIL import Image
 
 import compare_real_sim_motion as movie
+from compare_id1_eye_to_hand import CUP_DIAMETER_M, CUP_HEIGHT_M
 import real_to_sim as r2s
 
 
@@ -41,7 +42,7 @@ def set_cup_delta(model, ids, original_positions, xyz_m):
 
 
 def set_cup_dimensions(model, ids, reference_positions, reference_sizes,
-                       diameter_m=.100, height_m=.090, xyz_m=(0., 0., 0.)):
+                       diameter_m=CUP_DIAMETER_M, height_m=CUP_HEIGHT_M, xyz_m=(0., 0., 0.)):
     """Resize diameter/height of the cup in *3D* about its bottom-center.
 
     Preserve the existing 16 radial wall orientations, base thickness,
@@ -57,7 +58,7 @@ def set_cup_dimensions(model, ids, reference_positions, reference_sizes,
             or not np.isfinite(xyz).all() or not np.isfinite([diameter_m, height_m]).all()
             or not (.04 <= diameter_m <= .20 and .04 <= height_m <= .20)):
         raise ValueError("Invalid cup geometry or dimensions")
-    radial_scale = diameter_m / .100
+    radial_scale = diameter_m / (2 * sizes[0, 0])
     base_center = orig[0]
     centers = orig.copy()
     centers[:, :2] = base_center[:2] + radial_scale * (orig[:, :2] - base_center[:2])
@@ -80,7 +81,7 @@ def validate_cup_dimensions(diameter_m, height_m):
 
 
 def alignment_payload(xyz_m, object_layout, episode, table,
-                      diameter_m=.100, height_m=.090):
+                      diameter_m=CUP_DIAMETER_M, height_m=CUP_HEIGHT_M):
     delta = np.asarray(xyz_m, dtype=float)
     if delta.shape != (3,) or not np.isfinite(delta).all():
         raise ValueError("Cup offset must contain three finite numbers")
@@ -111,8 +112,8 @@ def read_cup_payload(path):
     xyz = np.asarray(payload.get("cup_delta_base_m"), dtype=float)
     if xyz.shape != (3,) or not np.isfinite(xyz).all():
         raise ValueError("Invalid cup_delta_base_m")
-    validate_cup_dimensions(payload.get("cup_diameter_m", .100),
-                            payload.get("cup_height_m", .090))
+    validate_cup_dimensions(payload.get("cup_diameter_m", CUP_DIAMETER_M),
+                            payload.get("cup_height_m", CUP_HEIGHT_M))
     return payload
 
 
@@ -159,14 +160,15 @@ def run(args):
     movie.set_visual_gripper(model, data, state[5])
 
     start_xyz = np.zeros(3)
-    start_diameter_m, start_height_m = .100, .090
     if args.initial_pose_json is not None:
         previous = read_cup_payload(args.initial_pose_json)
         if previous.get("episode") != args.episode:
             raise ValueError("Previous pose belongs to another episode")
+        if Path(previous.get("object_layout_json", "")) != args.object_layout_json:
+            raise ValueError("Previous pose uses different object annotations")
         start_xyz = np.asarray(previous["cup_delta_base_m"], dtype=float)
-        start_diameter_m = float(previous.get("cup_diameter_m", .100))
-        start_height_m = float(previous.get("cup_height_m", .090))
+        # Previous hand-tuned diameter/height values are intentionally NOT
+        # loaded. Physical measurements override all former GUI guesses.
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 7.6), constrained_layout=False)
     fig.subplots_adjust(bottom=.43, left=.025, right=.99, top=.94, wspace=.04)
@@ -185,13 +187,9 @@ def run(args):
                                -300 if key != "z" else -50,
                                300 if key != "z" else 100,
                                valinit=1000 * start_xyz[("x", "y", "z").index(key)], valstep=1.)
-    dim_sliders = {}
-    for name, y, min_value, max_value, init in (
-        ("diameter", .19, 60., 130., start_diameter_m * 1000),
-        ("height", .14, 60., 140., start_height_m * 1000)):
-        axis = fig.add_axes([.18, y, .65, .032])
-        dim_sliders[name] = Slider(axis, f"cup {name} (mm)", min_value, max_value,
-                                   valinit=init, valstep=1.)
+    fig.text(.18, .18,
+             "FIXED measured dimensions: cup diameter 78 mm / height 83 mm",
+             fontsize=10)
     alpha_ax = fig.add_axes([.18, .085, .65, .025])
     alpha_slider = Slider(alpha_ax, "overlay alpha", 0, 1, valinit=.55)
     save_ax = fig.add_axes([.85, .01, .12, .05])
@@ -207,8 +205,8 @@ def run(args):
     def redraw(_=None):
         set_cup_dimensions(
             model, cup_ids, original_cup, original_cup_size,
-            diameter_m=dim_sliders["diameter"].val / 1000.,
-            height_m=dim_sliders["height"].val / 1000., xyz_m=current_xyz())
+            diameter_m=CUP_DIAMETER_M,
+            height_m=CUP_HEIGHT_M, xyz_m=current_xyz())
         mujoco.mj_forward(model, data)
         renderer.update_scene(data, camera=camera)
         rgb = renderer.render().copy()
@@ -222,8 +220,8 @@ def run(args):
             current_xyz(), args.object_layout_json.as_posix(), args.episode,
             (args.table_base_x_cm, args.table_base_y_cm,
              args.table_yaw_delta_deg, args.table_base_z_cm),
-            diameter_m=dim_sliders["diameter"].val / 1000.,
-            height_m=dim_sliders["height"].val / 1000.)
+            diameter_m=CUP_DIAMETER_M,
+            height_m=CUP_HEIGHT_M)
         payload["table_extra_left_cm"] = float(args.table_extra_left_cm)
         payload["table_extra_front_cm"] = float(args.table_extra_front_cm)
         try:
@@ -249,7 +247,7 @@ def run(args):
         print("Saved:", args.output)
         fig.canvas.draw_idle()
 
-    for slider in list(controls.values()) + list(dim_sliders.values()):
+    for slider in controls.values():
         slider.on_changed(redraw)
     alpha_slider.on_changed(lambda _: (overlay_artist.set_alpha(alpha_slider.val),
                                        fig.canvas.draw_idle()))
