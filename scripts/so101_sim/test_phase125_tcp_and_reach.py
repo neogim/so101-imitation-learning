@@ -393,5 +393,27 @@ class ReachEnvTests(unittest.TestCase):
         print("MUJOCO_KINEMATIC_LEARNING_REACH:", result["results"])
 
 
+    def test_kinematic_sac_evaluator_without_training_dependency(self):
+        from train_sac_kinematic_reach import evaluate, summarize
+        class StationaryPolicy:
+            def predict(self, obs, deterministic=True):
+                self_assert = bool(deterministic)
+                if not self_assert:
+                    raise AssertionError("Evaluation must be deterministic")
+                return np.zeros(5, dtype=np.float32), None
+        rows = evaluate(StationaryPolicy(), name="sac_before", episodes=3,
+                        seed=10001)
+        rows += evaluate(None, name="jacobian_dls", episodes=3,
+                         seed=10001)
+        self.assertEqual([r["goal_seed"] for r in rows[:3]],
+                         [r["goal_seed"] for r in rows[3:]])
+        stats = summarize(rows)
+        self.assertEqual(stats["sac_before"]["success_count"], 0)
+        self.assertEqual(stats["jacobian_dls"]["success_count"], 3)
+        self.assertTrue(all(r["final_tcp_mm"] <= 25
+                            for r in rows if r["policy"] == "jacobian_dls"))
+        print("KINEMATIC_SAC_EVAL_SMOKE:", stats)
+
+
 if __name__ == "__main__":
     unittest.main()
