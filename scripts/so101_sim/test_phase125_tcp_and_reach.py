@@ -273,6 +273,31 @@ class ReachEnvTests(unittest.TestCase):
                 self.assertTrue(all(v["distance_to_source_stl_surface_mm"]>=0
                                     for v in p["source_surface_distance"].values()))
 
+    def test_step_a_world_surface_faces_and_contact_reports(self):
+        import csv
+        from step_a_surface_overlay import run, PAIRS
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "surface"
+            result = run(out)
+            self.assertEqual(len(result["contact_rows"]), 12)
+            self.assertEqual(set(result["mean_by_pair"]), {f"{a}-{b}" for a,b in PAIRS})
+            self.assertTrue(all(x < .002 for x in result["alignment_p95_m"].values()))
+            self.assertGreater(result["mesh_info"]["1"]["convex_hull_triangles"], 0)
+            for name in ("stl_vs_convex_surface_overlay.png",
+                         "geom1_6_contact_closeup.png",
+                         "surface_overlay_summary.json", "surface_gap_summary.csv"):
+                self.assertGreater((out / name).stat().st_size, 100)
+            with (out / "surface_gap_summary.csv").open(newline="") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), 12)
+            self.assertIn("hull_b_surface_mm", rows[0])
+            for pair, metrics in result["mean_by_pair"].items():
+                print("MUJOCO_STEP_A_SURFACE:", pair,
+                      "raw_a_mm=", round(metrics["raw_a_surface_mm"], 3),
+                      "raw_b_mm=", round(metrics["raw_b_surface_mm"], 3),
+                      "hull_a_mm=", round(metrics["hull_a_surface_mm"], 3),
+                      "hull_b_mm=", round(metrics["hull_b_surface_mm"], 3))
+
 
 if __name__ == "__main__":
     unittest.main()
