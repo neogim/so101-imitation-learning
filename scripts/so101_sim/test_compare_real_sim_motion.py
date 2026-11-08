@@ -32,14 +32,14 @@ class RobotOverlayGuiTests(unittest.TestCase):
     def test_overlay_selects_original_episode_frame_numbers(self):
         from compare_real_sim_robot_overlay_gui import selected_frame_rows
         ep = {"rows": [{"frame_index": idx, "state": [idx] * 6}
-                       for idx in range(53)]}
-        output = selected_frame_rows(ep, (0, 24, 40, 52))
+                       for idx in range(300)]}
+        output = selected_frame_rows(ep, (0, 24, 40, 52), comparison_stride=5)
         self.assertEqual([row["state"][0] for row in output.values()],
-                         [0, 24, 40, 52])
+                         [0, 120, 200, 260])
         with self.assertRaisesRegex(ValueError, "Missing"):
-            selected_frame_rows(ep, [53])
+            selected_frame_rows(ep, [61], comparison_stride=5)
         with self.assertRaises(ValueError):
-            selected_frame_rows(ep, [24, 24])
+            selected_frame_rows(ep, [24, 24], comparison_stride=5)
 
     def test_saved_robot_candidate_scene_references(self):
         from types import SimpleNamespace
