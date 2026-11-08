@@ -65,11 +65,47 @@ def contact_inventory(model, data):
     ]
 
 
+# Mesh IDs verified on the compiled, pinned SO-101 URDF.
+BASE_SHOULDER_PAIRS = ((0, 6), (1, 6), (2, 6))
+
+
+def install_selective_geom_filter(model, excluded_pairs):
+    """Keep every originally eligible geom pair except selected pairs.
+
+    Distinct one-hot contype bits and per-geom conaffinity bitsets let MuJoCo
+    reject individual *geom* pairs, unlike body-level contact exclusions.
+    Only valid for this small model with 1/1 original masks: validate first.
+    Call before mj_forward / mj_step; never apply on the normal training model.
+    """
+    if model.ngeom > 30:
+        raise ValueError("One-hot geom contact filter supports <=30 geoms")
+    if not np.all(model.geom_contype == 1) or not np.all(model.geom_conaffinity == 1):
+        raise ValueError("Expected original contype=conaffinity=1 for all geoms")
+    pairs = set()
+    for raw_a, raw_b in excluded_pairs:
+        a, b = sorted((int(raw_a), int(raw_b)))
+        if a == b or not (0 <= a < model.ngeom and 0 <= b < model.ngeom):
+            raise ValueError(f"Invalid geom pair: {(raw_a, raw_b)}")
+        pairs.add((a, b))
+    full_mask = (1 << model.ngeom) - 1
+    masks = [full_mask & ~(1 << g) for g in range(model.ngeom)]
+    for a, b in pairs:
+        masks[a] &= ~(1 << b)
+        masks[b] &= ~(1 << a)
+    # MuJoCo accepts a candidate when either direction shares contype+affinity;
+    # remove both directions for each excluded pair.
+    model.geom_contype[:] = np.asarray([1 << g for g in range(model.ngeom)], dtype=int)
+    model.geom_conaffinity[:] = np.asarray(masks, dtype=int)
+    return sorted(pairs)
+
+
 def rollout(model, seed, episode, max_steps, frame_skip, contact_disabled,
-            near_goal_joint_rad=None):
+            near_goal_joint_rad=None, excluded_geom_pairs=None):
     env = SO101ReachEnv(seed=seed, max_steps=max_steps, frame_skip=frame_skip,
                         goal_joint_delta_rad=near_goal_joint_rad)
     try:
+        if excluded_geom_pairs is not None:
+            install_selective_geom_filter(env.model, excluded_geom_pairs)
         if contact_disabled:
             env.model.opt.disableflags = (
                 int(env.model.opt.disableflags)
@@ -113,6 +149,7 @@ def rollout(model, seed, episode, max_steps, frame_skip, contact_disabled,
 
         return {
             "contact_disabled": contact_disabled,
+            "excluded_geom_pairs": [list(v) for v in (excluded_geom_pairs or ())],
             "goal_joint_rad": desired.tolist(),
             "initial_joint_rad": initial_pose.tolist(),
             "goal_tcp_base_m": info0["goal_base_m"],
