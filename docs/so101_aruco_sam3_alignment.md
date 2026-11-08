@@ -590,3 +590,29 @@ far edge satisfactory if remaining mismatch is due to genuine tabletop
 curvature. If the far edge is occluded in the selected strip, move the
 strip rather than inventing hidden points. Robot-table mounting must
 remain an independent fixed-location constraint.
+
+
+## 2026-11-08: Measured curved tabletop depth (supersedes 510mm rectangle)
+
+New physical measurement provided by the user:
+- tabletop width: 800mm
+- depth at center: **550mm**
+- depth at edge: **470mm**
+- center-to-edge difference: **80mm**
+- back edge appears approximately straight; the front edge bows outward.
+
+Thus the previous 800×510mm *rectangular* MuJoCo geometry is
+**not a faithful model of the physical tabletop**, and its apparent
+perimeter differences cannot safely be interpreted as camera pose or XY/Yaw
+error. The single 510mm depth is not a global physical depth.
+The exact cross-section curve, left-versus-right edge symmetry,
+measurement reference points, thickness and orientation are not independently
+verified. Do NOT silently adopt a precise parabola or new mesh.
+
+Next implementation should use measured tabletop edge constraints
+(center 550mm, edge 470mm, width 800mm), with an explicitly approximate
+smooth profile, or omit the curved front perimeter from optimization and
+fit only the visible straight rear edge. Confirm both end depths if exact
+geometry is required. Keep the camera, 3-click Muhi/cup and robot pose fixed.
+Existing 800×510mm rectangle remains in code until the geometry change is
+implemented and separately tested.
