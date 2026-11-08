@@ -532,6 +532,26 @@ def run_motion(args):
         extrinsics, intrinsics, args.urdf, layout,
         table_extra_left_m=args.table_extra_left_cm / 100.,
         table_extra_front_m=args.table_extra_front_cm / 100.)
+    cup_pose = None
+    if args.cup_pose_json is not None:
+        from align_cup_gui import read_cup_payload, cup_geom_ids, set_cup_delta
+        cup_pose = read_cup_payload(args.cup_pose_json)
+        if cup_pose.get("episode") != args.episode:
+            raise ValueError("Cup pose JSON belongs to another episode")
+        if Path(cup_pose.get("object_layout_json", "")) != args.object_layout_json:
+            raise ValueError("Cup pose JSON uses different object annotations")
+        comparisons = {
+            "table_base_x_cm": args.table_base_x_cm,
+            "table_base_y_cm": args.table_base_y_cm,
+            "table_base_z_cm": args.table_base_z_cm,
+            "table_yaw_delta_deg": args.table_yaw_delta_deg,
+        }
+        for key, value in comparisons.items():
+            if not np.isclose(float(cup_pose.get(key, np.nan)), value, atol=1e-6):
+                raise ValueError(f"Cup pose was saved under another {key}; use matching table flags")
+        cup_ids = cup_geom_ids(model)
+        set_cup_delta(model, cup_ids, model.geom_pos[cup_ids].copy(),
+                      cup_pose["cup_delta_base_m"])
     ids = table_geom_ids(model)
     reference_positions = model.geom_pos[ids].copy()
     reference_quats = model.geom_quat[ids].copy()
@@ -621,6 +641,8 @@ def run_motion(args):
             "cup": list(cup_pixel),
         },
         "video_object_local_layout": layout,
+        "cup_pose_json": str(args.cup_pose_json) if args.cup_pose_json else None,
+        "cup_delta_base_m": cup_pose["cup_delta_base_m"] if cup_pose is not None else [0., 0., 0.],
         "cup_click_reference_height_cm": args.cup_click_height_cm,
         "cup_click_point_semantics": "bottom_contact" if (annotations is not None and "cup_contact_px" in annotations) else "unverified_visual_center",
         "muhi_axis_reprojection": muhi_projection,
@@ -704,6 +726,8 @@ def main():
                              help="Additional base Y translation of table+legs, cm; no rotation")
             sub.add_argument("--table-base-z-cm", type=float, default=0.,
                              help="Additional base Z translation of table+legs, cm; no rotation")
+            sub.add_argument("--cup-pose-json", type=Path, default=None,
+                             help="Saved cup XYZ adjustment from align_cup_gui.py")
             sub.add_argument("--object-layout-json", type=Path, default=None,
                              help="Optional 640x480 Side-frame centers and Muhi yaw from external detector")
             sub.add_argument("--invert-gripper", action="store_true",
