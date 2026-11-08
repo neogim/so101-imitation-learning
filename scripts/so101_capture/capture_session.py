@@ -37,6 +37,7 @@ class DatasetSink:
         self.queue = queue.Queue(capacity)
         self.error = None
         self.saved = 0
+        self.events = []
         self.thread = threading.Thread(target=self._run, name='dataset-writer', daemon=True)
         self.thread.start()
 
@@ -59,27 +60,50 @@ class DatasetSink:
                 if kind == 'frame':
                     self.dataset.add_frame(value)
                 elif kind == 'save':
-                    self.dataset.save_episode(parallel_encoding=False)
+                    started = time.perf_counter()
+                    self.events.append(dict(kind='save', phase='started', time_monotonic=started))
+                    # LeRobot uses a process per camera here. Keeping multi-camera
+                    # H.264 encoding in this writer thread can still starve the
+                    # control thread through native/GIL contention.
+                    self.dataset.save_episode(parallel_encoding=True)
                     self.saved += 1
+                    self.events.append(dict(kind='save', phase='finished',
+                        time_monotonic=time.perf_counter(), duration_s=time.perf_counter()-started,
+                        saved_episodes=self.saved))
                 elif kind == 'labels':
                     atomic_json(self.root / 'episode_outcomes.json', value)
                 elif kind == 'close':
                     # Also preserves frames queued before an interruption/full queue.
                     if self.dataset.has_pending_frames():
-                        self.dataset.save_episode(parallel_encoding=False)
+                        started = time.perf_counter()
+                        self.events.append(dict(kind='close_save', phase='started',
+                                                time_monotonic=started))
+                        self.dataset.save_episode(parallel_encoding=True)
                         self.saved += 1
+                        self.events.append(dict(kind='close_save', phase='finished',
+                            time_monotonic=time.perf_counter(), duration_s=time.perf_counter()-started,
+                            saved_episodes=self.saved))
                     break
                 else:
                     raise ValueError(kind)
         except BaseException as exc:
             self.error = exc
+            self.events.append(dict(kind='writer', phase='failed',
+                                    time_monotonic=time.perf_counter(), error=repr(exc)))
             (self.root / 'writer_error.txt').write_text(traceback.format_exc())
         finally:
+            started = time.perf_counter()
+            self.events.append(dict(kind='finalize', phase='started', time_monotonic=started))
             try:
                 self.dataset.finalize()
+                self.events.append(dict(kind='finalize', phase='finished',
+                    time_monotonic=time.perf_counter(), duration_s=time.perf_counter()-started))
             except BaseException as exc:
                 if self.error is None:
                     self.error = exc
+                self.events.append(dict(kind='finalize', phase='failed',
+                    time_monotonic=time.perf_counter(), duration_s=time.perf_counter()-started,
+                    error=repr(exc)))
                 with (self.root / 'writer_error.txt').open('a') as f:
                     f.write(traceback.format_exc())
 
@@ -877,6 +901,13 @@ def main():
                 sink.close()
         except Exception as exc:
             cleanup_errors.append(str(exc))
+        finally:
+            if sink and root.exists():
+                try:
+                    atomic_json(root/'dataset_writer_diagnostics.json', dict(
+                        saved_episodes=sink.saved, events=sink.events))
+                except Exception as exc:
+                    cleanup_errors.append(f'Dataset writer diagnostic save: {exc}')
         if session:
             atomic_json(root/'episode_outcomes.json', session.outcomes)
             atomic_json(root/'session_events.json', session.events)
