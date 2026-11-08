@@ -566,3 +566,27 @@ clamp contact point's offset in base XY cannot be deduced from existing
 images and URDF, a single orthogonal photo with a ruler by the clamp
 is preferable to another round of SAM3 mask fitting. Do not invent
 an anchor location or change the known 800x510mm dimensions.
+
+
+## 2026-11-08: Curved front edge in the real tabletop
+
+Photo `IMG_5424.jpeg` confirms the real desk's front outline gently bows
+outward, and the front corners are rounded. MuJoCo's current work surface
+is a straight-sided rectangular box. Do **not** force camera/base pose
+to align the curved image-right edge in the recorded Side view.
+
+The SAM3 alignment CLI adds `--ignore-right-px N` to drop the rightmost
+N Side-image columns from the **objective only**. It does not crop images,
+alter the recorded masks, or change table model dimensions/camera/robot
+pose. The report still includes full-image IoU and bounding rectangles.
+For an initial 640px Side diagnostic, try `--ignore-right-px 80`, and
+set the upper-edge strip fully inside that retained area, e.g.
+`--edge-x-min 400 --edge-x-max 550`. Both are **provisional image
+regions** and should be visually confirmed, not interpreted as physical
+corner correspondences.
+
+A high full-image IoU is not required to declare the visible straight
+far edge satisfactory if remaining mismatch is due to genuine tabletop
+curvature. If the far edge is occluded in the selected strip, move the
+strip rather than inventing hidden points. Robot-table mounting must
+remain an independent fixed-location constraint.
