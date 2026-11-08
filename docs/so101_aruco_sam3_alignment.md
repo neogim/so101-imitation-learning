@@ -521,3 +521,48 @@ physically defined transform chain:
 A SAM3 2D segmentation mask does not by itself recover these metric
 3D transforms. See OpenCV's solvePnP/reference projection and MuJoCo
 frame definitions.
+
+## Non-mutating SO-101 clamp/tabletop inspection (2026-11-08)
+
+Before any more SAM3 optimization, inspect the robot-table relationship
+already stored in the MuJoCo model. The table is known to measure
+800x510mm, and the robot is physically clamped on its edge, but the
+actual position of the clamp contact relative to the URDF base origin
+has **not** been measured. Therefore do not use guessed edge constraints
+or optimize translation and yaw blindly.
+
+A new offline command produces a **top-down base XY diagram** and
+numerical distances from the SO-101 base origin to each tabletop edge.
+It performs no hardware actions and does not alter the scene:
+
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+OUT="outputs/real2sim/mount-diagnostic-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/inspect_table_robot_mount.py \
+  --extrinsics outputs/so101-eye-to-hand-id1-20261107/result.json \
+  --intrinsics assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json \
+  --table-base-x-cm 11 --table-base-y-cm 6.25 \
+  --table-yaw-delta-deg -2.5 \
+  --output "$OUT"
+
+open "$OUT/table_robot_topview.png"
+cat "$OUT/table_robot_geometry.json"
+```
+
+The plot is in **SO-101 base XY**, not camera pixel coordinates,
+and shows the robot URDF base origin, *not* a measured clamp point.
+`edge_signed_inward_distance_m` contains signed orthogonal
+distances to the four **infinite** tabletop edge lines; the plot
+also shows finite edge segments. A distance near zero on an infinite
+edge line does not establish clamp contact when projected outside the
+segment. The script does not automatically label a physical edge as
+the correct mounting edge.
+
+Use previous overhead/angled photos as qualitative reference. If the
+clamp contact point's offset in base XY cannot be deduced from existing
+images and URDF, a single orthogonal photo with a ruler by the clamp
+is preferable to another round of SAM3 mask fitting. Do not invent
+an anchor location or change the known 800x510mm dimensions.
