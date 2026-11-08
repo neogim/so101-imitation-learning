@@ -469,6 +469,54 @@ model and stable PD tracking are established. Avoid another unconstrained
 parameter sweep; review the new image and the geom1-6 source-surface
 difference first.
 
+### Step A surface overlay implementation (2026-11-08)
+
+The new `scripts/so101_sim/step_a_surface_overlay.py` completes the
+**implemented visualization/reporting portion** of the collision-model
+improvement plan, without changing the URDF or simulation collision flags.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+STEP_A_OUT="outputs/so101-surface-stepA-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/step_a_surface_overlay.py --out "$STEP_A_OUT"
+open "$STEP_A_OUT/stl_vs_convex_surface_overlay.png"
+open "$STEP_A_OUT/geom1_6_contact_closeup.png"
+cat "$STEP_A_OUT/surface_gap_summary.csv"
+```
+
+Outputs: two 3D PNGs displaying source STL **triangle faces** and
+convex-hull **triangle faces**, with all 12 MuJoCo zero-pose contact
+points in a common world coordinate frame; `surface_gap_summary.csv`
+and `surface_overlay_summary.json` with each contact's unsigned
+distance to both source and hull surfaces, and inside/outside classification
+against the convex hull planes. Two camera angles per PNG.
+
+On Linux CI the source-STL surface distances reproduced the previous
+findings. Mean distances, in mm:
+
+| pair | raw STL: base/shoulder | convex hull surface: base/shoulder |
+| --- | --- | --- |
+| 0–6 | 9.19 / 9.58 | 2.42 / 11.90 |
+| 1–6 | 15.20 / 0.12 | 13.92 / 8.92 |
+| 2–6 | 0.63 / 4.85 | 4.98 / 11.04 |
+
+**Interpretation guard:** a MuJoCo contact point can be **inside** a
+convex hull and far from its surface. Hull surface distances are
+unsigned; neither these distances nor the inside-hull flag proves
+physical source-STL penetration or a safe running clearance.
+The convex hull is reconstructed from the aligned source vertices;
+exact MuJoCo internal contact geometry can differ. The images draw
+the original triangles with a stronger translucency than the hull
+triangles, but use deterministic face sampling to bound plotting time.
+No signed source-mesh intersection test has been performed.
+
+Step A's overlap-drawing and data export are implemented and CI tested.
+Treat the physical interference classification as unresolved until
+source mesh triangle intersections/contained volumes are checked.
+**Do not treat this as authorization to modify collision checks or
+restart SAC.**
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
