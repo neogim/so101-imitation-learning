@@ -37,7 +37,7 @@ class KinematicReachEnv(gym.Env):
         spec.compiler.discardvisual = True
         self.model = spec.compile()
         self.data = mujoco.MjData(self.model)
-        self.qids, _, self.qmin, self.qmax = joint_addresses(self.model)
+        self.qids, self.dids, self.qmin, self.qmax = joint_addresses(self.model)
         self.gripper_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_BODY, "gripper_link")
         if self.gripper_id < 0:
@@ -110,6 +110,28 @@ class KinematicReachEnv(gym.Env):
         }
 
 
+
+def jacobian_reach_action(env, *, damping=0.02, gain=0.75):
+    """Damped least-squares Cartesian position control (NO oracle joint angles).
+
+    Solve dq = J.T (J J.T + lambda^2 I)^-1 (gain * xyz_error);
+    convert to bounded joint-increment action. The Jacobian comes from the
+    current MuJoCo FK state; only the 3D goal and current joint state are read.
+    """
+    if damping <= 0 or gain <= 0:
+        raise ValueError("damping and gain must be positive")
+    jac_p = np.zeros((3, env.model.nv), dtype=float)
+    jac_r = np.zeros((3, env.model.nv), dtype=float)
+    mujoco.mj_jacBody(env.model, env.data, jac_p, jac_r, env.gripper_id)
+    J = jac_p[:, env.dids]
+    error_xyz = env.target_tcp - env._tcp()
+    delta_q = J.T @ np.linalg.solve(
+        J @ J.T + damping**2 * np.eye(3), gain * error_xyz)
+    if not np.isfinite(delta_q).all():
+        raise RuntimeError("Non-finite Jacobian action")
+    return np.clip(delta_q / env.action_delta_rad, -1, 1)
+
+
 def run_experiment(*, seed=101, episodes=3, max_steps=60, action_delta_rad=.04,
                    goal_joint_delta_rad=.35):
     env = KinematicReachEnv(seed=seed, max_steps=max_steps,
@@ -118,7 +140,7 @@ def run_experiment(*, seed=101, episodes=3, max_steps=60, action_delta_rad=.04,
     rows = []
     try:
         for ep in range(episodes):
-            for policy in ("zero_action", "known_joint_oracle"):
+            for policy in ("zero_action", "known_joint_oracle", "jacobian_dls"):
                 env.reset(seed=seed + ep)
                 initial_distance = float(np.linalg.norm(env.target_tcp - env._tcp()))
                 for step in range(max_steps):
@@ -128,6 +150,8 @@ def run_experiment(*, seed=101, episodes=3, max_steps=60, action_delta_rad=.04,
                         action = np.clip((env.target_joint -
                                          env.data.qpos[env.qids]) /
                                          env.action_delta_rad, -1, 1)
+                    elif policy == "jacobian_dls":
+                        action = jacobian_reach_action(env)
                     else:
                         action = np.zeros(5)
                     _, _, done, truncated, info = env.step(action)
@@ -149,6 +173,7 @@ def run_experiment(*, seed=101, episodes=3, max_steps=60, action_delta_rad=.04,
         "limitations": [
             "Joint positions are directly assigned; dynamics and contact physics are NOT simulated.",
             "Known-joint oracle has access to hidden target joint values and is NOT an RL agent.",
+            "Jacobian DLS computes an analytic local Cartesian control action; it is NOT learned RL.",
             "This baseline demonstrates coordinate/goal/action mechanics, not collision safety.",
             "Do NOT use its actions for the physical robot.",
         ]
@@ -178,7 +203,7 @@ def main():
     report = run_experiment(seed=args.seed, episodes=args.episodes)
     save(report, args.out)
     print("Saved", args.out / "reach_baselines.csv")
-    for policy in ("zero_action", "known_joint_oracle"):
+    for policy in ("zero_action", "known_joint_oracle", "jacobian_dls"):
         rows = [r for r in report["results"] if r["policy"] == policy]
         print(f"{policy}: success {sum(r['success'] for r in rows)}/{len(rows)}, "
               f"mean_final_tcp_mm={np.mean([r['final_tcp_mm'] for r in rows]):.2f}")
