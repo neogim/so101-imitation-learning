@@ -134,12 +134,22 @@ def visible_upper_edge_residual(real, sim, x_min=440, x_max=600):
             "median_sim_minus_real_px": float(np.median(e))}
 
 
-def alignment_score(real, sim, edge_x_min=440, edge_x_max=600):
+def alignment_score(real, sim, edge_x_min=440, edge_x_max=600, ignore_right_px=0):
     """Image-space heuristic; IoU plus scale and visible envelope agreement.
 
     A high score is not proof of metric 3D alignment or physical corners.
     """
-    if not sim.any():
+    if real.shape != sim.shape or real.ndim != 2:
+        raise ValueError("Incompatible tabletop masks")
+    if not (0 <= ignore_right_px < real.shape[1]):
+        raise ValueError("Invalid right-side exclusion")
+    if ignore_right_px:
+        # Drop the image-right portion from the scoring objective only.
+        # It includes a curved/rounded front edge not present in the box
+        # geometry. The full-resolution diagnostics remain unchanged.
+        real = real[:, :-ignore_right_px]
+        sim = sim[:, :-ignore_right_px]
+    if not real.any() or not sim.any():
         return -1.
     m = silhouette_diagnostics(real, sim)
     import math
@@ -174,6 +184,7 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
              axes="xy", max_delta_m=.12, initial_step_m=.02, levels=4,
              edge_x_min=440, edge_x_max=600, fit_yaw=False,
              max_yaw_delta_deg=30., initial_yaw_step_deg=5.,
+             ignore_right_px=0,
              robot_edge="off", robot_anchor_xy_m=(0., 0.), robot_edge_inset_m=0.,
              initial_delta_xyz_m=(0., 0., 0.), initial_yaw_delta_deg=0.):
     """Fit table XY and optionally yaw against visible mask and far-edge strip.
@@ -215,7 +226,7 @@ def optimize(model, data, renderer, camera, table_geom_id, real_mask,
         candidate = segmentation_mask(renderer, model, data, camera, table_geom_id)
         if not candidate.any():
             return -1.
-        return alignment_score(real_mask, candidate, edge_x_min, edge_x_max)
+        return alignment_score(real_mask, candidate, edge_x_min, edge_x_max, ignore_right_px)
 
     before = trial(selected, selected_yaw)
     best = before
@@ -315,6 +326,8 @@ def main():
                    help="Optimize tabletop yaw about its center alongside base XY")
     p.add_argument("--max-yaw-delta-deg", type=float, default=30.)
     p.add_argument("--initial-yaw-step-deg", type=float, default=5.)
+    p.add_argument("--ignore-right-px", type=int, default=0,
+                   help="Exclude rightmost N Side-image columns from fit objective; full report unchanged")
     p.add_argument("--edge-x-min", type=int, default=440)
     p.add_argument("--edge-x-max", type=int, default=600)
     p.add_argument("--axis", choices=("x", "y", "z", "xy", "xyz"), default="xy",
@@ -389,6 +402,7 @@ def main():
         result = optimize(model, data, renderer, camera, geom, real_mask,
                           axes=args.axis, max_delta_m=args.max_delta_m,
                           edge_x_min=args.edge_x_min, edge_x_max=args.edge_x_max,
+                          ignore_right_px=args.ignore_right_px,
                           fit_yaw=args.fit_yaw,
                           max_yaw_delta_deg=args.max_yaw_delta_deg,
                           initial_yaw_step_deg=args.initial_yaw_step_deg,
@@ -406,6 +420,7 @@ def main():
     result["iou_before"] = result["before"]["iou"]
     result["iou_after"] = result["after"]["iou"]
     result["edge_strip_x_px"] = [args.edge_x_min, args.edge_x_max]
+    result["ignore_right_px"] = args.ignore_right_px
     result["upper_edge_before"] = visible_upper_edge_residual(real_mask, first, args.edge_x_min, args.edge_x_max)
     result["upper_edge_after"] = visible_upper_edge_residual(real_mask, last, args.edge_x_min, args.edge_x_max)
     result["status"] = "VISUAL_CANDIDATE_NOT_3D_CALIBRATION"
