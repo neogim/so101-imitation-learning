@@ -145,6 +145,14 @@ class ReachEnvTests(unittest.TestCase):
         self.assertEqual(no_contact["contact_substep_fraction"], 0.)
         self.assertTrue(np.isfinite(full["final_tcp_distance_m"]))
         self.assertTrue(np.isfinite(no_contact["final_tcp_distance_m"]))
+        long_report = run_audit(seed=101, episode=0, max_steps=150, frame_skip=10)
+        for mode in ("baseline_contact_enabled", "contact_disabled_diagnostic_only"):
+            item = long_report[mode]
+            print("MUJOCO_CONTACT_ABLATION:", mode, "reach=", item["success"],
+                  "final_dist=", round(item["final_tcp_distance_m"], 5),
+                  "joint_err=", round(item["final_joint_error_l2_rad"], 5),
+                  "saturation=", [round(v, 3) for v in item["torque_saturation_fraction"]],
+                  "contact_frac=", round(item["contact_substep_fraction"], 3))
 
 
 if __name__ == "__main__":
