@@ -457,3 +457,67 @@ Note: a 2D realistic picture (or image-to-illustration conversion)
 does NOT recover physical depth or coordinates from a single photo.
 This rigid edge constraint plus known dimensions is a geometric
 assumption to reduce ambiguity, not exact real-to-sim calibration.
+
+## 2026-11-08: Controlled axis diagnosis after failed auto-edge fitting
+
+Do NOT use `--anchor-robot-edge auto` again. Its selected `y+`
+was inferred from an already-wrong simulated workcell, and the
+assumption SO-101 base origin = actual clamp point was not measured.
+The last fit was rejected: IoU **0.4237** (previous XY/Yaw fit
+**0.8185**), projected tabletop area ratio **0.659**, upper-edge
+residual **215.5px**, yaw **40.625°**.
+
+The model now rejects `auto` rather than silently inventing an edge.
+A validated clamp reference would be needed to apply an explicit
+`x+/x-/y+/y-` constraint; do not assume which edge in SO-101 base
+coordinates from an overhead photograph alone.
+
+For a controlled experiment, preserve the previous visually better
+base-X +11cm and yaw=12.5° (delta=-2.5°), and modify ONLY base Y.
+Do not mix the failed +7/+9cm offsets with these. Example:
+
+```bash
+conda activate so101-real2sim
+git switch feature/aruco-calibration-capture-20261107
+git pull --ff-only origin feature/aruco-calibration-capture-20261107
+
+DATASET="data/so101/muhi-side-wrist-success-053-20261025-168x224"
+REAL="outputs/real2sim/episode4_side_640x480.png"
+MASK="outputs/real2sim/sam3-episode4-20261108-003728/real_mask.png"
+OBJECTS="outputs/real2sim/episode4-objects-20261108-004859.json"
+EXTR="outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTR="assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+OUT="outputs/real2sim/table-base-y-only-$(date +%Y%m%d-%H%M%S)"
+
+python scripts/so101_sim/align_previous_scene_sam3.py \
+  --real-image "$REAL" --real-mask "$MASK" \
+  --dataset-root "$DATASET" --episode 4 \
+  --object-layout-json "$OBJECTS" \
+  --extrinsics "$EXTR" --intrinsics "$INTR" \
+  --axis y --max-delta-m 0.06 \
+  --initial-base-x-cm 11 --initial-base-y-cm 6.25 \
+  --initial-base-z-cm 0 --initial-yaw-delta-deg -2.5 \
+  --anchor-robot-edge off \
+  --edge-x-min 440 --edge-x-max 600 --output "$OUT"
+
+open "$OUT/before.png" "$OUT/after.png"
+cat "$OUT/report.json"
+```
+
+The report's `base_axis_projection_delta_uv_px` shows how 5cm
+increments of **robot-base X** and **robot-base Y** project into Side
+image pixels. The camera can mix these directions. This is a
+diagnostic, not confirmation that the tabletop's long side runs along
+robot-base X or Y.
+
+Both score and image-space comparison now start from the **same
+explicit initial table pose**. If the final candidate has worse IoU
+than that baseline, the report marks regression and omits video
+flags. If the fit is not acceptable, stop iterating and locate the
+actual robot clamp contact point and desk side in a fixed camera frame,
+or use a marker/known physical correspondence. Real2Sim needs a
+physically defined transform chain:
+`T_base_table`, `T_base_camera`, tabletop dimensions, camera K.
+A SAM3 2D segmentation mask does not by itself recover these metric
+3D transforms. See OpenCV's solvePnP/reference projection and MuJoCo
+frame definitions.
