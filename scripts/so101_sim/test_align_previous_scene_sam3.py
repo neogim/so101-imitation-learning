@@ -148,6 +148,15 @@ class MaskAndGeometryTests(unittest.TestCase):
         np.testing.assert_allclose(model.geom_pos[ids[0]], p0[0] + [.02, -.03, 0.])
         np.testing.assert_allclose(model.geom_quat[ids[0]], q0[0], atol=1e-7)
 
+    def test_inferred_robot_edge_is_rejected_without_measurement(self):
+        with self.assertRaisesRegex(ValueError, "Automatic edge"):
+            align.optimize(None, None, None, None, None, None, robot_edge="auto")
+
+    def test_initial_pose_is_validated(self):
+        with self.assertRaisesRegex(ValueError, "Initial XYZ"):
+            align.optimize(None, None, None, None, None, None,
+                           initial_delta_xyz_m=(0., float("nan"), 0.))
+
     def test_negative_yaw_search_bound_rejected(self):
         with self.assertRaisesRegex(ValueError, "Yaw"):
             align.optimize(None, None, None, None, None, None,
