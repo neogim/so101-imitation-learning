@@ -88,6 +88,37 @@ class MaskAndGeometryTests(unittest.TestCase):
                            align.alignment_score(real, oversized))
         self.assertAlmostEqual(align.alignment_score(real, exact), 1.0)
 
+    def test_robot_edge_anchor_keeps_table_border_at_robot_frame(self):
+        import mujoco
+        xml = """<mujoco><worldbody>
+        <geom name="r2s_preview_table" type="box" size=".4 .255 .02" pos=".3 .1 -.02"/>
+        <geom name="r2s_table_leg_mm" type="box" size=".02 .02 .1" pos=".1 .1 -.2"/>
+        <geom name="r2s_table_leg_mp" type="box" size=".02 .02 .1" pos=".1 .2 -.2"/>
+        <geom name="r2s_table_leg_pm" type="box" size=".02 .02 .1" pos=".3 .1 -.2"/>
+        <geom name="r2s_table_leg_pp" type="box" size=".02 .02 .1" pos=".3 .2 -.2"/>
+        <geom name="r2s_muhi_body" type="sphere" size=".01" pos=".05 .05 .03"/>
+        <camera name="side" pos="0 0 1"/>
+        </worldbody></mujoco>"""
+        model = mujoco.MjModel.from_xml_string(xml)
+        ids = align.movie.table_geom_ids(model)
+        original_pos = model.geom_pos[ids].copy()
+        original_quat = model.geom_quat[ids].copy()
+        muhi = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_muhi_body")
+        m = model.geom_pos[muhi].copy()
+        anchor = [0., 0.]
+        self.assertEqual(align.movie.nearest_table_edge(model, anchor), "x-")
+        for yaw in (0., 12.5, -20.):
+            align.movie.set_table_pose_delta(
+                model, original_pos, original_quat, [0., .03, 0.], yaw)
+            report = align.movie.anchor_table_edge_to_robot(
+                model, "x-", anchor, inset_m=.02)
+            self.assertAlmostEqual(report["edge_constraint_residual_m"], 0., places=7)
+            self.assertEqual(report["edge"], "x-")
+            np.testing.assert_allclose(model.geom_pos[muhi], m)
+            np.testing.assert_allclose(model.geom_size[ids[0]], [.4, .255, .02])
+        with self.assertRaises(ValueError):
+            align.movie.anchor_table_edge_to_robot(model, "wrong")
+
     def test_table_yaw_rotates_all_parts_only_about_table_center(self):
         import mujoco
         xml = """<mujoco><worldbody>
