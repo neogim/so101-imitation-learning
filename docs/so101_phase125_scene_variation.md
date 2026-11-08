@@ -640,6 +640,44 @@ on this benchmark alone. If the exercise passes, the next useful
 learning step is an observation-based simple Reach policy before
 any accurate collision/PD/Sim-to-Real modeling.
 
+### Jacobian DLS kinematic Reach (2026-11-08)
+
+The minimal `learn_reach_kinematic.py` exercise now compares **three**
+policies with the same FK-generated TCP goals: zero action,
+the hidden-known-joint oracle, and **damped least-squares Jacobian control**.
+
+The Jacobian method uses `mj_jacBody`, current joint state and Cartesian
+target error, **not the hidden target joint angles**:
+`dq = J.T @ solve(J@J.T + lambda**2 I, gain * target_xyz_error)`.
+It converts `dq` into bounded actions. This is model-based analytic
+control, **not SAC or learned RL**.
+
+Linux CI, seed101, 3 episodes (25mm tolerance):
+
+| Episode | Initial (mm) | Jacobian DLS final (mm) | Steps | Success |
+| --- | ---: | ---: | ---: | --- |
+| 0 | 80.633 | 17.115 | 6 | True |
+| 1 | 78.053 | 20.583 | 4 | True |
+| 2 | 82.485 | 21.461 | 4 | True |
+
+DLS achieves **3/3 Reach** (mean final 19.72mm).
+Original zero-action remains 0/3 and known-joint oracle 3/3.
+These are small deterministic educational examples only;
+there is no physics stepping, self collision evaluation, PD success
+or safe-to-deploy real control in this benchmark.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+REACH_OUT="outputs/so101-jacobian-reach-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/learn_reach_kinematic.py --out "$REACH_OUT"
+cat "$REACH_OUT/reach_baselines.csv"
+```
+
+Next learning step: implement an observation-driven learner in the *same*
+kinematic 5D-action/9D-observation task, then compare to Jacobian DLS.
+Avoid reopening mesh/PD investigations unless an experiment requires them.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
