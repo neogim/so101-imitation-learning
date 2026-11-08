@@ -1,0 +1,85 @@
+name: SO-101 ArUco offline calibration tests
+
+on:
+  pull_request:
+    paths:
+      - "scripts/so101_capture/extract_aruco_calibration.py"
+      - "scripts/so101_capture/test_extract_aruco_calibration.py"
+      - "scripts/so101_capture/audit_fk_aruco.py"
+      - "scripts/so101_capture/test_audit_fk_aruco.py"
+      - "scripts/so101_capture/audit_aruco_diversity.py"
+      - "scripts/so101_capture/test_audit_aruco_diversity.py"
+      - "data/urdf/so101/so101_new_calib.urdf"
+      - "scripts/so101_capture/calibrate_side_charuco_offline.py"
+      - "scripts/so101_capture/capture_side_charuco_stills.py"
+      - "scripts/so101_capture/test_calibrate_side_charuco_offline.py"
+      - "scripts/so101_capture/audit_charuco_two_sessions.py"
+      - "scripts/so101_capture/audit_aruco_pnp_ambiguity.py"
+      - "scripts/so101_capture/test_audit_aruco_pnp_ambiguity.py"
+      - "assets/calibration/side_charuco_20261107_40frame_diagnostic.json"
+      - "assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+      - "scripts/so101_capture/audit_aruco_subpixel_pnp.py"
+      - "scripts/so101_capture/test_audit_aruco_subpixel_pnp.py"
+      - "scripts/so101_sim/compare_id1_eye_to_hand.py"
+      - "scripts/so101_sim/test_compare_id1_eye_to_hand.py"
+      - "scripts/so101_capture/fit_side_camera_from_id1.py"
+      - "scripts/so101_capture/test_fit_side_camera_from_id1.py"
+      - ".github/workflows/aruco-calibration-tests.yml"
+  push:
+    branches:
+      - "feature/aruco-calibration-capture-20261107"
+    paths:
+      - "scripts/so101_capture/extract_aruco_calibration.py"
+      - "scripts/so101_capture/test_extract_aruco_calibration.py"
+      - "scripts/so101_capture/audit_fk_aruco.py"
+      - "scripts/so101_capture/test_audit_fk_aruco.py"
+      - "scripts/so101_capture/audit_aruco_diversity.py"
+      - "scripts/so101_capture/test_audit_aruco_diversity.py"
+      - "data/urdf/so101/so101_new_calib.urdf"
+      - "scripts/so101_capture/calibrate_side_charuco_offline.py"
+      - "scripts/so101_capture/capture_side_charuco_stills.py"
+      - "scripts/so101_capture/test_calibrate_side_charuco_offline.py"
+      - "scripts/so101_capture/audit_charuco_two_sessions.py"
+      - "scripts/so101_capture/audit_aruco_pnp_ambiguity.py"
+      - "scripts/so101_capture/test_audit_aruco_pnp_ambiguity.py"
+      - "assets/calibration/side_charuco_20261107_40frame_diagnostic.json"
+      - "assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+      - "scripts/so101_capture/audit_aruco_subpixel_pnp.py"
+      - "scripts/so101_capture/test_audit_aruco_subpixel_pnp.py"
+      - "scripts/so101_sim/compare_id1_eye_to_hand.py"
+      - "scripts/so101_sim/test_compare_id1_eye_to_hand.py"
+      - "scripts/so101_capture/fit_side_camera_from_id1.py"
+      - "scripts/so101_capture/test_fit_side_camera_from_id1.py"
+      - ".github/workflows/aruco-calibration-tests.yml"
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test-only numerical dependency
+        run: python -m pip install numpy scipy pillow opencv-contrib-python-headless
+      - name: Compile source
+        run: python -m py_compile scripts/so101_capture/extract_aruco_calibration.py scripts/so101_capture/test_extract_aruco_calibration.py scripts/so101_capture/audit_fk_aruco.py scripts/so101_capture/test_audit_fk_aruco.py scripts/so101_capture/audit_aruco_diversity.py scripts/so101_capture/test_audit_aruco_diversity.py scripts/so101_capture/calibrate_side_charuco_offline.py scripts/so101_capture/test_calibrate_side_charuco_offline.py scripts/so101_capture/capture_side_charuco_stills.py scripts/so101_capture/audit_charuco_two_sessions.py scripts/so101_capture/audit_aruco_pnp_ambiguity.py scripts/so101_capture/test_audit_aruco_pnp_ambiguity.py scripts/so101_capture/audit_aruco_subpixel_pnp.py scripts/so101_capture/test_audit_aruco_subpixel_pnp.py scripts/so101_capture/fit_side_camera_from_id1.py scripts/so101_capture/test_fit_side_camera_from_id1.py scripts/so101_sim/compare_id1_eye_to_hand.py scripts/so101_sim/test_compare_id1_eye_to_hand.py
+      - name: Test stationary frame selection
+        run: python -m unittest discover -s scripts/so101_capture -p 'test_*aruco*.py' -v
+
+      - name: Test ChArUco board offline
+        run: python -m unittest discover -s scripts/so101_capture -p 'test_calibrate_side_charuco_offline.py' -v
+
+      - name: Test ArUco IPPE pose ambiguity (synthetic)
+        run: python -m unittest discover -s scripts/so101_capture -p 'test_audit_aruco_pnp_ambiguity.py' -v
+
+      - name: Test subpixel ArUco refinement (synthetic)
+        run: python -m unittest discover -s scripts/so101_capture -p 'test_audit_aruco_subpixel_pnp.py' -v
+
+      - name: Test initial Eye-to-Hand estimator (synthetic)
+        run: python -m unittest discover -s scripts/so101_capture -p 'test_fit_side_camera_from_id1.py' -v
+
+      - name: Test camera coordinates for MuJoCo
+        run: python -m unittest discover -s scripts/so101_sim -p 'test_compare_id1_eye_to_hand.py' -v

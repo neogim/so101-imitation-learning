@@ -1,0 +1,78 @@
+{
+  "kind": "so101_eye_to_hand_fk_vs_aruco_center_exploratory_v1",
+  "status": "diagnostic_only_extrinsics_not_validated",
+  "input": {
+    "manifest": "outputs/so101-aruco-calibration-20261108/manifest.json",
+    "pnp_report": "outputs/so101-aruco-pnp-audit-01/report.json",
+    "urdf": "data/urdf/so101/so101_new_calib.urdf",
+    "intrinsics": "assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json",
+    "marker_outer_black_edge_mm": 14,
+    "image_size": [
+      640,
+      480
+    ],
+    "note": "Uploaded manifest/report were analyzed outside GitHub; raw manifest and report are not committed here."
+  },
+  "method": "Least-squares fit for 3-vector camera rotation, camera translation and 3-vector link-frame marker center offset, using best IPPE solution tvec and URDF FK. Uses marker center positions ONLY; no marker orientation; uses recorded LeRobot angles as URDF angles directly. Fit is nonlinear 9-parameter and not independent absolute validation.",
+  "marker_summary": [
+    {
+      "id": 0,
+      "link_hypothesis": "gripper_link",
+      "n": 10,
+      "fit_center_xyz_rms_mm": 9.55
+    },
+    {
+      "id": 1,
+      "link_hypothesis": "gripper_link",
+      "n": 9,
+      "fit_center_xyz_rms_mm": 6.63
+    },
+    {
+      "id": 2,
+      "link_hypothesis": "wrist_link",
+      "n": 16,
+      "fit_center_xyz_rms_mm": 10.75,
+      "leave_one_out_center_xyz_rms_mm": 12.87,
+      "leave_one_out_max_mm": 22.28,
+      "two_ippe_orientation_gap_median_deg": 60.33,
+      "two_ippe_translation_gap_median_mm": 0.168
+    }
+  ],
+  "same_link_stability_pairs": [
+    {
+      "frames": [
+        1451,
+        1510
+      ],
+      "wrist_link_origin_fk_displacement_mm": 0,
+      "observed_marker2_center_displacement_mm": 2.54
+    },
+    {
+      "frames": [
+        631,
+        680
+      ],
+      "wrist_link_origin_fk_displacement_mm": 0.83,
+      "observed_marker2_center_displacement_mm": 12.39
+    }
+  ],
+  "sign_sensitivity": {
+    "tested": "16 sign combinations for J1..J4, with remaining quantities fit freely",
+    "best": "all signs positive, corresponding to using recorded angles directly",
+    "best_rms_mm": 10.75,
+    "next_best_rms_mm": 22.61,
+    "warning": "Sign sweep does not verify encoder joint zero offset or the exact physical mounting link."
+  },
+  "additional_findings": {
+    "id4_observed_camera_z_range_mm": 45.66,
+    "warning": "ID4 appears in similar image region across poses, but no independently verified stationary mount; this span alone is not a static-marker accuracy estimate."
+  },
+  "next_steps": [
+    "Reopen original per-pose PNG images and refine integer-pixel ArUco corners with subpixel detection; rerun PnP before making 3D accuracy conclusions.",
+    "Use same-frame fixed reference marker when physically confirmed stationary to estimate depth stability and possible camera/OBS changes.",
+    "Confirm ID2 is rigidly affixed to wrist_link rather than a J5-dependent link, and check LeRobot-URDF zero offsets.",
+    "Validate side OBS pixel geometry against ChArUco sessions and original ArUco recording.",
+    "Only after errors are understood, fit a full robust eye-to-hand model including two IPPE orientations and heldout poses."
+  ],
+  "do_not_use_as_final_base_to_camera_transform": true
+}

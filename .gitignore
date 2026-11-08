@@ -59,3 +59,6 @@ scripts/so101_capture/**/validation/
 
 # Executed notebooks
 executed*.ipynb
+
+# Local ML model weights
+/models/

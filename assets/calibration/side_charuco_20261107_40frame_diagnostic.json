@@ -1,0 +1,108 @@
+{
+  "title": "SO-101 Side ChArUco intrinsics: 25 + 15 stills",
+  "status": "candidate_not_validated",
+  "captured": "2026-11-07",
+  "provenance": {
+    "first_archive": "so101-charuco-stills-timed-02.zip",
+    "first_sha256": "955f578c15e4d77b242efa11ad4bead7dcd08d45aab5de4879b6697e31f9ed78",
+    "edge_archive": "so101-charuco-stills-edges-01.zip",
+    "edge_sha256": "ebb602e069adeb86fec08c6350c3fab4b797e0f0af324fc34a32abc43f16d167",
+    "raw_images_committed": false,
+    "note": "Raw 40 PNGs remain in the supplied ZIPs; commit covers computed results and provenance, not image bytes."
+  },
+  "board": {
+    "dictionary": "DICT_4X4_50",
+    "squares_x": 7,
+    "squares_y": 9,
+    "square_mm": 20,
+    "marker_mm": 14
+  },
+  "image_size": [
+    640,
+    480
+  ],
+  "opencv_recheck": "4.13.0",
+  "detection": {
+    "initial": {
+      "images": 25,
+      "accepted_min10": 22,
+      "rejected": [
+        {
+          "file": "side_charuco_010.png",
+          "corners": 0
+        },
+        {
+          "file": "side_charuco_022.png",
+          "corners": 2
+        },
+        {
+          "file": "side_charuco_024.png",
+          "corners": 0
+        }
+      ]
+    },
+    "edge": {
+      "images": 15,
+      "accepted_min10": 15,
+      "corner_min": 28,
+      "corner_max": 48
+    },
+    "combined": {
+      "images": 40,
+      "accepted": 37,
+      "training": 30,
+      "holdout": 7
+    }
+  },
+  "split": "Sorted initial frames then sorted edge frames; every 5th accepted item (index % 5 == 4) is held out. Board pose is re-fit per holdout image.",
+  "calibration": {
+    "unrestricted_5_coeff": {
+      "rms_training_px": 0.2889268049,
+      "rms_holdout_pooled_px": 0.45009357,
+      "fx": 541.9161812,
+      "fy": 541.9556981,
+      "cx": 324.6632857,
+      "cy": 222.5890205,
+      "distortion": [
+        0.0466903241,
+        0.0277529766,
+        -0.0054669432,
+        0.0066990283,
+        -0.2902209453
+      ]
+    },
+    "restricted_fix_k3_zero_tangential": {
+      "rms_training_px": 0.3015423599,
+      "rms_holdout_pooled_px": 0.45204207,
+      "fx": 543.1731854,
+      "fy": 542.9571236,
+      "cx": 316.3947778,
+      "cy": 229.5481738,
+      "distortion": [
+        0.0765355848,
+        -0.1208781287,
+        0,
+        0,
+        0
+      ]
+    },
+    "earlier_checkerboard_16_candidate": {
+      "fx": 540.17,
+      "fy": 539.19,
+      "cx": 317.35,
+      "cy": 231.55,
+      "rms_training_px": 0.315,
+      "note": "Derived from centered crop of desktop screenshots; same pixel geometry as OBS source unverified."
+    }
+  },
+  "quality": {
+    "unrestricted_earlier25_to_new15_rms_px": 2.51,
+    "restricted_earlier25_to_new15_rms_px": 0.418,
+    "warning": "Camera intrinsics are not final. Cross-session imaging geometry and physical board flatness/focus are unverified. Held-out reprojection optimizes board pose and does not demonstrate independent 3D accuracy."
+  },
+  "next_steps": [
+    "Verify same OBS source / crop / zoom / lens focus across sessions.",
+    "Evaluate fit stability with constraints and independent or per-session heldout frames.",
+    "Verify physical marker size and rigid mounting; then begin ArUco PnP for Eye-to-Hand."
+  ]
+}
