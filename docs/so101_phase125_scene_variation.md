@@ -264,6 +264,58 @@ changes torque demand or FK target convergence, inspect base/shoulder
 collision meshes and adjacent-link exclusions before changing PD
 gains or starting more SAC training.
 
+### Selective base/shoulder collision ablation (diagnostic only)
+
+The fixed URDF base and moving shoulder have three contacts at the initial
+zero-angle pose: `geom0–6`, `geom1–6`, and `geom2–6`. Their compiled mesh
+identities were confirmed in GitHub CI. To isolate which pair affects
+tracking, `scripts/so101_sim/compare_base_shoulder_contacts.py` now
+compares **seven** controlled simulations:
+
+| Condition | Meaning |
+| --- | --- |
+| baseline | Original full contact model |
+| reencoded_masks_control | Reassign per-geom contact bitmasks without excluding any pair |
+| exclude_geom0_6 | Only base motor holder / shoulder rotation mesh excluded |
+| exclude_geom1_6 | Only base body / shoulder rotation mesh excluded |
+| exclude_geom2_6 | Only fixed servo / shoulder rotation mesh excluded |
+| exclude_all_three | All three identified base/shoulder pairs excluded |
+| all_contacts_disabled_reference | Unphysical no-contact diagnostic reference |
+
+Every condition uses seed 101, the same Episode 0 FK target and the same
+PD gains and torque limit; changes are **in-memory only**.
+Specific-geom-pair exclusions use distinct contype bits and per-geom
+conaffinity bitsets, because MuJoCo body excludes would hide *all* body-pair
+contacts. The explicit re-encoded-mask control checks the filtering operation
+itself against the original. At the initial reset all specified excluded
+pairs must disappear, while contacts from other pairs are retained.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+COMPARE_OUT="outputs/so101-base-shoulder-ablation-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_base_shoulder_contacts.py \
+  --seed 101 --episode 0 --out "$COMPARE_OUT"
+cat "$COMPARE_OUT/pair_ablation.csv"
+```
+
+Outputs: `pair_ablation.json` with per-condition contact pairs, saturation
+fractions, final errors, and `pair_ablation.csv` for a compact comparison.
+Do **not** copy excluded-contacts conditions into SAC/Sim2Real training:
+temporary removal may allow physically impossible intersections.
+
+Decision:
+- If one excluded pair substantially stabilizes PD tracking, inspect that
+  STL mesh overlap, contact normals and clearance; retain real collisions.
+- If only all-three exclusion works, investigate interactions among the
+  base/shoulder mesh contact patches.
+- If contacts remain or PD stays inaccurate, separate contact artifacts
+  from controller gain / torque budget / inertial model issues.
+- A final distance smaller than baseline but still above 25 mm is
+  **partial improvement**, not a successful Reach.
+- CI on Linux confirms script validity; repeat the comparison locally on
+  the Mac before diagnosing numerical sensitivity.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
