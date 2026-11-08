@@ -19,18 +19,36 @@ import compare_id1_eye_to_hand as geometry
 import real_to_sim as r2s
 
 
-def generate_offsets(count=20, seed=101, muhi_range_mm=20.,
-                     cup_range_mm=20., yaw_range_deg=30.):
-    """Generate deterministic baseline + separated object perturbation candidates.
+DEFAULT_YAW_ANGLES_DEG = (0., 30., -30., 60., -60., 90., -90.)
 
-    The ranges are maximum absolute deltas in BASE X/Y and Muhi's table yaw.
-    The values are *not* reachability or collision guarantees.
+
+def generate_offsets(count=20, seed=101, muhi_range_mm=20.,
+                     cup_range_mm=20., yaw_range_deg=30.,
+                     yaw_angles_deg=None):
+    """Deterministic layouts with optional explicit, exact Muhi yaw angles.
+
+    For explicit angles: baseline first, one yaw-only example for every other
+    requested angle, then XY-only / cup-only / mixed examples. With a count
+    smaller than the angle list, report an error rather than omit angles.
     """
     if not isinstance(count, int) or not 1 <= count <= 10000:
         raise ValueError("count must be an integer in [1, 10000]")
     limits = np.asarray([muhi_range_mm, cup_range_mm, yaw_range_deg], float)
     if not np.isfinite(limits).all() or (limits < 0).any():
         raise ValueError("Ranges must be finite nonnegative numbers")
+    selected = None
+    if yaw_angles_deg is not None:
+        selected = np.asarray(yaw_angles_deg, dtype=float)
+        if (selected.ndim != 1 or len(selected) == 0
+                or not np.isfinite(selected).all()
+                or not np.any(selected == 0.)
+                or len(set(float(a) for a in selected)) != len(selected)):
+            raise ValueError("Yaw angles must be finite, unique and include 0 degrees")
+        if count < len(selected):
+            raise ValueError("Count must cover all requested explicit yaw angles")
+        # Allow requested angles outside yaw_range_deg; it belongs to random mode.
+        selected = [float(a) for a in selected if float(a) != 0.]
+
     rng = np.random.default_rng(seed)
     samples = [{
         "candidate": 0,
@@ -39,15 +57,32 @@ def generate_offsets(count=20, seed=101, muhi_range_mm=20.,
         "cup_xy_delta_mm": [0., 0.],
     }]
     for index in range(1, count):
-        # Cycle single-variable types before mixing them. Deterministic for seed.
-        mode = (index - 1) % 4
-        mu = rng.uniform(-muhi_range_mm, muhi_range_mm, 2) if mode in (0, 3) else np.zeros(2)
-        yaw = float(rng.uniform(-yaw_range_deg, yaw_range_deg)) if mode in (1, 3) else 0.
-        cup = rng.uniform(-cup_range_mm, cup_range_mm, 2) if mode in (2, 3) else np.zeros(2)
+        if selected is not None and index <= len(selected):
+            mu = np.zeros(2)
+            yaw = selected[index - 1]
+            cup = np.zeros(2)
+        elif selected is not None:
+            # Preserve unambiguous single-factor examples before combinations.
+            remaining = index - len(selected) - 1
+            mode = remaining % 3
+            mu = (rng.uniform(-muhi_range_mm, muhi_range_mm, 2)
+                  if mode in (0, 2) else np.zeros(2))
+            cup = (rng.uniform(-cup_range_mm, cup_range_mm, 2)
+                   if mode in (1, 2) else np.zeros(2))
+            yaw = (selected[(remaining // 3) % len(selected)]
+                   if mode == 2 and selected else 0.)
+        else:
+            mode = (index - 1) % 4
+            mu = (rng.uniform(-muhi_range_mm, muhi_range_mm, 2)
+                  if mode in (0, 3) else np.zeros(2))
+            yaw = (float(rng.uniform(-yaw_range_deg, yaw_range_deg))
+                   if mode in (1, 3) else 0.)
+            cup = (rng.uniform(-cup_range_mm, cup_range_mm, 2)
+                   if mode in (2, 3) else np.zeros(2))
         samples.append({
             "candidate": index,
             "muhi_xy_delta_mm": np.round(mu, 3).tolist(),
-            "muhi_yaw_delta_deg": round(yaw, 3),
+            "muhi_yaw_delta_deg": round(float(yaw), 3),
             "cup_xy_delta_mm": np.round(cup, 3).tolist(),
         })
     return samples
@@ -184,7 +219,8 @@ def run(args):
     reference = capture_reference(model)
 
     candidates = generate_offsets(args.count, args.seed, args.muhi_range_mm,
-                                  args.cup_range_mm, args.yaw_range_deg)
+                                  args.cup_range_mm, args.yaw_range_deg,
+                                  args.yaw_angles_deg)
     args.output.mkdir(parents=True, exist_ok=False)
     tiles = []
     with mujoco.Renderer(model, width=640, height=480) as renderer:
@@ -215,6 +251,8 @@ def run(args):
         "status": "SCENE_PREVIEWS_ONLY_NO_IK_OR_ACT_TRAINING_DATA",
         "episode": args.episode,
         "seed": args.seed,
+        "yaw_angles_deg": args.yaw_angles_deg,
+        "yaw_selection": "EXACT_EXPLICIT_ANGLES" if args.yaw_angles_deg is not None else "RANDOM",
         "reference_frame": 0,
         "object_layout_json": str(args.object_layout_json),
         "cup_pose_json": str(args.cup_pose_json),
@@ -252,6 +290,9 @@ def main():
     p.add_argument("--muhi-range-mm", type=float, default=20.)
     p.add_argument("--cup-range-mm", type=float, default=20.)
     p.add_argument("--yaw-range-deg", type=float, default=30.)
+    p.add_argument("--yaw-angles-deg", type=float, nargs="+",
+                   default=list(DEFAULT_YAW_ANGLES_DEG),
+                   help="Exact yaw deltas to include: 0 30 -30 60 -60 90 -90; overrides random yaw-range")
     p.add_argument("--table-extra-left-cm", type=float, default=4.)
     p.add_argument("--table-extra-front-cm", type=float, default=5.)
     p.add_argument("--table-base-x-cm", type=float, default=12.)
