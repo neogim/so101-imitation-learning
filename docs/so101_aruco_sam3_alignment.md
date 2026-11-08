@@ -999,3 +999,12 @@ it is only a rendering diagnostic. If the GUI cannot open interactively
 on macOS, run with a native Matplotlib backend such as
 `MPLBACKEND=MacOSX python ...` after verifying the environment supports
 it.
+
+**Frame-index mapping correction:** The earlier movie was rendered at
+`--stride 5` (20fps source => 4fps video). The UI labels
+`frame 0 / 24 / 40 / 52` are **movie frame positions**, corresponding
+to the dataset's **source frames 0 / 120 / 200 / 260** and elapsed times
+**0 / 6 / 10 / 13 seconds**. The GUI now defaults to
+`--comparison-stride 5` and explicitly maps these indices, so the
+inspected robot pose is synchronized to the actual prior comparison
+video. Do not treat these labels as raw dataset indices.
