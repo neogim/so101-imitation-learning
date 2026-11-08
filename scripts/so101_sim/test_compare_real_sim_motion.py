@@ -15,6 +15,54 @@ from compare_real_sim_motion import (sample_evenly, comparison_panel,
 
 
 class MotionComparisonTests(unittest.TestCase):
+    def test_cup_diameter_and_height_controls_preserve_other_objects(self):
+        import mujoco
+        from align_cup_gui import cup_geom_ids, set_cup_dimensions
+        parts = ["<geom name='r2s_cup_base' type='cylinder' size='.05 .001' pos='.2 .1 .001'/>"]
+        import math
+        for i in range(16):
+            a = 2 * math.pi * i / 16
+            x, y = .2 + .049 * math.cos(a), .1 + .049 * math.sin(a)
+            parts.append(f"<geom name='r2s_cup_wall_{i:02d}' type='box' "
+                         f"size='.010 .0015 .045' pos='{x} {y} .047'/>")
+        parts.append("<geom name='r2s_muhi_body' type='sphere' size='.01' pos='0 0 .04'/>")
+        model = mujoco.MjModel.from_xml_string(
+            "<mujoco><worldbody>" + "".join(parts) + "</worldbody></mujoco>")
+        ids = cup_geom_ids(model)
+        before_positions, before_sizes = model.geom_pos.copy(), model.geom_size.copy()
+        set_cup_dimensions(model, ids, before_positions[ids], before_sizes[ids],
+                           diameter_m=.08, height_m=.105, xyz_m=[-.032, -.063, -.001])
+        self.assertAlmostEqual(model.geom_size[ids[0], 0], .04, places=6)
+        self.assertAlmostEqual(model.geom_size[ids[1], 2], .0525, places=6)
+        self.assertAlmostEqual(model.geom_pos[ids[1], 2], .002 + .105 / 2 - .001, places=6)
+        self.assertAlmostEqual(
+            np.linalg.norm(model.geom_pos[ids[1], :2] -
+                           (before_positions[ids[0], :2] + [-.032, -.063])),
+            .049 * .8, places=6)
+        self.assertTrue(np.allclose(model.geom_pos[-1], before_positions[-1]))
+        self.assertTrue(np.allclose(model.geom_size[-1], before_sizes[-1]))
+        set_cup_dimensions(model, ids, before_positions[ids], before_sizes[ids])
+        np.testing.assert_allclose(model.geom_pos[ids], before_positions[ids])
+        np.testing.assert_allclose(model.geom_size[ids], before_sizes[ids])
+
+    def test_cup_dimensions_saved_and_old_json_default(self):
+        from align_cup_gui import alignment_payload, read_cup_payload
+        info = alignment_payload([-.032, -.063, -.001], Path("objects.json"), 4,
+                                 (12, 7, -9.375, 0), diameter_m=.078, height_m=.102)
+        self.assertAlmostEqual(info["cup_diameter_m"], .078)
+        self.assertAlmostEqual(info["cup_height_m"], .102)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "cup.json"
+            path.write_text(json.dumps(info), encoding="utf-8")
+            self.assertAlmostEqual(read_cup_payload(path)["cup_height_m"], .102)
+            info.pop("cup_diameter_m")
+            info.pop("cup_height_m")
+            path.write_text(json.dumps(info), encoding="utf-8")
+            self.assertNotIn("cup_height_m", read_cup_payload(path))
+        with self.assertRaisesRegex(ValueError, "dimensions"):
+            alignment_payload([0, 0, 0], Path("objects.json"), 4,
+                              (12, 7, 0, 0), diameter_m=-1)
+
     def test_gui_cup_delta_preserves_other_geometries(self):
         import mujoco
         from align_cup_gui import cup_geom_ids, set_cup_delta
