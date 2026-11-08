@@ -250,6 +250,19 @@ class ReachEnvTests(unittest.TestCase):
             self.assertEqual(json.loads((out / "stl_convexity.json").read_text())["status"],
                              result["status"])
 
+    def test_world_aligned_stl_contact_overlay(self):
+        from overlay_stl_mujoco_contacts import evaluate
+        with tempfile.TemporaryDirectory() as tmp:
+            result=evaluate(Path(tmp)/"overlay")
+            self.assertEqual(len(result["contact_points"]),12)
+            self.assertTrue(all(float(v)<.002 for v in result["alignment_p95_m"].values()))
+            self.assertTrue((Path(tmp)/"overlay"/"world_aligned_stl_contacts.png").exists())
+            self.assertTrue((Path(tmp)/"overlay"/"contact_to_stl_surface.csv").exists())
+            for p in result["contact_points"]:
+                self.assertEqual(len(p["source_surface_distance"]),2)
+                self.assertTrue(all(v["distance_to_source_stl_surface_mm"]>=0
+                                    for v in p["source_surface_distance"].values()))
+
 
 if __name__ == "__main__":
     unittest.main()
