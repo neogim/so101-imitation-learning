@@ -606,6 +606,40 @@ collisions. For simpler Reach learning, consider a clearly labeled
 collision-simplified **simulation-only** environment with collision
 limitations recorded; never equate it to a safe Sim-to-Real model.
 
+### Learning reset: minimal kinematic Reach baseline (2026-11-08)
+
+To avoid unbounded collision/PD troubleshooting, there is now a separate,
+short learning exercise in
+`scripts/so101_sim/learn_reach_kinematic.py`.
+It keeps the SO-101 URDF and MuJoCo FK, but **does not perform physics
+integration**. Instead, a bounded 5-joint action directly updates joint
+positions before calling `mj_forward`. There are no contact forces,
+torques, PD gains, actuators, or physical hardware commands.
+
+**Exercise:**
+1. Reset to the same start and a nontrivial target TCP produced from FK.
+2. Run a zero-action baseline, which should not reach the target.
+3. Run a known-joint oracle: it uses the hidden joint configuration used
+   to generate the FK target, so it should reach successfully. This is a
+   debugging reference **not a learned policy or IK solution**.
+4. Compare success (25mm tolerance) and final TCP distance from 3
+   deterministic episodes; export CSV and JSON.
+
+```bash
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+LEARN_OUT="outputs/so101-kinematic-reach-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/learn_reach_kinematic.py --out "$LEARN_OUT"
+cat "$LEARN_OUT/reach_baselines.csv"
+```
+
+**Interpretation:** This is a *coordinate-and-action* lesson, not
+confirmation that the previous physical PD controller is fixed.
+Do not train physical SAC or use actions on the SO-101 robot based
+on this benchmark alone. If the exercise passes, the next useful
+learning step is an observation-based simple Reach policy before
+any accurate collision/PD/Sim-to-Real modeling.
+
 ### Research status
 
 - [x] Recorded Step 2 TCP-proxy / state / action / timestamp export script
