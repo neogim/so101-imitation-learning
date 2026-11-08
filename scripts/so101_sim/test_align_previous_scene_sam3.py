@@ -88,6 +88,18 @@ class MaskAndGeometryTests(unittest.TestCase):
                            align.alignment_score(real, oversized))
         self.assertAlmostEqual(align.alignment_score(real, exact), 1.0)
 
+    def test_ignore_right_curved_part_only_in_score(self):
+        real = np.zeros((80, 100), bool)
+        real[20:70, 10:80] = True
+        simulated = real.copy()
+        simulated[20:70, 80:100] = True
+        original_score = align.alignment_score(real, simulated, 20, 60)
+        reduced_score = align.alignment_score(real, simulated, 20, 60, ignore_right_px=25)
+        self.assertAlmostEqual(reduced_score, 1.0)
+        self.assertLess(original_score, reduced_score)
+        with self.assertRaisesRegex(ValueError, "Invalid right-side"):
+            align.alignment_score(real, simulated, 20, 60, ignore_right_px=100)
+
     def test_robot_edge_anchor_keeps_table_border_at_robot_frame(self):
         import mujoco
         xml = """<mujoco><worldbody>
