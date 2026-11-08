@@ -172,6 +172,13 @@ def tabletop_front_strip_boxes(width_m=.80, center_depth_m=.505,
     return strips
 
 
+# Physical measurements supplied 2026-11-08 (meters).
+MUHI_LENGTH_M = .097
+MUHI_DIAMETER_M = .035
+CUP_DIAMETER_M = .078
+CUP_HEIGHT_M = .083
+
+
 def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
                              table_extra_xyz=(0., 0., 0.), table_yaw_deg=0.,
                              muhi_xy=(.18, .11), cup_xy=(.18, -.12), muhi_yaw_deg=0.,
@@ -243,31 +250,34 @@ def add_approximate_workcell(spec, shift_xyz=(0., 0., 0.),
                  mujoco.mjtGeom.mjGEOM_BOX, [x, y, -.225],
                  [.018, .018, .18], [.44, .35, .30, 1.0], table_part=True)
 
-    # Earlier photo-based workcell: bottle ~100mm long, 38mm diameter.
+    # Measured bottle: 97mm long, 35mm diameter. Preserve the previous\n    # body/cap length ratio (65/35) and center/Yaw placement.
     # Adjust Muhi's center and yaw independently without moving table or cup.
     if not math.isfinite(muhi_yaw_deg):
         raise ValueError("Muhi yaw must be finite")
     x, y = [float(v) for v in muhi_xy]
     a = math.radians(muhi_yaw_deg)
     ca, sa = math.cos(a), math.sin(a)
+    body_half = MUHI_LENGTH_M * .65 / 2
+    cap_half = MUHI_LENGTH_M * .35 / 2
+    body_center = -MUHI_LENGTH_M / 2 + body_half
+    cap_center = MUHI_LENGTH_M / 2 - cap_half
+    radius = MUHI_DIAMETER_M / 2
     def along_muhi_axis(distance):
-        return [x - sa * distance, y + ca * distance, .019]
+        return [x - sa * distance, y + ca * distance, radius]
     # Original local cylinder z axis maps to global -Y. Apply global Z yaw.
     quat_xyzw = (Rotation.from_euler("z", muhi_yaw_deg, degrees=True)
                  * Rotation.from_euler("x", 90, degrees=True)).as_quat()
     side_quat = quat_xyzw[[3, 0, 1, 2]].tolist()
     geom("r2s_muhi_body", mujoco.mjtGeom.mjGEOM_CYLINDER,
-         along_muhi_axis(-.0175), [.019, .0325, 0],
+         along_muhi_axis(body_center), [radius, body_half, 0],
          [.95, .95, .94, 1.], quat=side_quat)
     geom("r2s_muhi_cap", mujoco.mjtGeom.mjGEOM_CYLINDER,
-         along_muhi_axis(.0325), [.019, .0175, 0],
+         along_muhi_axis(cap_center), [radius, cap_half, 0],
          [.82, .89, .96, 1.], quat=side_quat)
 
-    # Photo/ruler estimate (2026-11-08): diameter ~100mm, maximum height
-    # ~90mm, NOT the former 120mm. This remains a provisional measurement;
-    # the side cut-out in the real cup is not represented by these walls.
+    # User-measured clear cup: diameter 78mm, height 83mm. The asymmetric\n    # opening/cutout is still approximated by uninterrupted wall strips.
     cx, cy = [float(v) for v in cup_xy]
-    radius, h = .05, .09
+    radius, h = CUP_DIAMETER_M / 2, CUP_HEIGHT_M
     geom("r2s_cup_base", mujoco.mjtGeom.mjGEOM_CYLINDER,
          [cx, cy, .001], [radius, .001, 0], [.70, .85, .92, .55])
     for i in range(16):
