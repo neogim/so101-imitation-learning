@@ -37,15 +37,18 @@ def joint_config(offsets):
     }
 
 
-def selected_frame_rows(episode_data, frame_indices):
+def selected_frame_rows(episode_data, frame_indices, comparison_stride=5):
     by_frame = {int(row["frame_index"]): row for row in episode_data["rows"]}
     frames = [int(f) for f in frame_indices]
-    if len(set(frames)) != len(frames) or not frames:
-        raise ValueError("Frame indices must be nonempty and unique")
-    missing = sorted(set(frames) - set(by_frame))
+    if not isinstance(comparison_stride, int) or comparison_stride <= 0:
+        raise ValueError("Comparison stride must be a positive integer")
+    if any(f < 0 for f in frames) or len(set(frames)) != len(frames) or not frames:
+        raise ValueError("Comparison frame indices must be nonnegative and unique")
+    source_indices = [f * comparison_stride for f in frames]
+    missing = sorted(set(source_indices) - set(by_frame))
     if missing:
-        raise ValueError(f"Missing episode frames: {missing}")
-    return {i: by_frame[i] for i in frames}
+        raise ValueError(f"Missing source episode frames: {missing}")
+    return {display: by_frame[source] for display, source in zip(frames, source_indices)}
 
 
 def robot_pose_payload(offsets, episode, object_layout_json, cup_pose_json, table_flags,
@@ -121,12 +124,13 @@ def run(args):
         raise ValueError("Output may not overwrite the source dataset")
     frames = tuple(args.frames)
     ep = r2s.read_episode(args.dataset_root.resolve(strict=True), args.episode,
-                          1, max(frames) + 1)
-    rows = selected_frame_rows(ep, frames)
+                          1, max(frames) * args.comparison_stride + 1)
+    rows = selected_frame_rows(ep, frames, args.comparison_stride)
     side, video_start = movie.side_video_source(args.dataset_root, ep)
-    videos = movie.read_frames_once(side, [video_start + i for i in frames])
+    videos = movie.read_frames_once(
+        side, [video_start + i * args.comparison_stride for i in frames])
     reals = {
-        frame: np.asarray(videos[video_start + frame].convert("RGB").resize(
+        frame: np.asarray(videos[video_start + frame * args.comparison_stride].convert("RGB").resize(
             (640, 480), Image.Resampling.BILINEAR))
         for frame in frames
     }
@@ -221,7 +225,9 @@ def run(args):
         sim_artist.set_data(rgb)
         overlay_artist.set_data(rgb)
         overlay_artist.set_alpha(alpha_slider.val)
-        status.set_text(f"frame {frame}; offsets are SHARED across every frame, not optimized per frame")
+        source = frame * args.comparison_stride
+        fps = float(ep["info"]["fps"])
+        status.set_text(f"Comparison frame {frame}, source {source} ({source/fps:.2f}s); joint offsets shared")
         fig.canvas.draw_idle()
 
     def choose_frame(label):
@@ -236,6 +242,9 @@ def run(args):
              args.table_base_x_cm, args.table_base_y_cm,
              args.table_base_z_cm, args.table_yaw_delta_deg),
             frame_index=selected[0], overlay_alpha=alpha_slider.val)
+        payload["comparison_stride"] = args.comparison_stride
+        payload["source_frame_index"] = selected[0] * args.comparison_stride
+        payload["comparison_frame_index"] = selected[0]
         # Check all four frames with the *same* offsets before accepting a candidate.
         pngs = []
         for frame in frames:
@@ -278,7 +287,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset-root", type=Path, required=True)
     p.add_argument("--episode", type=int, default=4)
-    p.add_argument("--frames", type=int, nargs="+", default=list(DEFAULT_FRAMES))
+    p.add_argument("--frames", type=int, nargs="+", default=list(DEFAULT_FRAMES),
+                   help="Frame numbers in the earlier subsampled comparison video")
+    p.add_argument("--comparison-stride", type=int, default=5,
+                   help="Source dataset frames per comparison-video frame (default 5)")
     p.add_argument("--extrinsics", type=Path, required=True)
     p.add_argument("--intrinsics", type=Path, default=movie.DEFAULT_INTRINSICS)
     p.add_argument("--urdf", type=Path, default=movie.DEFAULT_URDF)
