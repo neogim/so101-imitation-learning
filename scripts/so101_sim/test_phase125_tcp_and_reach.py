@@ -332,7 +332,7 @@ class ReachEnvTests(unittest.TestCase):
         from prototype_split_convex_collision import compare, TARGETS
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / "prototype"
-            result = compare(out, steps=4, seed=101, episode=0)
+            result = compare(out, steps=150, seed=101, episode=0)
             self.assertEqual(set(result["pieces"]), {f"{a}:{b}" for a,b in TARGETS})
             self.assertTrue(all(1 <= len(v) <= 8 for v in result["pieces"].values()))
             self.assertGreater(result["collision_geoms"], 17)
@@ -346,6 +346,9 @@ class ReachEnvTests(unittest.TestCase):
                 "chunks": {k:len(v) for k,v in result["pieces"].items()},
                 "initial_contacts": [v["initial_contact_points"] for v in result["evaluation"]],
                 "final_tcp_mm": [round(v["final_tcp_mm"],2) for v in result["evaluation"]],
+                "mean_saturation": [round(v["mean_torque_saturation_fraction"],3) for v in result["evaluation"]],
+                "contact_fraction": [round(v["contact_step_fraction"],3) for v in result["evaluation"]],
+                "reach": [v["reach_success"] for v in result["evaluation"]],
             })
 
 
