@@ -27,6 +27,7 @@ COLORS = {
     "sac": np.array([0.12, 0.47, 0.85, 1.0], dtype=np.float32),
     "jacobian_dls": np.array([0.95, 0.42, 0.10, 1.0], dtype=np.float32),
 }
+ROBOT_RGBA = np.array([0.90, 0.90, 0.90, 1.0], dtype=np.float32)
 Y_OFFSETS = {"sac": 0.22, "jacobian_dls": -0.22}
 JOINT_COLUMNS = tuple(f"joint_{i}" for i in range(1, 6))
 
@@ -107,6 +108,13 @@ def build_scene(rollouts, urdf: Path):
             contype=0, conaffinity=0)
 
     model = root.compile()
+    for geom_id in range(model.ngeom):
+        body_name = mujoco.mj_id2name(
+            model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom_id]))
+        if body_name and body_name.startswith(tuple(PREFIXES.values())):
+            # Detach any imported material/texture so it cannot override white.
+            model.geom_matid[geom_id] = -1
+            model.geom_rgba[geom_id] = ROBOT_RGBA
     data = mujoco.MjData(model)
     qpos_addresses = {}
     tcp_body_ids = {}
