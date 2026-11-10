@@ -222,12 +222,13 @@ def run_viewer(model, data, qpos_addresses, rollouts, fps: float):
     print("  Blue left robot: SAC    Orange right robot: Jacobian DLS\n")
 
     with mujoco.viewer.launch_passive(
-            model, data, key_callback=callback) as viewer:
-        viewer.cam.lookat[:] = [0.14, 0.0, 0.12]
-        viewer.cam.distance = 0.95
+            model, data, key_callback=callback,
+            show_left_ui=False, show_right_ui=False) as viewer:
+        viewer.cam.lookat[:] = [0.13, 0.0, 0.13]
+        viewer.cam.distance = 0.72
         # View from -X so +Y (SAC) appears on the left of the screen.
         viewer.cam.azimuth = 180
-        viewer.cam.elevation = -22
+        viewer.cam.elevation = -18
         with viewer.lock():
             add_trajectory_lines(viewer, rollouts)
         accumulator = 0.0
