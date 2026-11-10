@@ -69,7 +69,7 @@ def _run_policy(env, model, *, policy, goal_seed):
     return rows
 
 
-def collect_rollouts(model_path, goal_seed):
+def collect_rollouts(model_path, goal_seed, goal_joint_delta_rad=0.35):
     try:
         from stable_baselines3 import SAC
     except ImportError as exc:
@@ -82,7 +82,8 @@ def collect_rollouts(model_path, goal_seed):
     for policy in POLICY_NAMES:
         env = KinematicReachEnv(
             max_steps=MAX_STEPS, action_delta_rad=ACTION_DELTA_RAD,
-            success_radius_m=SUCCESS_RADIUS_M)
+            success_radius_m=SUCCESS_RADIUS_M,
+            goal_joint_delta_rad=goal_joint_delta_rad)
         try:
             rows = _run_policy(env, model, policy=policy, goal_seed=goal_seed)
         finally:
@@ -103,9 +104,10 @@ def _path_length_m(rows):
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
-def make_summary(rollouts, goal_seed):
+def make_summary(rollouts, goal_seed, goal_joint_delta_rad=0.35):
     summary = {
         "goal_seed": goal_seed,
+        "goal_joint_delta_rad": goal_joint_delta_rad,
         "initial_tcp_distance_mm": rollouts["sac"][0]["tcp_distance_mm"],
     }
     for policy in POLICY_NAMES:
@@ -193,14 +195,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--goal-seed", type=int, required=True)
+    parser.add_argument("--goal-joint-delta-rad", type=float, default=0.35,
+                        help="goal sampling range in joint space (default: 0.35)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if not args.model.is_file():
         parser.error(f"SAC model ZIP is required but was not found: {args.model}")
     if args.out.exists():
         parser.error(f"--out must not already exist: {args.out}")
-    rollouts = collect_rollouts(args.model, args.goal_seed)
-    summary = make_summary(rollouts, args.goal_seed)
+    if not 0 < args.goal_joint_delta_rad <= 1.0:
+        parser.error("--goal-joint-delta-rad must be in (0, 1.0]")
+    rollouts = collect_rollouts(
+        args.model, args.goal_seed, args.goal_joint_delta_rad)
+    summary = make_summary(
+        rollouts, args.goal_seed, args.goal_joint_delta_rad)
     save_results(rollouts, summary, args.out)
     print(f"Saved comparison to {args.out}")
     for policy in POLICY_NAMES:
