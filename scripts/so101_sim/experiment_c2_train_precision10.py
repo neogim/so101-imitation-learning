@@ -34,21 +34,21 @@ REPRESENTATIVE_KEYS = tuple((0.70, seed) for seed in
                             (1000046, 1000047, 1000099, 1000062))
 
 
-def train_precision10(out):
+def train_precision10(out, train_seed=TRAINING_SEED):
     import torch
     from stable_baselines3 import SAC
     from stable_baselines3.common.logger import configure
 
     torch.set_num_threads(1)
     env = KinematicReachEnv(
-        seed=TRAINING_SEED, max_steps=c1.MAX_STEPS,
+        seed=train_seed, max_steps=c1.MAX_STEPS,
         action_delta_rad=c1.ACTION_DELTA_RAD,
         goal_joint_delta_rad=0.35,
         success_radius_m=c1.SUCCESS_RADIUS_M,
         reward_scale=c1.REWARD_SCALE)
     try:
         model = SAC(
-            "MlpPolicy", env, seed=TRAINING_SEED, device="cpu",
+            "MlpPolicy", env, seed=train_seed, device="cpu",
             learning_rate=3e-4, buffer_size=TRAINING_STEPS,
             learning_starts=100, batch_size=64, train_freq=1,
             gradient_steps=1, policy_kwargs={"net_arch": [64, 64]}, verbose=0)
