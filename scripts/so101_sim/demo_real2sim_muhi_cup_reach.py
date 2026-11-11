@@ -200,7 +200,7 @@ def dls_two_stages(args, model, data, qids, dids, low, high, tcp_id, goals):
     for stage in ("muhi","cup"):
         goal=goals[stage]
         initial = float(np.linalg.norm(goal-data.xpos[tcp_id])*1000)
-        success = initial <= args.success_mm
+        success = False  # require position AND joint-limit conditions
         for step in range(args.max_steps+1):
             tcp=np.asarray(data.xpos[tcp_id]).copy()
             distance=float(np.linalg.norm(goal-tcp)*1000)
