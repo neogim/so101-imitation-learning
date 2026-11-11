@@ -344,9 +344,9 @@ def save_results(out, args, frames, stages, goals, cup, layout,
     for s in stages:
         report+=f"| {s['stage']} | {s['initial_error_mm']:.2f} | {s['final_error_mm']:.2f} | {s['steps']} | {s['success']} |\n"
     report+="\nNo grasp/contact/transport; positions are saved visual-alignment estimates.\n"
-    report+=("\\nVisual calibration joint-limit excess at initial pose: "
+    report+=("\nVisual calibration joint-limit excess at initial pose: "
              f"{frames[0]['max_joint_limit_excess_deg']:.3f} degrees. "
-             "Step-limited recovery in kinematic demo only.\\n")
+             "Step-limited recovery in kinematic demo only.\n")
     (out/"report.md").write_text(report,encoding="utf-8")
     fig,ax=plt.subplots(figsize=(9,4.8))
     colors={"muhi":"tab:red","cup":"tab:blue","home":"tab:green"}
@@ -356,7 +356,7 @@ def save_results(out, args, frames, stages, goals, cup, layout,
                 label=stage,color=colors[stage],lw=2)
     ax.axhline(args.success_mm,ls="--",color="gray",label="10 mm target")
     ax.set(xlabel="Frame",ylabel="TCP position error (mm)",
-           title="Real-to-Sim: Muhi -> cup -> recorded home"
+           title="Real-to-Sim: Muhi -> cup -> recorded home")
     ax.legend();ax.grid(alpha=.2);fig.tight_layout()
     fig.savefig(out/"tcp_error_vs_step.png",dpi=170);plt.close(fig)
 
