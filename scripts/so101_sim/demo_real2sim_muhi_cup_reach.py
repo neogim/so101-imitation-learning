@@ -72,8 +72,8 @@ def create_scene(args):
     cup_gui.set_cup_dimensions(
         model, cup_ids, model.geom_pos[cup_ids].copy(),
         model.geom_size[cup_ids].copy(),
-        diameter_m=float(cup["cup_diameter_m"]),
-        height_m=float(cup["cup_height_m"]),
+        diameter_m=float(cup.get("cup_diameter_m", cup_gui.CUP_DIAMETER_M)),
+        height_m=float(cup.get("cup_height_m", cup_gui.CUP_HEIGHT_M)),
         xyz_m=cup["cup_delta_base_m"])
 
     data = mujoco.MjData(model)
@@ -121,7 +121,7 @@ def create_scene(args):
     goals = {
         "muhi": muhi_center + np.array([0, 0, args.muhi_clearance_mm/1000]),
         "cup": cup_bottom + np.array(
-            [0, 0, float(cup["cup_height_m"])+args.cup_clearance_mm/1000])
+            [0, 0, float(cup.get("cup_height_m", cup_gui.CUP_HEIGHT_M))+args.cup_clearance_mm/1000])
     }
     return model,data,qids,dids,np.asarray(low),np.asarray(high),gripper_id,side_camera,goals,cup,layout
 
