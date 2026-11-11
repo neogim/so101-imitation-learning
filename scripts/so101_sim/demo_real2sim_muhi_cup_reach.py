@@ -39,6 +39,64 @@ def _read_json(path):
     return json.loads(path.resolve(strict=True).read_text(encoding="utf-8"))
 
 
+def load_joint_offset_candidate(args, cup):
+    """Reuse saved robot overlay candidate, never invent or clip an offset.
+
+    If not explicitly provided, discover a *unique* compatible candidate
+    from the local Real-to-Sim outputs. Reject ambiguous candidates rather
+    than silently selecting a different alignment.
+    """
+    from compare_real_sim_robot_overlay_gui import read_robot_pose, joint_config
+
+    paths = ([args.robot_joint_offsets_json] if args.robot_joint_offsets_json
+             else sorted((ROOT / "outputs/real2sim").rglob("*.json")))
+    candidates = []
+    for path in paths:
+        path = Path(path)
+        try:
+            obj = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            if args.robot_joint_offsets_json:
+                raise
+            continue
+        if obj.get("schema") != "so101_robot_joint_offset_candidate_v1":
+            if args.robot_joint_offsets_json:
+                raise ValueError(f"Not a robot joint-offset candidate: {path}")
+            continue
+        pose = read_robot_pose(path)
+        if pose.get("episode") != args.episode:
+            continue
+        if Path(pose.get("object_layout_json", "")).name != args.object_layout_json.name:
+            continue
+        if Path(pose.get("cup_pose_json", "")).name != args.cup_pose_json.name:
+            continue
+        table = pose.get("table", {})
+        keys = ("table_extra_left_cm", "table_extra_front_cm",
+                "table_base_x_cm", "table_base_y_cm", "table_base_z_cm",
+                "table_yaw_delta_deg")
+        if not all(key in table and np.isclose(
+                float(table[key]), float(cup[key]), atol=1e-6)
+                for key in keys):
+            continue
+        candidates.append((path, pose))
+    if len(candidates) > 1:
+        raise ValueError(
+            "Multiple robot joint-offset candidates match this Real-to-Sim "
+            "scene; pass --robot-joint-offsets-json explicitly: " +
+            ", ".join(str(p) for p, _ in candidates))
+    if not candidates:
+        if args.robot_joint_offsets_json:
+            raise ValueError(
+                "The specified robot joint-offset JSON does not match the "
+                "saved Real-to-Sim episode / table / object layout.")
+        return None, {"joints": {"sign": {n: 1 for n in JOINTS},
+                                  "offset_deg": {n: 0. for n in JOINTS}}}
+    path, pose = candidates[0]
+    config = joint_config([pose["joint_offset_deg"][n] for n in JOINTS])
+    print(f"Using saved Real-to-Sim robot joint offsets: {path}")
+    return path, config
+
+
 def create_scene(args):
     """Rebuild saved Real-to-Sim without changing the object positions."""
     extras = _read_json(args.extrinsics)
@@ -80,10 +138,8 @@ def create_scene(args):
     episode = r2s.read_episode(args.dataset_root.resolve(strict=True),
                                args.episode, stride=1, max_frames=1)
     state = episode["rows"][0]["state"]
-    joint_rad = r2s.joint_radians(state, {
-        "joints": {"sign": {name: 1 for name in JOINTS},
-                   "offset_deg": {name: 0 for name in JOINTS}}
-    })
+    robot_offset_path, robot_config = load_joint_offset_candidate(args, cup)
+    joint_rad = r2s.joint_radians(state, robot_config)
     qids, dids, low, high = [], [], [], []
     for name in JOINTS:
         jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
@@ -98,8 +154,17 @@ def create_scene(args):
     qids = np.array(qids); dids = np.array(dids)
     q0 = np.array([joint_rad[name] for name in JOINTS])
     if np.any(q0 < np.array(low)-1e-6) or np.any(q0 > np.array(high)+1e-6):
-        raise ValueError("Recorded joint pose is outside URDF limits. "
-                         "Do not silently clip or invent a replacement start.")
+        offending = [
+            f"{name}: recorded+offset={np.degrees(q):.2f}deg, "
+            f"URDF=[{np.degrees(lo):.2f}, {np.degrees(hi):.2f}]deg"
+            for name, q, lo, hi in zip(JOINTS, q0, low, high)
+            if q < lo - 1e-6 or q > hi + 1e-6
+        ]
+        raise ValueError(
+            "Recorded joint pose is outside URDF limits after applying "
+            "the saved visual offsets (if available): " + "; ".join(offending) +
+            ". Check the stored robot overlay offset JSON or URDF joint "
+            "convention; refusing to silently clamp the real episode pose.")
     data.qpos[:] = model.qpos0
     data.qpos[qids] = q0
     mujoco.mj_forward(model, data)
@@ -123,7 +188,8 @@ def create_scene(args):
         "cup": cup_bottom + np.array(
             [0, 0, float(cup.get("cup_height_m", cup_gui.CUP_HEIGHT_M))+args.cup_clearance_mm/1000])
     }
-    return model,data,qids,dids,np.asarray(low),np.asarray(high),gripper_id,side_camera,goals,cup,layout
+    return (model,data,qids,dids,np.asarray(low),np.asarray(high),gripper_id,
+            side_camera,goals,cup,layout,robot_offset_path,robot_config)
 
 
 def dls_two_stages(args, model, data, qids, dids, low, high, tcp_id, goals):
@@ -158,7 +224,8 @@ def dls_two_stages(args, model, data, qids, dids, low, high, tcp_id, goals):
     return frames, stages
 
 
-def save_results(out, args, frames, stages, goals, cup, layout):
+def save_results(out, args, frames, stages, goals, cup, layout,
+                 robot_offset_path, robot_config):
     if out.exists():raise FileExistsError(f"Output already exists: {out}")
     out.mkdir(parents=True)
     with (out/"rollout.csv").open("x",newline="",encoding="utf-8") as f:
@@ -171,7 +238,12 @@ def save_results(out, args, frames, stages, goals, cup, layout):
             "object_layout_json":str(args.object_layout_json),
             "cup_pose_json":str(args.cup_pose_json),
             "extrinsics":str(args.extrinsics),"intrinsics":str(args.intrinsics),
-            "urdf":str(args.urdf)},
+            "urdf":str(args.urdf),
+            "robot_joint_offsets_json":(
+                str(robot_offset_path) if robot_offset_path else None)},
+        "joint_offset_deg": robot_config["joints"]["offset_deg"],
+        "joint_offset_status": ("VISUAL_CANDIDATE_NOT_CALIBRATED" if robot_offset_path
+                                else "UNVERIFIED_ZERO_DEFAULT"),
         "saved_real2sim_layout":layout,
         "cup_delta_base_m":cup["cup_delta_base_m"],
         "goal_xyz_m":{k:v.tolist() for k,v in goals.items()},
@@ -290,6 +362,9 @@ def main():
     p.add_argument("--intrinsics",type=Path,default=INTRINSICS)
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--episode",type=int,default=4)
+    p.add_argument("--robot-joint-offsets-json",type=Path,default=None,
+                   help="saved robot overlay offsets; if omitted, auto-detect "
+                        "a unique matching candidate under outputs/real2sim")
     p.add_argument("--muhi-clearance-mm",type=float,default=75)
     p.add_argument("--cup-clearance-mm",type=float,default=45)
     p.add_argument("--success-mm",type=float,default=10)
@@ -309,9 +384,11 @@ def main():
     for f in (args.dataset_root,args.object_layout_json,args.cup_pose_json,
               args.extrinsics,args.intrinsics,args.urdf):
         if not f.exists():p.error(f"Missing Real-to-Sim input: {f}")
-    model,data,qids,dids,low,high,tcp,cam_name,goals,cup,layout=create_scene(args)
+    (model,data,qids,dids,low,high,tcp,cam_name,goals,cup,layout,
+     offset_path,offset_config)=create_scene(args)
     frames,stages=dls_two_stages(args,model,data,qids,dids,low,high,tcp,goals)
-    save_results(args.out,args,frames,stages,goals,cup,layout)
+    save_results(args.out,args,frames,stages,goals,cup,layout,
+                 offset_path,offset_config)
     for s in stages:print(f"{s['stage']} success={s['success']} steps={s['steps']} "
                            f"initial_mm={s['initial_error_mm']:.2f} "
                            f"final_mm={s['final_error_mm']:.2f}")
