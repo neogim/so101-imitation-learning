@@ -27,12 +27,14 @@ class KinematicReachEnv(gym.Env):
     """Observation = [five q, three target-TCP delta, distance] (9D)."""
 
     def __init__(self, *, seed=101, action_delta_rad=0.04, max_steps=60,
-                 goal_joint_delta_rad=0.35, success_radius_m=0.025):
+                 goal_joint_delta_rad=0.35, success_radius_m=0.025,
+                 reward_scale=1.0):
         super().__init__()
         if not 0 < action_delta_rad <= 0.2 or max_steps < 1:
             raise ValueError("Invalid action step or horizon")
-        if not 0 < goal_joint_delta_rad <= 1.0 or success_radius_m <= 0:
-            raise ValueError("Invalid goal range or success threshold")
+        if (not 0 < goal_joint_delta_rad <= 1.0 or success_radius_m <= 0 or
+                not np.isfinite(reward_scale) or reward_scale <= 0):
+            raise ValueError("Invalid goal range, success threshold, or reward scale")
         spec = mujoco.MjSpec.from_file(str(r2s.DEFAULT_URDF.resolve()))
         spec.compiler.discardvisual = True
         self.model = spec.compile()
@@ -46,6 +48,7 @@ class KinematicReachEnv(gym.Env):
         self.max_steps = int(max_steps)
         self.goal_joint_delta_rad = float(goal_joint_delta_rad)
         self.success_radius_m = float(success_radius_m)
+        self.reward_scale = float(reward_scale)
         self.action_space = spaces.Box(-1, 1, (5,), dtype=np.float32)
         self.observation_space = spaces.Box(-np.inf, np.inf, (9,), dtype=np.float32)
         self.rng = np.random.default_rng(seed)
@@ -104,6 +107,7 @@ class KinematicReachEnv(gym.Env):
         self.steps += 1
         distance = float(np.linalg.norm(self.target_tcp - self._tcp()))
         reward, success = reach_reward(distance, self.success_radius_m)
+        reward *= self.reward_scale
         return self._obs(), reward, success, self.steps >= self.max_steps and not success, {
             "is_success": success, "distance_m": distance,
             "status": "KINEMATIC_REFERENCE_NOT_PHYSICAL_SIM"
