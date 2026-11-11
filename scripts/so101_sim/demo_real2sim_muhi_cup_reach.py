@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""Replay actual saved Real-to-Sim layout; DLS reach Muhi then clear cup.
+
+Reads the SAME episode-4 object annotation, saved cup GUI correction,
+candidate camera calibration and recorded start joint pose as the established
+Real-to-Sim workflow. NO invented/repositioned objects, no grasp, no dynamics.
+Uses the existing white-preview styling; source URDF is not modified.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import math
+import shutil
+import subprocess
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import mujoco
+import numpy as np
+
+import real_to_sim as r2s
+import compare_real_sim_motion as movie
+import align_cup_gui as cup_gui
+
+ROOT = Path(__file__).resolve().parents[2]
+DATASET = ROOT / "data/so101/muhi-side-wrist-success-053-20261025-168x224"
+OBJECTS = ROOT / "outputs/real2sim/episode4-objects-20261108-004859.json"
+CUP_POSE = ROOT / "outputs/real2sim/episode4-cup-gui-20261108-131429.json"
+EXTRINSICS = ROOT / "outputs/so101-eye-to-hand-id1-20261107/result.json"
+INTRINSICS = ROOT / "assets/calibration/side_charuco_20261107_restricted_intrinsics_candidate.json"
+JOINTS = r2s.JOINTS
+
+
+def _read_json(path):
+    return json.loads(path.resolve(strict=True).read_text(encoding="utf-8"))
+
+
+def create_scene(args):
+    """Rebuild saved Real-to-Sim without changing the object positions."""
+    extras = _read_json(args.extrinsics)
+    intr = _read_json(args.intrinsics)
+    cup = cup_gui.read_cup_payload(args.cup_pose_json.resolve(strict=True))
+    layout_path = args.object_layout_json.resolve(strict=True)
+    if cup["episode"] != args.episode:
+        raise ValueError("Cup JSON episode and requested source episode differ")
+    if Path(cup["object_layout_json"]).name != layout_path.name:
+        raise ValueError("Cup JSON refers to a different object-layout JSON")
+    if (intr.get("width"), intr.get("height")) != (640, 480):
+        raise ValueError("Expected Side-camera intrinsics at 640x480")
+    muhi_px, cup_px, yaw = movie.read_object_targets(layout_path)
+    layout = movie.video_object_layout(
+        extras["T_base_camera"], intr, muhi_px, cup_px, yaw)
+
+    model, side_camera = movie.make_calibrated_model(
+        extras, intr, args.urdf, layout,
+        table_extra_left_m=float(cup["table_extra_left_cm"])/100,
+        table_extra_front_m=float(cup["table_extra_front_cm"])/100)
+    # This includes apply_white_follower_preview() inside the reused builder.
+    # Reproduce the *saved* table translation/rotation and GUI cup correction.
+    table_ids = movie.table_geom_ids(model)
+    movie.set_table_pose_delta(
+        model, model.geom_pos[table_ids].copy(),
+        model.geom_quat[table_ids].copy(),
+        [float(cup[k])/100 for k in
+         ("table_base_x_cm","table_base_y_cm","table_base_z_cm")],
+        float(cup["table_yaw_delta_deg"]))
+    cup_ids = cup_gui.cup_geom_ids(model)
+    cup_gui.set_cup_dimensions(
+        model, cup_ids, model.geom_pos[cup_ids].copy(),
+        model.geom_size[cup_ids].copy(),
+        diameter_m=float(cup["cup_diameter_m"]),
+        height_m=float(cup["cup_height_m"]),
+        xyz_m=cup["cup_delta_base_m"])
+
+    data = mujoco.MjData(model)
+    episode = r2s.read_episode(args.dataset_root.resolve(strict=True),
+                               args.episode, stride=1, max_frames=1)
+    state = episode["rows"][0]["state"]
+    joint_rad = r2s.joint_radians(state, {
+        "joints": {"sign": {name: 1 for name in JOINTS},
+                   "offset_deg": {name: 0 for name in JOINTS}}
+    })
+    qids, dids, low, high = [], [], [], []
+    for name in JOINTS:
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if jid < 0: raise ValueError("Missing URDF joint " + name)
+        qids.append(int(model.jnt_qposadr[jid]))
+        dids.append(int(model.jnt_dofadr[jid]))
+        if model.jnt_limited[jid]:
+            low.append(float(model.jnt_range[jid, 0]))
+            high.append(float(model.jnt_range[jid, 1]))
+        else:
+            low.append(-math.pi/2); high.append(math.pi/2)
+    qids = np.array(qids); dids = np.array(dids)
+    q0 = np.array([joint_rad[name] for name in JOINTS])
+    if np.any(q0 < np.array(low)-1e-6) or np.any(q0 > np.array(high)+1e-6):
+        raise ValueError("Recorded joint pose is outside URDF limits. "
+                         "Do not silently clip or invent a replacement start.")
+    data.qpos[:] = model.qpos0
+    data.qpos[qids] = q0
+    mujoco.mj_forward(model, data)
+    # Gripper angle is only a display approximation, not a trained controller.
+    movie.set_visual_gripper(model, data, state[5])
+    gripper_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, "gripper_link")
+    if gripper_id < 0: raise ValueError("Missing gripper_link")
+
+    muhi_ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+                for name in ("r2s_muhi_body", "r2s_muhi_cap")]
+    if min(muhi_ids) < 0: raise ValueError("Real-to-Sim Muhi objects not found")
+    # Weighted center along the actual saved capsule/cylinder orientation.
+    muhi_center = .65*data.geom_xpos[muhi_ids[0]] + .35*data.geom_xpos[muhi_ids[1]]
+    cup_base_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_GEOM, "r2s_cup_base")
+    if cup_base_id < 0: raise ValueError("Real-to-Sim cup not found")
+    cup_bottom = np.asarray(data.geom_xpos[cup_base_id]).copy()
+    goals = {
+        "muhi": muhi_center + np.array([0, 0, args.muhi_clearance_mm/1000]),
+        "cup": cup_bottom + np.array(
+            [0, 0, float(cup["cup_height_m"])+args.cup_clearance_mm/1000])
+    }
+    return model,data,qids,dids,np.asarray(low),np.asarray(high),gripper_id,side_camera,goals,cup,layout
+
+
+def dls_two_stages(args, model, data, qids, dids, low, high, tcp_id, goals):
+    frames=[]; stages=[]
+    for stage in ("muhi","cup"):
+        goal=goals[stage]
+        initial = float(np.linalg.norm(goal-data.xpos[tcp_id])*1000)
+        success = initial <= args.success_mm
+        for step in range(args.max_steps+1):
+            tcp=np.asarray(data.xpos[tcp_id]).copy()
+            distance=float(np.linalg.norm(goal-tcp)*1000)
+            row={"frame":len(frames),"stage":stage,"stage_step":step,
+                 "tcp_x":float(tcp[0]),"tcp_y":float(tcp[1]),"tcp_z":float(tcp[2]),
+                 "target_x":float(goal[0]),"target_y":float(goal[1]),
+                 "target_z":float(goal[2]),"tcp_error_mm":distance}
+            row.update({f"joint_{i+1}":float(data.qpos[qids[i]]) for i in range(5)})
+            frames.append(row)
+            if distance <= args.success_mm:success=True;break
+            if step==args.max_steps:break
+            jac=np.zeros((3,model.nv));jac_r=np.zeros((3,model.nv))
+            mujoco.mj_jacBody(model,data,jac,jac_r,tcp_id)
+            J=jac[:,dids]
+            delta=J.T@np.linalg.solve(J@J.T+.02**2*np.eye(3),
+                                      .75*(goal-tcp))
+            delta=np.clip(delta,-.04,.04)
+            data.qpos[qids]=np.clip(data.qpos[qids]+delta,low,high)
+            mujoco.mj_forward(model,data)
+        stages.append({"stage":stage,"initial_error_mm":initial,
+                       "final_error_mm":frames[-1]["tcp_error_mm"],
+                       "success":success,"steps":step})
+        # Stage 2 begins from the current terminal joints, even if stage 1 fails.
+    return frames, stages
+
+
+def save_results(out, args, frames, stages, goals, cup, layout):
+    if out.exists():raise FileExistsError(f"Output already exists: {out}")
+    out.mkdir(parents=True)
+    with (out/"rollout.csv").open("x",newline="",encoding="utf-8") as f:
+        w=csv.DictWriter(f,fieldnames=list(frames[0]));w.writeheader();w.writerows(frames)
+    summary={
+        "status":"REAL2SIM_SAVED_LAYOUT_KINEMATIC_REACH_ONLY",
+        "calibration_status":"PREVIOUS_VISUAL_ALIGNMENT_CANDIDATE_NOT_METRICALLY_VERIFIED",
+        "sources":{
+            "episode":args.episode,"dataset":str(args.dataset_root),
+            "object_layout_json":str(args.object_layout_json),
+            "cup_pose_json":str(args.cup_pose_json),
+            "extrinsics":str(args.extrinsics),"intrinsics":str(args.intrinsics),
+            "urdf":str(args.urdf)},
+        "saved_real2sim_layout":layout,
+        "cup_delta_base_m":cup["cup_delta_base_m"],
+        "goal_xyz_m":{k:v.tolist() for k,v in goals.items()},
+        "muhi_clearance_mm":args.muhi_clearance_mm,
+        "cup_clearance_mm":args.cup_clearance_mm,
+        "success_radius_mm":args.success_mm,
+        "stages":stages,
+        "limitations":"No grasp, no carrying Muhi, no contact/collision physics. "
+                      "Targets are points above saved objects, not measured grasp poses."}
+    (out/"summary.json").write_text(json.dumps(summary,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+    report="# SO-101 saved Real-to-Sim: Muhi → cup Reach (DLS)\n\n"
+    report+="Sources: saved episode-4 Muhi annotation, cup GUI JSON, camera extrinsics/intrinsics.\n\n"
+    report+="| Stage | Start error (mm) | End error (mm) | Steps | Success <= radius |\n|---|---:|---:|---:|---|\n"
+    for s in stages:
+        report+=f"| {s['stage']} | {s['initial_error_mm']:.2f} | {s['final_error_mm']:.2f} | {s['steps']} | {s['success']} |\n"
+    report+="\nNo grasp/contact/transport; positions are saved visual-alignment estimates.\n"
+    (out/"report.md").write_text(report,encoding="utf-8")
+    fig,ax=plt.subplots(figsize=(9,4.8))
+    colors={"muhi":"tab:red","cup":"tab:blue"}
+    for stage in ("muhi","cup"):
+        sub=[r for r in frames if r["stage"]==stage]
+        ax.plot([r["frame"] for r in sub],[r["tcp_error_mm"] for r in sub],
+                label=stage,color=colors[stage],lw=2)
+    ax.axhline(args.success_mm,ls="--",color="gray",label="10 mm target")
+    ax.set(xlabel="Frame",ylabel="TCP position error (mm)",
+           title="Real-to-Sim saved layout: Muhi → cup")
+    ax.legend();ax.grid(alpha=.2);fig.tight_layout()
+    fig.savefig(out/"tcp_error_vs_step.png",dpi=170);plt.close(fig)
+
+
+def camera_for(model,goals,use_side,side_name):
+    if use_side:return side_name
+    cam=mujoco.MjvCamera()
+    cam.type=mujoco.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:]=(goals["muhi"]+goals["cup"])/2
+    cam.distance=0.90
+    cam.azimuth=155;cam.elevation=-35
+    return cam
+
+
+def extras(scene,frames,index,goals):
+    colors={"muhi":[.95,.25,.20,1],"cup":[.15,.75,.40,1]}
+    for k,v in goals.items():
+        if scene.ngeom>=scene.maxgeom:raise RuntimeError("Too many scene geoms")
+        g=scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(g,mujoco.mjtGeom.mjGEOM_SPHERE,
+                            np.array([.009,.009,.009]),v,np.eye(3).ravel(),
+                            np.array(colors[k],dtype=np.float32))
+        scene.ngeom+=1
+    for a,b in zip(frames[:index],frames[1:index+1]):
+        if scene.ngeom>=scene.maxgeom:raise RuntimeError("Too many trajectory segments")
+        g=scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(g,mujoco.mjtGeom.mjGEOM_LINE,
+                            np.zeros(3),np.zeros(3),np.eye(3).ravel(),
+                            np.array(colors[b["stage"]],dtype=np.float32))
+        p=np.array([a["tcp_"+x] for x in "xyz"]);q=np.array([b["tcp_"+x] for x in "xyz"])
+        mujoco.mjv_connector(g,mujoco.mjtGeom.mjGEOM_LINE,2,p,q)
+        scene.ngeom+=1
+
+
+def save_video(args,model,data,qids,frames,goals,camera):
+    try:from PIL import Image,ImageDraw,ImageFont
+    except ImportError as e:raise RuntimeError("Install Pillow in conda environment") from e
+    ffmpeg=shutil.which("ffmpeg")
+    if ffmpeg is None:raise RuntimeError("ffmpeg is required: brew install ffmpeg")
+    dest=args.save_video
+    if dest.exists():raise FileExistsError(f"Video exists: {dest}")
+    dest.parent.mkdir(parents=True,exist_ok=True)
+    width,height=1280,720
+    model.vis.global_.offwidth=max(model.vis.global_.offwidth,width)
+    model.vis.global_.offheight=max(model.vis.global_.offheight,height)
+    cmd=[ffmpeg,"-hide_banner","-loglevel","error","-f","rawvideo",
+         "-pix_fmt","rgb24","-s:v",f"{width}x{height}","-r",str(args.video_fps),
+         "-i","-","-an","-c:v","libx264","-pix_fmt","yuv420p",
+         "-movflags","+faststart",str(dest)]
+    proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stderr=subprocess.PIPE)
+    try:
+        with mujoco.Renderer(model,height=height,width=width) as renderer:
+            try:font=ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial.ttf",23)
+            except OSError:font=ImageFont.load_default()
+            n=math.ceil((len(frames)-1)*args.video_fps/args.fps)+1
+            for i in range(n+int(round(args.hold_seconds*args.video_fps))):
+                idx=min(len(frames)-1,int(i*args.fps/args.video_fps))
+                row=frames[idx]
+                data.qpos[qids]=[row[f"joint_{k+1}"] for k in range(5)]
+                mujoco.mj_forward(model,data)
+                renderer.update_scene(data,camera=camera)
+                extras(renderer.scene,frames,idx,goals)
+                im=Image.fromarray(renderer.render())
+                dr=ImageDraw.Draw(im)
+                dr.rectangle((0,0,width,72),fill=(19,29,40))
+                dr.text((18,10),"SO-101 saved Real-to-Sim layout | DLS: Muhi -> clear cup",
+                        font=font,fill="white")
+                dr.text((18,41),f"{row['stage']}  step {idx}  error {row['tcp_error_mm']:.1f} mm",
+                        font=font,fill="white")
+                dr.rectangle((0,684,width,720),fill=(19,29,40))
+                dr.text((18,687),"Visual alignment candidate | no grasp or object movement",
+                        font=font,fill="white")
+                proc.stdin.write(np.asarray(im,np.uint8).tobytes())
+        proc.stdin.close();proc.stdin=None
+        stderr=proc.communicate()[1]
+        if proc.returncode:raise RuntimeError(stderr.decode(errors="replace"))
+    except Exception:
+        if proc.poll() is None:proc.kill();proc.communicate()
+        if dest.exists():dest.unlink()
+        raise
+    print("Saved",dest)
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--dataset-root",type=Path,default=DATASET)
+    p.add_argument("--object-layout-json",type=Path,default=OBJECTS)
+    p.add_argument("--cup-pose-json",type=Path,default=CUP_POSE)
+    p.add_argument("--extrinsics",type=Path,default=EXTRINSICS)
+    p.add_argument("--intrinsics",type=Path,default=INTRINSICS)
+    p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
+    p.add_argument("--episode",type=int,default=4)
+    p.add_argument("--muhi-clearance-mm",type=float,default=75)
+    p.add_argument("--cup-clearance-mm",type=float,default=45)
+    p.add_argument("--success-mm",type=float,default=10)
+    p.add_argument("--max-steps",type=int,default=120)
+    p.add_argument("--out",type=Path,required=True)
+    p.add_argument("--save-video",type=Path)
+    p.add_argument("--video-fps",type=int,default=30)
+    p.add_argument("--fps",type=float,default=8)
+    p.add_argument("--hold-seconds",type=float,default=2)
+    p.add_argument("--side-camera",action="store_true",
+                   help="render from saved calibrated candidate Side camera")
+    args=p.parse_args()
+    if (args.muhi_clearance_mm<=0 or args.cup_clearance_mm<=0
+        or args.success_mm<=0 or args.max_steps<=0
+        or args.fps<=0 or args.video_fps<=0 or args.hold_seconds<0):
+        p.error("All dimensions, speeds and step limits must be valid")
+    for f in (args.dataset_root,args.object_layout_json,args.cup_pose_json,
+              args.extrinsics,args.intrinsics,args.urdf):
+        if not f.exists():p.error(f"Missing Real-to-Sim input: {f}")
+    model,data,qids,dids,low,high,tcp,cam_name,goals,cup,layout=create_scene(args)
+    frames,stages=dls_two_stages(args,model,data,qids,dids,low,high,tcp,goals)
+    save_results(args.out,args,frames,stages,goals,cup,layout)
+    for s in stages:print(f"{s['stage']} success={s['success']} steps={s['steps']} "
+                           f"initial_mm={s['initial_error_mm']:.2f} "
+                           f"final_mm={s['final_error_mm']:.2f}")
+    print("White SO-101 via existing preview styling; original URDF unchanged.")
+    print("Report:",args.out/"summary.json")
+    if args.save_video:
+        camera=camera_for(model,goals,args.side_camera,cam_name)
+        save_video(args,model,data,qids,frames,goals,camera)
+
+
+if __name__=="__main__":
+    main()
