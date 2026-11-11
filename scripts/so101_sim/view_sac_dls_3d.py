@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import shutil
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -271,6 +273,158 @@ def run_viewer(model, data, qpos_addresses, rollouts, fps: float):
             time.sleep(1 / 120)
 
 
+
+def make_render_camera():
+    """Match the interactive viewer's initial camera."""
+    camera = mujoco.MjvCamera()
+    camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+    camera.lookat[:] = [0.13, 0.0, 0.13]
+    camera.distance = 0.72
+    camera.azimuth = 180
+    camera.elevation = -18
+    return camera
+
+
+def add_video_traces(scene, rollouts, frame: int):
+    """Draw paths up to this time, plus the current TCP and its target.
+
+    The two robot origins have independent display offsets.  Coordinates from
+    the CSV stay unmodified when comparing trajectory lengths or errors.
+    """
+    for policy in POLICIES:
+        rows = rollouts[policy]
+        visible = min(frame, len(rows) - 1)
+        points = np.array([[row[f"tcp_{axis}"] for axis in "xyz"]
+                           for row in rows[:visible + 1]], dtype=float)
+        points[:, 1] += Y_OFFSETS[policy]
+        for start, end in zip(points[:-1], points[1:]):
+            if scene.ngeom >= scene.maxgeom:
+                raise RuntimeError("MuJoCo video scene ran out of geometry slots")
+            geom = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                geom, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3),
+                np.zeros(3), np.eye(3).ravel(), COLORS[policy])
+            mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_LINE,
+                                2.5, start, end)
+            scene.ngeom += 1
+        if scene.ngeom >= scene.maxgeom:
+            raise RuntimeError("MuJoCo video scene ran out of geometry slots")
+        geom = scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(
+            geom, mujoco.mjtGeom.mjGEOM_SPHERE,
+            np.array([0.009, 0.009, 0.009]), points[-1],
+            np.eye(3).ravel(), COLORS[policy])
+        scene.ngeom += 1
+
+
+def trajectory_metrics(rollouts):
+    """Measure raw 3-D TCP travel, independently of display offsets."""
+    result = {}
+    for policy in POLICIES:
+        rows = rollouts[policy]
+        points = np.array([[row[f"tcp_{axis}"] for axis in "xyz"]
+                           for row in rows], dtype=float)
+        target = np.array([rows[0][f"target_{axis}"] for axis in "xyz"])
+        travel = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+        joints = np.array([[row[key] for key in JOINT_COLUMNS] for row in rows])
+        result[policy] = {
+            "initial_distance_mm": float(np.linalg.norm(points[0] - target) * 1000),
+            "tcp_path_length_mm": travel * 1000,
+            "absolute_joint_travel_rad": float(np.abs(np.diff(joints, axis=0)).sum()),
+            "final_distance_mm": float(np.linalg.norm(points[-1] - target) * 1000),
+            "recorded_steps": len(rows) - 1,
+        }
+    return result
+
+
+def render_video(model, data, qpos_addresses, rollouts, out: Path,
+                 fps: float, video_fps: int, width: int, height: int,
+                 hold_seconds: float):
+    """Encode a side-by-side comparison as MP4 without launching a GUI."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as exc:
+        raise RuntimeError(
+            "Video export requires Pillow: python -m pip install pillow") from exc
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            "Video export requires ffmpeg (macOS: brew install ffmpeg)")
+
+    if out.exists():
+        raise FileExistsError(f"Video already exists (will not overwrite): {out}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    # MuJoCo's default offscreen buffer is often smaller than HD video.
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+    max_step = max(len(rows) for rows in rollouts.values()) - 1
+    movement_frames = int(math.ceil(max_step * video_fps / fps)) + 1
+    hold_frames = int(round(hold_seconds * video_fps))
+    camera = make_render_camera()
+    cmd = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-s:v", f"{width}x{height}", "-r", str(video_fps),
+        "-i", "-", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(out)
+    ]
+    process = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                               stderr=subprocess.PIPE)
+    try:
+        with mujoco.Renderer(model, height=height, width=width) as renderer:
+            try:
+                font = ImageFont.truetype(
+                    "/System/Library/Fonts/Supplemental/Arial.ttf",
+                    max(16, height // 40))
+            except OSError:
+                font = ImageFont.load_default()
+            for index in range(movement_frames + hold_frames):
+                step = min(max_step, int(index * fps / video_fps))
+                apply_frame(model, data, qpos_addresses, rollouts, step)
+                renderer.update_scene(data, camera=camera)
+                add_video_traces(renderer.scene, rollouts, step)
+                image = Image.fromarray(renderer.render())
+                draw = ImageDraw.Draw(image)
+                draw.rectangle((0, 0, width, max(65, height // 10)),
+                               fill=(20, 26, 34))
+                draw.text((20, 8), "SAC (blue) vs Jacobian DLS (orange)",
+                          font=font, fill="white")
+                draw.text((20, 12 + max(20, height // 26)),
+                          f"step {step}/{max_step}", font=font, fill="white")
+                for i, policy in enumerate(POLICIES):
+                    row = rollouts[policy][min(step, len(rollouts[policy]) - 1)]
+                    tcp = np.array([row[f"tcp_{axis}"] for axis in "xyz"])
+                    target = np.array([row[f"target_{axis}"] for axis in "xyz"])
+                    error = float(np.linalg.norm(tcp - target) * 1000)
+                    label = ("SAC" if policy == "sac" else "DLS")
+                    label += f" TCP error: {error:.1f} mm"
+                    color = (74, 165, 242) if policy == "sac" else (245, 139, 70)
+                    y = height - 58 + i * 26
+                    draw.rectangle((0, y - 2, width, y + 25),
+                                   fill=(20, 26, 34))
+                    draw.text((20, y), label, font=font, fill=color)
+                assert process.stdin is not None
+                process.stdin.write(np.asarray(image, dtype=np.uint8).tobytes())
+        assert process.stdin is not None
+        process.stdin.close()
+        process.stdin = None
+        stderr = process.communicate()[1]
+        if process.returncode:
+            raise RuntimeError(
+                f"ffmpeg failed ({process.returncode}): {stderr.decode(errors='replace')}")
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        if out.exists():
+            out.unlink()
+        raise
+    print(f"Saved MP4: {out} ({width}x{height}, {video_fps} fps)")
+    print("3-D trajectory metrics (from unshifted CSV):")
+    for policy, values in trajectory_metrics(rollouts).items():
+        print(f"  {policy}: {values}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", type=Path, required=True)
@@ -279,9 +433,21 @@ def main():
                         help="recorded steps per second (default: 4)")
     parser.add_argument("--validate-only", action="store_true",
                         help="validate the full replay without opening a GUI")
+    parser.add_argument("--save-video", type=Path, default=None,
+                        help="write an MP4 with offscreen rendering (no GUI)")
+    parser.add_argument("--video-fps", type=int, default=30)
+    parser.add_argument("--width", type=int, default=1280)
+    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--hold-seconds", type=float, default=2.0)
     args = parser.parse_args()
     if args.fps <= 0 or not math.isfinite(args.fps):
         parser.error("--fps must be a finite positive number")
+    if args.video_fps <= 0 or args.width <= 0 or args.height <= 0:
+        parser.error("video fps and frame dimensions must be positive")
+    if args.width % 2 or args.height % 2:
+        parser.error("MP4 dimensions must be even numbers")
+    if args.hold_seconds < 0 or not math.isfinite(args.hold_seconds):
+        parser.error("--hold-seconds must be finite and non-negative")
     if not args.csv.is_file():
         parser.error(f"CSV was not found: {args.csv}")
     if not args.urdf.is_file():
@@ -294,6 +460,11 @@ def main():
     print(f"Validated {model.nq} qpos values and all recorded frames; "
           f"maximum TCP reconstruction error={error:.3g} m")
     if args.validate_only:
+        return
+    if args.save_video:
+        render_video(model, data, addresses, rollouts, args.save_video,
+                     args.fps, args.video_fps, args.width, args.height,
+                     args.hold_seconds)
         return
     run_viewer(model, data, addresses, rollouts, args.fps)
 
