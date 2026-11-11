@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Two-waypoint SO-101 kinematic demo: approach Muhi, then move above a box.
+"""LEGACY TOY SCENE: Two-waypoint SO-101 kinematic demo.
 
 No grasp, lifting an object, collision avoidance, dynamics, or hardware motion.
-Muhi and the open box are VISUAL PROXIES placed at FK-reachable targets.
+Muhi and the open box are VISUAL PROXIES placed at FK-reachable targets.\nThis does NOT reproduce the saved Real-to-Sim layout. Use\n``demo_real2sim_muhi_cup_reach.py`` for the episode-4 workcell instead.
 DLS iteratively controls the 5 arm joints; goal-generating joint angles are not
 passed to DLS. Save recorded trajectory as an MP4 or replay in a MuJoCo window.
 On macOS use mjpython to open a GUI; regular python works for --validate-only.
@@ -404,6 +404,8 @@ def replay_viewer(model, data, qpos_ids, frames, summary, fps):
 
 
 def main():
+    print("WARNING: legacy synthetic layout. For saved Real-to-Sim "
+          "Muhi/cup positions use demo_real2sim_muhi_cup_reach.py.")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=20261111)
