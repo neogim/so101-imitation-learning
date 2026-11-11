@@ -153,18 +153,21 @@ def create_scene(args):
             low.append(-math.pi/2); high.append(math.pi/2)
     qids = np.array(qids); dids = np.array(dids)
     q0 = np.array([joint_rad[name] for name in JOINTS])
-    if np.any(q0 < np.array(low)-1e-6) or np.any(q0 > np.array(high)+1e-6):
-        offending = [
-            f"{name}: recorded+offset={np.degrees(q):.2f}deg, "
-            f"URDF=[{np.degrees(lo):.2f}, {np.degrees(hi):.2f}]deg"
-            for name, q, lo, hi in zip(JOINTS, q0, low, high)
-            if q < lo - 1e-6 or q > hi + 1e-6
-        ]
-        raise ValueError(
-            "Recorded joint pose is outside URDF limits after applying "
-            "the saved visual offsets (if available): " + "; ".join(offending) +
-            ". Check the stored robot overlay offset JSON or URDF joint "
-            "convention; refusing to silently clamp the real episode pose.")
+    violations = [
+        f"{name}: recorded+offset={np.degrees(q):.2f}deg, "
+        f"URDF=[{np.degrees(lo):.2f}, {np.degrees(hi):.2f}]deg"
+        for name, q, lo, hi in zip(JOINTS, q0, low, high)
+        if q < lo - 1e-6 or q > hi + 1e-6
+    ]
+    if violations:
+        print("WARNING: saved visual alignment starts outside URDF joint limits:")
+        for message in violations:
+            print("  " + message)
+        print("The exact recorded initial pose is preserved for visualization. "
+              "During the DLS demo, joints outside the URDF limits recover "
+              "toward their bounds in steps of at most 0.04 rad. "
+              "This is NOT a validated or hardware-safe movement.")
+
     data.qpos[:] = model.qpos0
     data.qpos[qids] = q0
     mujoco.mj_forward(model, data)
@@ -201,13 +204,20 @@ def dls_two_stages(args, model, data, qids, dids, low, high, tcp_id, goals):
         for step in range(args.max_steps+1):
             tcp=np.asarray(data.xpos[tcp_id]).copy()
             distance=float(np.linalg.norm(goal-tcp)*1000)
+            q_now=np.asarray(data.qpos[qids], dtype=float).copy()
+            excess=np.maximum(low-q_now,0)+np.maximum(q_now-high,0)
+            limits_ok=bool(np.max(excess)<=1e-7)
             row={"frame":len(frames),"stage":stage,"stage_step":step,
                  "tcp_x":float(tcp[0]),"tcp_y":float(tcp[1]),"tcp_z":float(tcp[2]),
                  "target_x":float(goal[0]),"target_y":float(goal[1]),
-                 "target_z":float(goal[2]),"tcp_error_mm":distance}
+                 "target_z":float(goal[2]),"tcp_error_mm":distance,
+                 "joint_limits_ok":limits_ok,
+                 "max_joint_limit_excess_deg":float(np.degrees(np.max(excess)))}
             row.update({f"joint_{i+1}":float(data.qpos[qids[i]]) for i in range(5)})
             frames.append(row)
-            if distance <= args.success_mm:success=True;break
+            if distance <= args.success_mm and limits_ok:
+                success=True
+                break
             if step==args.max_steps:break
             jac=np.zeros((3,model.nv));jac_r=np.zeros((3,model.nv))
             mujoco.mj_jacBody(model,data,jac,jac_r,tcp_id)
@@ -215,11 +225,26 @@ def dls_two_stages(args, model, data, qids, dids, low, high, tcp_id, goals):
             delta=J.T@np.linalg.solve(J@J.T+.02**2*np.eye(3),
                                       .75*(goal-tcp))
             delta=np.clip(delta,-.04,.04)
-            data.qpos[qids]=np.clip(data.qpos[qids]+delta,low,high)
+            # Keep the recorded visual initial pose unchanged. Outside-limit
+            # joints return toward the closest URDF bound gradually: no
+            # instant clipping / teleport in the rendered trajectory.
+            next_q=np.clip(q_now+delta,low,high)
+            below=q_now<low
+            above=q_now>high
+            next_q[below]=q_now[below]+np.minimum(
+                .04,low[below]-q_now[below])
+            next_q[above]=q_now[above]-np.minimum(
+                .04,q_now[above]-high[above])
+            if np.any(np.abs(next_q-q_now)>.04000001):
+                raise AssertionError("Joint step exceeded 0.04 rad")
+            data.qpos[qids]=next_q
             mujoco.mj_forward(model,data)
         stages.append({"stage":stage,"initial_error_mm":initial,
                        "final_error_mm":frames[-1]["tcp_error_mm"],
-                       "success":success,"steps":step})
+                       "success":success,"steps":step,
+                       "initial_joint_limit_excess_deg":
+                           frames[-(step+1)]["max_joint_limit_excess_deg"],
+                       "final_joint_limits_ok":frames[-1]["joint_limits_ok"]})
         # Stage 2 begins from the current terminal joints, even if stage 1 fails.
     return frames, stages
 
@@ -242,6 +267,13 @@ def save_results(out, args, frames, stages, goals, cup, layout,
             "robot_joint_offsets_json":(
                 str(robot_offset_path) if robot_offset_path else None)},
         "joint_offset_deg": robot_config["joints"]["offset_deg"],
+        "initial_joint_limit_discrepancy": {
+            "status": "OUTSIDE_LIMIT_VISUAL_POSE_NOT_PHYSICAL_TRAJECTORY"
+                if frames[0]["max_joint_limit_excess_deg"]>1e-6
+                else "WITHIN_URDF_LIMITS",
+            "max_excess_deg":frames[0]["max_joint_limit_excess_deg"],
+            "recovery_method": "stepwise_at_most_0.04rad_not_instant_clipping",
+        },
         "joint_offset_status": ("VISUAL_CANDIDATE_NOT_CALIBRATED" if robot_offset_path
                                 else "UNVERIFIED_ZERO_DEFAULT"),
         "saved_real2sim_layout":layout,
@@ -260,6 +292,9 @@ def save_results(out, args, frames, stages, goals, cup, layout,
     for s in stages:
         report+=f"| {s['stage']} | {s['initial_error_mm']:.2f} | {s['final_error_mm']:.2f} | {s['steps']} | {s['success']} |\n"
     report+="\nNo grasp/contact/transport; positions are saved visual-alignment estimates.\n"
+    report+=("\\nVisual calibration joint-limit excess at initial pose: "
+             f"{frames[0]['max_joint_limit_excess_deg']:.3f} degrees. "
+             "Step-limited recovery in kinematic demo only.\\n")
     (out/"report.md").write_text(report,encoding="utf-8")
     fig,ax=plt.subplots(figsize=(9,4.8))
     colors={"muhi":"tab:red","cup":"tab:blue"}
