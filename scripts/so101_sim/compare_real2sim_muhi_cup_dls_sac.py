@@ -29,7 +29,7 @@ import demo_real2sim_muhi_cup_reach as scene
 JOINTS=scene.JOINTS
 
 
-def sac_rollout(args, model, data, qids, tcp_id, goals, original_q, original_tcp):
+def sac_rollout(args, model, data, qids, tcp_id, goals, original_q, original_tcp, *, freeze_j5=False):
     from stable_baselines3 import SAC
 
     agent=SAC.load(str(args.sac_model),device="cpu")
@@ -66,6 +66,10 @@ def sac_rollout(args, model, data, qids, tcp_id, goals, original_q, original_tcp
             obs=np.r_[q,err,dist].astype(np.float32)
             action,_=agent.predict(obs,deterministic=True)
             delta=np.clip(np.asarray(action,float),-1,1)*.04
+            # Ablation: suppress only the J5 action AFTER policy inference,
+            # preserving all five joint observations and the trained model.
+            if freeze_j5:
+                delta[4]=0.0
             # Same gradual URDF-bound recovery as the DLS demo.
             next_q=np.clip(q+delta,low,high)
             below=q<low;above=q>high
