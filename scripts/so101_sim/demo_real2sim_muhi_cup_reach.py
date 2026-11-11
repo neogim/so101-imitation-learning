@@ -248,6 +248,56 @@ def dls_two_stages(args, model, data, qids, dids, low, high, tcp_id, goals):
         # Stage 2 begins from the current terminal joints, even if stage 1 fails.
     return frames, stages
 
+def return_home(args, model, data, qids, tcp_id, original_q, original_tcp,
+                frames, stages):
+    """Return to recorded visual pose by bounded quintic interpolation.
+
+    IMPORTANT: the recorded pose is outside the imported URDF joint limits.
+    Therefore this is a VISUAL-ONLY home, NOT a hardware-safe home trajectory.
+    """
+    q_start=np.asarray(data.qpos[qids],float).copy()
+    q_goal=np.asarray(original_q,float).copy()
+    delta=q_goal-q_start
+    steps=max(args.home_steps,math.ceil(1.875*float(np.max(np.abs(delta)))/.04))
+    if steps<1:raise ValueError("home_steps must be positive")
+    bounds=[]
+    for joint in JOINTS:
+        jid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,joint)
+        bounds.append(model.jnt_range[jid].copy())
+    limits=np.asarray(bounds)
+    start_err=float(np.linalg.norm(data.xpos[tcp_id]-original_tcp)*1000)
+    last=q_start
+    for step in range(1,steps+1):
+        t=step/steps
+        weight=10*t**3-15*t**4+6*t**5
+        q=q_start+weight*delta
+        if float(np.max(np.abs(q-last)))>.040001:
+            raise AssertionError("Home joint step exceeded 0.04rad")
+        data.qpos[qids]=q
+        mujoco.mj_forward(model,data)
+        xyz=np.asarray(data.xpos[tcp_id]).copy()
+        violation=np.maximum(limits[:,0]-q,0)+np.maximum(q-limits[:,1],0)
+        row={"frame":len(frames),"stage":"home","stage_step":step,
+             "tcp_x":float(xyz[0]),"tcp_y":float(xyz[1]),"tcp_z":float(xyz[2]),
+             "target_x":float(original_tcp[0]),
+             "target_y":float(original_tcp[1]),
+             "target_z":float(original_tcp[2]),
+             "tcp_error_mm":float(np.linalg.norm(xyz-original_tcp)*1000),
+             "joint_limits_ok":bool(np.max(violation)<=1e-7),
+             "max_joint_limit_excess_deg":float(np.degrees(np.max(violation)))}
+        row.update({f"joint_{i+1}":float(q[i]) for i in range(5)})
+        frames.append(row)
+        last=q
+    final_q_err=float(np.max(np.abs(data.qpos[qids]-q_goal)))
+    stages.append({"stage":"home","method":"quintic_joint_interpolation",
+                   "initial_error_mm":start_err,
+                   "final_error_mm":frames[-1]["tcp_error_mm"],
+                   "steps":steps,"success":final_q_err<1e-8,
+                   "max_joint_home_error_rad":final_q_err,
+                   "final_joint_limits_ok":frames[-1]["joint_limits_ok"],
+                   "warning":"Exact recorded home violates URDF limits: visual-only."})
+    return frames,stages
+
 
 def save_results(out, args, frames, stages, goals, cup, layout,
                  robot_offset_path, robot_config):
@@ -282,6 +332,8 @@ def save_results(out, args, frames, stages, goals, cup, layout,
         "muhi_clearance_mm":args.muhi_clearance_mm,
         "cup_clearance_mm":args.cup_clearance_mm,
         "success_radius_mm":args.success_mm,
+        "home_method":"visual quintic joint-space interpolation to recorded pose",
+        "home_warning":"Recorded pose violates URDF joint limits; not hardware-safe",
         "stages":stages,
         "limitations":"No grasp, no carrying Muhi, no contact/collision physics. "
                       "Targets are points above saved objects, not measured grasp poses."}
@@ -297,14 +349,14 @@ def save_results(out, args, frames, stages, goals, cup, layout,
              "Step-limited recovery in kinematic demo only.\\n")
     (out/"report.md").write_text(report,encoding="utf-8")
     fig,ax=plt.subplots(figsize=(9,4.8))
-    colors={"muhi":"tab:red","cup":"tab:blue"}
-    for stage in ("muhi","cup"):
+    colors={"muhi":"tab:red","cup":"tab:blue","home":"tab:green"}
+    for stage in ("muhi","cup","home"):
         sub=[r for r in frames if r["stage"]==stage]
         ax.plot([r["frame"] for r in sub],[r["tcp_error_mm"] for r in sub],
                 label=stage,color=colors[stage],lw=2)
     ax.axhline(args.success_mm,ls="--",color="gray",label="10 mm target")
     ax.set(xlabel="Frame",ylabel="TCP position error (mm)",
-           title="Real-to-Sim saved layout: Muhi → cup")
+           title="Real-to-Sim: Muhi -> cup -> recorded home"
     ax.legend();ax.grid(alpha=.2);fig.tight_layout()
     fig.savefig(out/"tcp_error_vs_step.png",dpi=170);plt.close(fig)
 
@@ -320,7 +372,7 @@ def camera_for(model,goals,use_side,side_name):
 
 
 def extras(scene,frames,index,goals):
-    colors={"muhi":[.95,.25,.20,1],"cup":[.15,.75,.40,1]}
+    colors={"muhi":[.95,.25,.20,1],"cup":[.15,.75,.40,1],"home":[.16,.67,.34,1]}
     for k,v in goals.items():
         if scene.ngeom>=scene.maxgeom:raise RuntimeError("Too many scene geoms")
         g=scene.geoms[scene.ngeom]
@@ -370,7 +422,7 @@ def save_video(args,model,data,qids,frames,goals,camera):
                 im=Image.fromarray(renderer.render())
                 dr=ImageDraw.Draw(im)
                 dr.rectangle((0,0,width,72),fill=(19,29,40))
-                dr.text((18,10),"SO-101 saved Real-to-Sim layout | DLS: Muhi -> clear cup",
+                dr.text((18,10),"SO-101 Real-to-Sim | DLS: Muhi -> cup -> home",
                         font=font,fill="white")
                 dr.text((18,41),f"{row['stage']}  step {idx}  error {row['tcp_error_mm']:.1f} mm",
                         font=font,fill="white")
@@ -404,6 +456,8 @@ def main():
     p.add_argument("--cup-clearance-mm",type=float,default=45)
     p.add_argument("--success-mm",type=float,default=10)
     p.add_argument("--max-steps",type=int,default=120)
+    p.add_argument("--home-steps",type=int,default=80,
+                   help="minimum frames for smooth visual return to recorded pose")
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--save-video",type=Path)
     p.add_argument("--video-fps",type=int,default=30)
@@ -413,7 +467,7 @@ def main():
                    help="render from saved calibrated candidate Side camera")
     args=p.parse_args()
     if (args.muhi_clearance_mm<=0 or args.cup_clearance_mm<=0
-        or args.success_mm<=0 or args.max_steps<=0
+        or args.success_mm<=0 or args.max_steps<=0 or args.home_steps<=0
         or args.fps<=0 or args.video_fps<=0 or args.hold_seconds<0):
         p.error("All dimensions, speeds and step limits must be valid")
     for f in (args.dataset_root,args.object_layout_json,args.cup_pose_json,
@@ -421,7 +475,10 @@ def main():
         if not f.exists():p.error(f"Missing Real-to-Sim input: {f}")
     (model,data,qids,dids,low,high,tcp,cam_name,goals,cup,layout,
      offset_path,offset_config)=create_scene(args)
+    recorded_q=np.asarray(data.qpos[qids],float).copy()
+    recorded_tcp=np.asarray(data.xpos[tcp],float).copy()
     frames,stages=dls_two_stages(args,model,data,qids,dids,low,high,tcp,goals)
+    frames,stages=return_home(args,model,data,qids,tcp,recorded_q,recorded_tcp,frames,stages)
     save_results(args.out,args,frames,stages,goals,cup,layout,
                  offset_path,offset_config)
     for s in stages:print(f"{s['stage']} success={s['success']} steps={s['steps']} "
