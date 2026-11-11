@@ -18,6 +18,9 @@ import subprocess
 import time
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import mujoco
 import numpy as np
 
@@ -134,6 +137,8 @@ def calculate_sequence(args):
                 "muhi_final_error_mm": first[-1]["tcp_error_mm"],
                 "box_final_error_mm": second[-1]["tcp_error_mm"],
                 "frames": len(frames),
+                "selection_note": "A DLS-successful pair was SELECTED after trying candidates. "
+                                  "This is a feasibility demonstration, NOT an unbiased success-rate estimate.",
                 "note": "The Muhi and box are schematic visual proxies positioned below FK-generated goals. "
                         "They are not a measured real-world arrangement or collision-checked objects.",
             }
@@ -166,6 +171,28 @@ def save_data(out, frames, summary):
         f"- Box: {summary['box_steps']} steps, {summary['box_final_error_mm']:.2f} mm TCP error\n"
         "- Reach only; this does not simulate pick, lift, transfer of object, "
         "collision avoidance or real-world hardware.\n", encoding="utf-8")
+
+
+def save_plots(out, frames, summary):
+    """Save an actual measured TCP-error curve; not an illustrative trajectory."""
+    switch = next((i for i, row in enumerate(frames)
+                   if row["stage"] == "box"), len(frames)-1)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for stage, color in (("muhi", "tab:red"), ("box", "tab:green")):
+        indices = [i for i, row in enumerate(frames) if row["stage"] == stage]
+        if indices:
+            ax.plot(indices, [frames[i]["tcp_error_mm"] for i in indices],
+                    color=color, label=f"{stage} TCP error", linewidth=2)
+    ax.axhline(summary["success_radius_mm"], color="gray",
+               linestyle="--", label="Success threshold")
+    ax.axvline(switch, color="gray", linestyle=":", label="Goal switch")
+    ax.set(xlabel="Sequence step", ylabel="TCP error (mm)",
+           title="SO-101: Muhi approach -> Box approach (DLS, kinematics only)")
+    ax.legend(loc="upper right")
+    ax.grid(alpha=0.2)
+    fig.tight_layout()
+    fig.savefig(out / "tcp_error_vs_step.png", dpi=170)
+    plt.close(fig)
 
 
 def build_visual_scene(summary):
@@ -407,6 +434,7 @@ def main():
     model, data, addresses, tip = build_visual_scene(summary)
     validate_visual_fk(model, data, addresses, tip, frames)
     save_data(args.out, frames, summary)
+    save_plots(args.out, frames, summary)
     print("Muhi reached:", summary["muhi_reach_success"],
           f"in {summary['muhi_steps']} steps")
     print("Box reached:", summary["box_reach_success"],
