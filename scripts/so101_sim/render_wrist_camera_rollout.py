@@ -215,7 +215,7 @@ def main():
     p.add_argument("--kd", type=float, default=1.1)
     p.add_argument("--torque", type=float, default=3.)
     p.add_argument("--wrist-mount-pos", type=float, nargs=3,
-                   default=(0., 0., -.048), metavar=("X", "Y", "Z"))
+                   default=(0., .024, -.045), metavar=("X", "Y", "Z"))
     p.add_argument("--wrist-mount-rpy-deg", type=float, nargs=3,
                    default=(0., 0., 0.), metavar=("R", "P", "Y"))
     p.add_argument("--wrist-fovy", type=float, default=75.)
