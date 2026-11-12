@@ -12,19 +12,20 @@ import math
 
 RIG_BODY = "r2s_wrist_camera_rig"
 CAMERA = "r2s_wrist_rgb"
-# In the URDF, gripper_link is AFTER wrist_roll (J5), BEFORE gripper (J6).
-# The fingers extend along approximately gripper_link -Z; the photographed
-# mount starts on their common root, not up at wrist_link / J4.
-DEFAULT_MOUNT_POS = (0.0, 0.0, -0.048)  # m, provisional fit to photos
+# URDF: gripper_link is between J5 wrist_roll and J6 moving jaw.
+# Fingers extend approximately in gripper-local -Z. Photo references show
+# the L-shaped mount on the OUTSIDE of the common jaw root, not the joint
+# centreline. Y is a first provisional lateral choice, not a calibration.
+DEFAULT_MOUNT_POS = (0.0, 0.024, -0.045)
 DEFAULT_MOUNT_RPY_DEG = (0.0, 0.0, 0.0)
-# Bracket foot attaches to the fingertip-root block (gripper_link-local).
-# The mount is one contiguous L-like approximation, not floating blocks.
+MOUNT_INSPECTION_CAMERA = "r2s_wrist_mount_inspection"
 BRACKET_BASE_Z = 0.0
-BRACKET_STEM_CENTER_Z = 0.025
-BRACKET_TOP_Z = 0.055
-PCB_Z = 0.0615  # overlaps bracket top so the PCB does not float
-LENS_Z = 0.048
-CAMERA_Z = 0.032
+BRACKET_STEM_CENTER_Z = 0.010
+BRACKET_TOP_Z = 0.026
+PCB_Z = 0.0325
+LENS_Z = 0.019
+CAMERA_Z = 0.006
+BRACKET_OUTBOARD_Y = 0.043
 COLLISION_NAMES = (
     "r2s_wrist_bracket_foot_collision",
     "r2s_wrist_bracket_vertical_collision",
@@ -66,41 +67,63 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS,
     if spec.body(RIG_BODY) is not None:
         raise ValueError("Wrist rig already installed")
     rad = [math.radians(x) for x in rpy_deg]
-    # The fixed child body is anchored at the J5/J6 gripper BASE, not the
-    # upstream J4 wrist. A foot box overlaps the solid base by design; its
-    # contiguous upright connects the PCB to the base in every frame.
+    # The parent is correct: gripper_link lies between J5 and J6. We move
+    # the assembly LATERALLY outside the jaw root so its bracket, PCB and
+    # projecting lens are visible, rather than embedding it inside the hand.
     rig = parent.add_body(name=RIG_BODY, pos=pos, euler=rad,
-                          mass=0.025, ipos=[0.0, 0.0, 0.032],
+                          mass=0.025, ipos=[0, 0.035, 0.012],
                           inertia=[2.0e-5, 2.0e-5, 5.0e-6])
-    common = dict(contype=1, conaffinity=1, friction=[0.8, 0.01, 0.001])
-    rig.add_geom(name=COLLISION_NAMES[1], type=mujoco.mjtGeom.mjGEOM_BOX,
-                 pos=[0, 0, BRACKET_STEM_CENTER_Z],
-                 size=[0.006, 0.009, 0.029],
-                 rgba=[0.88, 0.87, 0.83, 1], **common)
-    # A broad bracket foot actually touches the parent gripper's root; the
-    # stem spans Z=-0.004..+0.054 and the top starts at +0.052.
-    rig.add_geom(name=COLLISION_NAMES[0],
-                 type=mujoco.mjtGeom.mjGEOM_BOX,
+    common = dict(contype=1, conaffinity=1,
+                  friction=[0.8, 0.01, 0.001])
+    # Connected approximation: jaw-root foot -> bridge -> top -> PCB.
+    # A slight overlap is deliberate, but these proxies must not be
+    # interpreted as an actual CAD fixture or collision-free attachment.
+    rig.add_geom(name=COLLISION_NAMES[0], type=mujoco.mjtGeom.mjGEOM_BOX,
                  pos=[0, 0, BRACKET_BASE_Z],
-                 size=[0.014, 0.013, 0.006],
+                 size=[0.014, 0.013, 0.005],
+                 rgba=[0.88, 0.87, 0.83, 1], **common)
+    rig.add_geom(name=COLLISION_NAMES[1], type=mujoco.mjtGeom.mjGEOM_BOX,
+                 pos=[0, 0.019, BRACKET_STEM_CENTER_Z],
+                 size=[0.007, 0.020, 0.012],
                  rgba=[0.88, 0.87, 0.83, 1], **common)
     rig.add_geom(name=COLLISION_NAMES[2], type=mujoco.mjtGeom.mjGEOM_BOX,
-                 pos=[0, 0, BRACKET_TOP_Z],
-                 size=[0.019, 0.019, 0.004],
+                 pos=[0, BRACKET_OUTBOARD_Y, BRACKET_TOP_Z],
+                 size=[0.019, 0.018, 0.004],
                  rgba=[0.92, 0.91, 0.87, 1], **common)
     rig.add_geom(name=COLLISION_NAMES[3], type=mujoco.mjtGeom.mjGEOM_BOX,
-                 pos=[0, 0, PCB_Z], size=[0.016, 0.016, 0.003],
+                 pos=[0, BRACKET_OUTBOARD_Y, PCB_Z],
+                 size=[0.016, 0.016, 0.003],
                  rgba=[0.12, 0.23, 0.28, 1], **common)
-    # Lens protrudes toward the gripper fingers (-Z), not sideways -Y.
     rig.add_geom(name=COLLISION_NAMES[4],
                  type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                 pos=[0, 0, LENS_Z], size=[0.008, 0.012, 0],
+                 pos=[0, BRACKET_OUTBOARD_Y, LENS_Z],
+                 size=[0.008, 0.012, 0],
                  rgba=[0.08, 0.09, 0.10, 1], **common)
-    # Sensor looks almost along -Z toward the finger tips. Slight tilt in
-    # local Y keeps a little of the end effector in view. Exact lens extrinsics
-    # and FOV require comparison with a real Wrist frame.
-    rig.add_camera(name=CAMERA, pos=[0, 0, CAMERA_Z],
-                   xyaxes=[1, 0, 0, 0, 0.966, 0.259], fovy=fovy)
+    # View down the -Z finger direction and tilt ~28 degrees inward (-Y).
+    # Previous +Y optical tilt looked AWAY from the finger centreline.
+    angle = math.radians(28)
+    rig.add_camera(name=CAMERA, pos=[0, BRACKET_OUTBOARD_Y, CAMERA_Z],
+                   xyaxes=[1, 0, 0, 0, math.cos(angle), -math.sin(angle)],
+                   fovy=fovy)
+    # Dedicated close-up perspective for verifying whether bracket foot,
+    # camera board and finger roots physically line up. Unlike distant SIDE
+    # camera, this exposes occlusion and incorrect camera mounting clearly.
+    view = [0.17, 0.14, 0.10]
+    target = [0.0, 0.025, 0.0]
+    z = [view[i] - target[i] for i in range(3)]
+    length = math.sqrt(sum(v * v for v in z))
+    z = [v / length for v in z]
+    up = [0.0, 1.0, 0.0]
+    x = [up[1] * z[2] - up[2] * z[1],
+         up[2] * z[0] - up[0] * z[2],
+         up[0] * z[1] - up[1] * z[0]]
+    norm = math.sqrt(sum(v * v for v in x))
+    x = [v / norm for v in x]
+    y = [z[1] * x[2] - z[2] * x[1],
+         z[2] * x[0] - z[0] * x[2],
+         z[0] * x[1] - z[1] * x[0]]
+    rig.add_camera(name=MOUNT_INSPECTION_CAMERA, pos=view,
+                   xyaxes=x + y, fovy=45.0)
     return rig
 
 
