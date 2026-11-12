@@ -192,3 +192,44 @@ fi
 ```
 
 Acceptance must use BOTH the close-up and normal Side: visually trace the gripper base -> foot -> L-bridge -> PCB -> lens as one connected assembly, then check that the Wrist RGB has at least a narrow band of jaws in the expected image location at multiple J5 poses. Current evidence does not establish pass. Remain in **kinematic** mode for placement calibration; real mass/PD contact response is a separate subsequent test.
+
+## 2026-11-12: L-fixture visual/physics separation and wrist optical-axis repair
+
+**Input evidence:** User's photos of the actual 3D-printed L-shaped bracket and `so101-wrist-mount-inspection-20261112-231303.zip`. The 48-frame Side / Wrist / Mount video showed the prior plate/blocks looking unlike the printed L bracket. Mount-inspection rendering was sharp but Wrist looked toward the tabletop, with nearly no recognizable white gripper fingers. No contact with the new Wrist rig was reported (0/48); this does not prove proper fixture placement.
+
+**Root causes in the prototype:** The same primitive geoms were shown as camera/fixture appearance *and* used as collision geometry; their proportions, height, and orientation did not follow a clear bracket silhouette. The optical axis was specified separately from the lens cylinder. The Side and Mount inspection cameras have a different pose, so their good image clarity is not a validation of the physical Wrist optical transform. Treat the displayed camera image as normal MuJoCo rendering, not a separately degraded camera source.
+
+**Implementation revision:**
+- Keep `gripper_link` (after J5, before J6) and the photo-based mount anchor `(0,+0.024,-0.045)m`.
+- Visible geometry (group **0**, `contype=0`, `conaffinity=0`): one contiguous white L-shaped mount (foot, upright and overhanging horizontal shelf), 32mm PCB, projecting black cylindrical lens. These are **procedural photo-based approximations**. We have not yet matched the existing mixed-unit STL files/actual CAD origin and do not claim geometric identity.
+- Separate hidden collision proxies (group **3**, `contype=1`, `conaffinity=1`): corresponding 5 box/cylinder collision geoms. `Renderer.update_scene(... scene_option=...)` hides group 3 from all RGB outputs; collision detection remains enabled.
+- Board, lens barrel and RGB camera are constructed from one calculated optical coordinate frame. `camera_axes` aims MuJoCo local -Z at a gripper-local direction past the jaws (`look_at=(-.008,-.002,-.165)` measured from rig root, provisional); lens cylinder and PCB inherit the same quaternion; the camera origin sits immediately beyond the lens front end.
+- Provisional RGB vertical FOV changed from 75° to **70°**, not measured. `--wrist-look-at X Y Z`, `--wrist-fovy`, `--wrist-mount-pos` and `--wrist-mount-rpy-deg` remain adjustable without editing source files.
+- J5 follow, geom naming, collision-versus-visual groups, 3D basis normalization, and L-bracket continuity have corresponding regression tests.
+- `Side`, `Wrist`, `side_wrist_comparison` and `mount_inspection` output paths unchanged; output `summary.json` now records the local aiming point and the separated geom-group convention.
+
+**Mac commands from repository root** (no comment lines to avoid interactive zsh issues):
+
+```bash
+conda activate so101-real2sim
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+if python -m unittest discover -s scripts/so101_sim -p 'test_wrist_camera_sim.py' -v; then
+  ROLL_OUT="$(find outputs -type f -name rollout.csv | grep -Ei 'j5|ablation' | sort | tail -n 1)"
+  if [ -f "$ROLL_OUT" ]; then
+    OUT="outputs/so101-wrist-visual-v2-$(date +%Y%m%d-%H%M%S)"
+    if python scripts/so101_sim/render_wrist_camera_rollout.py --rollout "$ROLL_OUT" --policy normal --mode kinematic --stride 4 --save-video --out "$OUT"; then
+      open "$OUT/mount_inspection.mp4"
+      open "$OUT/side_wrist_comparison.mp4"
+      open "$OUT/wrist_camera.mp4"
+      cat "$OUT/summary.json"
+    fi
+  else
+    echo "J5 rollout.csv not found"
+  fi
+fi
+```
+
+**Remaining acceptance tests on the Mac:** (a) fixture appears as attached L shape in Mount view, (b) actual gripper mesh appears naturally in Wrist imagery; color from the real URDF/off-white preview, not the collision proxy, (c) visible object orientation/field aligns with real Wrist reference, (d) no false contact with adjacent robot parts or missed environment contacts. If a visual mismatch persists, get actual Wrist image and measured CAD-to-`gripper_link` transform; do not guess offsets indefinitely.
+
+**Verification status:** GitHub source and regression assertions reviewed; live MuJoCo compile/render not available in the coding runtime. No claim that the newly produced frames have passed acceptance yet. Static source changes do not convert Muhi/cup into dynamic objects, nor do they implement ACT inference.
