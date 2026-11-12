@@ -29,6 +29,22 @@ MUHI_LENGTH = .097
 MUHI_RADIUS = .035 / 2
 
 
+def enable_static_contacts_in_spec(spec):
+    """Set world collision flags BEFORE compile for MuJoCo broadphase."""
+    names = []
+    for geom in spec.geoms:
+        name = geom.name
+        if (name == "r2s_preview_table" or
+                name.startswith("r2s_table_front_") or
+                name.startswith("r2s_cup_")):
+            geom.contype = 1
+            geom.conaffinity = 1
+            names.append(name)
+    if "r2s_preview_table" not in names or "r2s_cup_base" not in names:
+        raise ValueError("Physical tabletop or cup not found in scene spec")
+    return names
+
+
 def install_dynamic_muhi(spec):
     """Create free-body bottle BEFORE model compile, separately from preview."""
     if spec.body(DYNAMIC_BODY) is not None:
