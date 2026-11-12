@@ -56,3 +56,47 @@ If `find` prints more than one matching CSV, select the **correct original Episo
 - `summary.json`: gains, control substeps, clipping, per-stage final TCP error, contact counts, video status and limitations.
 
 This is a starting experiment, not an assertion that the physical trajectories are stable. The existing base/shoulder convex-hull false contacts may severely disturb PD, and the current wrist fixture has only photo-estimated geometry. Muhi is physically free, cup has collidable walls, but there is no validated gripping or placing. An SAC action-level closed-loop test, physical gripper grasp and collision-safe controller will follow after this diagnostic.
+
+## 2026-11-13: User-run physics comparison failed fidelity review
+
+Evidence: `so101-dls-sac-physical-20261113-014727.zip` (201 trajectory frames per policy, 4.02 s simulated time, 51 four-panel images, MP4, CSV, summary).
+
+**Do not use these numbers for a DLS vs SAC performance claim**:
+
+| Observation | DLS | SAC |
+| --- | ---: | ---: |
+| Maximum Euclidean five-joint tracking error | 288.14° | 302.57° |
+| Muhi-stage final TCP position error | 319.88 mm | 231.67 mm |
+| Cup-stage final TCP position error | 130.26 mm | 308.96 mm |
+| Cumulative contact points in report | 8,967 | 6,256 |
+| Wrist/external contact steps | 196 | 0 |
+
+Both policies already had 75.12° five-joint tracking error at the *first recorded physical step*. No reliable approach/pick result exists. Rendering shows a radically altered start, horizontal collapse with contact, visual objects and wrist frame contamination. These are failure observations, not reasons to rank the algorithms.
+
+### Confirmed regression causes
+
+1. The original visual recorded start is **outside imported URDF limits**. The physics script silently clipped the initial `qpos` and every reference target; the previous kinematic demonstration preserved the actual saved visual pose and only returned out-of-bounds joints gradually. This immediately changed the start and invalidated faithful comparison before physics began.
+2. Large base/shoulder convex-hull contacts from earlier audits were left unresolved, while a capped `3 Nm` PD controller was asked to track a new target every `10 × 0.002=0.02s`. Neither dynamic feasibility nor original target-time mapping was validated. Thus the subsequent collapse/penetration is expected, not a faithful physical version of the baseline.
+3. The original side-by-side rendering included target spheres, TCP trails, step labels and a deliberately framed camera. The new output omitted these cues, changed camera choice/panel resolution, and used bare Side/Wrist views. This **visual regression is unrelated to physics**.
+
+### Safety-first code correction
+
+- Default behavior now **rejects** initial joint clipping with `PHYSICS BASELINE REJECTED`, showing maximum clip discrepancy. The comparison is blocked until the recorded visual initial joint angles, URDF joint zero/sign/offsets and physical joint limits are reconciled. This is intentional; do **not** silently force a fake matching pose for a more attractive animation.
+- For *debug only*, `--allow-clipped-diagnostic` allows the previously mismatched start, but reports `initial_pose_audit`, labels `NON_COMPARABLE_CLIPPED_DIAGNOSTIC_ONLY`, and prominently watermarks each video panel.
+- Restored reference goal markers and actual simulated TCP path in the Side panels, with TCP-error and time/stage captions. Existing Wrist view is retained; it is not an alternative to the original view.
+
+**Still not solved:** real/Sim pose calibration, spurious self-contact, PD gain and torque feasibility, restoring the exact original stage timing/trajectory and identifying controller dynamics. Do not call the physical counterpart fully implemented or ready for ACT before these pass. The appropriate next technical action is *pose alignment and isolated initial contact model improvement*, followed by a stable physical comparison with fixed reference timings and documented convergence. Avoid another series of blind runs with changed settings.
+
+### Useful commands
+
+```bash
+conda activate so101-real2sim
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+python -m unittest discover -s scripts/so101_sim -p 'test_compare_dls_sac_physics.py' -v
+ROLL_OUT="$(find outputs -type f -name comparison_rollout.csv | sort | tail -n 1)"
+OUT="outputs/so101-dls-sac-fidelity-audit-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_dls_sac_physics.py --rollout "$ROLL_OUT" --out "$OUT"
+```
+
+The last command should **reject the known mismatched recorded initial pose**, and explain the reason, unless the underlying pose-mapping issue has been corrected. This rejection is a valid and desirable outcome. Only use `--allow-clipped-diagnostic` when explicitly diagnosing the invalid physics scene; it cannot establish DLS or SAC physical performance.
