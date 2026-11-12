@@ -83,6 +83,7 @@ def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
     comparison.add_simple_studio_light(spec)
     if physical_objects:
         import physical_workcell_sim
+        physical_workcell_sim.enable_static_contacts_in_spec(spec)
         physical_workcell_sim.install_dynamic_muhi(spec)
     if wrist_camera:
         import wrist_camera_sim
