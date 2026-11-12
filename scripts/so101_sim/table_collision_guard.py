@@ -50,8 +50,12 @@ class TableCollisionGuard:
             if (name == "r2s_preview_table" or name.startswith("r2s_table_front_")
                     or (include_cup and name.startswith("r2s_cup_"))):
                 self.table_ids.append(gid)
-            if (body_name in MOVING_BODY_NAMES or
-                    body_name.startswith("r2s_wrist_camera_")) and body_name not in self.excluded:
+            is_moving = (body_name in MOVING_BODY_NAMES or
+                         body_name.startswith("r2s_wrist_camera_"))
+            # Never use duplicate, non-collidable visual-only geometry as a
+            # physical exclusion boundary (notably wrist visual duplicates).
+            is_collision_proxy = bool(model.geom_contype[gid] or model.geom_conaffinity[gid])
+            if is_moving and body_name not in self.excluded and is_collision_proxy:
                 self.robot_ids.append(gid)
         if not self.table_ids or not self.robot_ids:
             raise ValueError("No collidable table or moving robot geoms")
@@ -77,8 +81,11 @@ class TableCollisionGuard:
                     if gap < worst:
                         worst = gap
                         pair = (
-                            mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, robot_id)
-                            or f"robot_geom_{robot_id}",
+                            (mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, robot_id)
+                             or f"robot_geom_{robot_id}") + " [body=" +
+                            (mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY,
+                                                int(self.model.geom_bodyid[robot_id])) or
+                             str(int(self.model.geom_bodyid[robot_id]))) + "]",
                             mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, table_id)
                             or f"table_geom_{table_id}",
                         )
