@@ -12,6 +12,8 @@ import argparse
 import csv
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 
 import mujoco
@@ -112,6 +114,17 @@ def run(args):
                     np.linalg.norm(data.qpos[qids] - target))),
                 "contacts": contacts,
             })
+    if args.save_video:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise RuntimeError("ffmpeg is required for --save-video")
+        subprocess.run([
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-framerate", str(args.fps), "-i",
+            str(image_dir / "wrist_%04d.png"), "-c:v", "libx264",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            str(args.out / "wrist_camera.mp4")
+        ], check=True)
     summary = {
         "status": "WRIST_CAMERA_PROVISIONAL_SIM",
         "mode": args.mode, "camera": wrist.CAMERA,
@@ -165,6 +178,7 @@ def main():
     p.add_argument("--width", type=int, default=320)
     p.add_argument("--height", type=int, default=240)
     p.add_argument("--fps", type=float, default=20)
+    p.add_argument("--save-video", action="store_true")
     p.add_argument("--substeps", type=int, default=10)
     p.add_argument("--kp", type=float, default=12.)
     p.add_argument("--kd", type=float, default=1.1)
