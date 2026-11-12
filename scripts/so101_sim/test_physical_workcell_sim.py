@@ -21,11 +21,11 @@ class PhysicalWorkcellTest(unittest.TestCase):
         spec.worldbody.add_geom(
             name="r2s_muhi_body", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
             pos=[.05, 0, .0175], quat=[.70710678, .70710678, 0, 0],
-            size=[.0175, .031525], contype=0, conaffinity=0)
+            size=[.0175, .031525, 0], contype=0, conaffinity=0)
         spec.worldbody.add_geom(
             name="r2s_muhi_cap", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
             pos=[.05, .0485, .0175], quat=[.70710678, .70710678, 0, 0],
-            size=[.0175, .016975], contype=0, conaffinity=0)
+            size=[.0175, .016975, 0], contype=0, conaffinity=0)
         physical.install_dynamic_muhi(spec)
         model = spec.compile()
         data = mujoco.MjData(model)
