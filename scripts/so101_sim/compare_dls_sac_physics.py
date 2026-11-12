@@ -170,6 +170,8 @@ def run(args):
         raise FileExistsError(args.out)
     comparison = load_comparison(args.rollout)
     model, init, qids, dids, low, high, tcp, side, goals, original_q, pose_audit = build_start(args)
+    reference_camera = scene.camera_for(model, goals, False, side)
+    overview_camera = reference_camera if args.overview_camera == "reference" else side
     source_initial = comparison["dls"][1][0]
     if np.max(np.abs(source_initial-original_q)) > args.max_initial_delta_rad:
         raise ValueError("Input trajectory initial joint pose mismatches saved scene: "
@@ -234,7 +236,7 @@ def run(args):
                 results.append(measured)
                 frame_record[policy] = measured
                 if frame % args.render_every == 0 or frame == total_frames-1:
-                    for cam, cam_name in ((side,"SIDE"),(wrist.CAMERA,"WRIST")):
+                    for cam, cam_name in ((overview_camera,"SIDE"),(wrist.CAMERA,"WRIST")):
                         label = f"{policy.upper()} {cam_name} | {row['stage']} | {data.time:.2f}s"
                         warning = ("CLIPPED START: NOT SAME AS ORIGINAL" if not pose_audit["matches_visual_initial_pose"]
                                    else "PHYSICS: PD + CONTACT (NO GRASP)")
@@ -279,6 +281,7 @@ def run(args):
         "initial_pose_audit":pose_audit,
         "comparison_validity":("PRELIMINARY_PHYSICAL_TRACKING" if pose_audit["matches_visual_initial_pose"] else "NON_COMPARABLE_CLIPPED_DIAGNOSTIC_ONLY"),
         "mode":"capped_torque_PD_mj_step",
+        "overview_camera_mode":args.overview_camera,
         "kp":args.kp,"kd":args.kd,"max_torque_nm":args.max_torque,
         "substeps_per_source_frame":args.substeps,
         "sim_timestep_s":float(model.opt.timestep),
@@ -322,8 +325,10 @@ def main():
     p.add_argument("--max-frames",type=int,default=0,
                    help="0 uses entire saved trajectory")
     p.add_argument("--render-every",type=int,default=4)
-    p.add_argument("--width",type=int,default=320)
-    p.add_argument("--height",type=int,default=240)
+    p.add_argument("--width",type=int,default=640)
+    p.add_argument("--height",type=int,default=480)
+    p.add_argument("--overview-camera",choices=("reference","side"),default="reference",
+                   help="Reference matches original kinematic DLS/SAC camera; side uses calibrated Side sensor")
     p.add_argument("--video-fps",type=float,default=8.)
     p.add_argument("--no-video",action="store_false",dest="save_video")
     p.add_argument("--kp",type=float,default=12.)
