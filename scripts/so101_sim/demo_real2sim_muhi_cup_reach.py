@@ -120,7 +120,8 @@ def create_scene(args):
         wrist_camera=getattr(args, "wrist_camera", False),
         wrist_mount_pos=getattr(args, "wrist_mount_pos", (0., .024, -.045)),
         wrist_mount_rpy_deg=getattr(args, "wrist_mount_rpy_deg", (0., 0., 0.)),
-        wrist_fovy=getattr(args, "wrist_fovy", 75.))
+        wrist_fovy=getattr(args, "wrist_fovy", 70.),
+        wrist_look_at=getattr(args, "wrist_look_at", (-.008,-.002,-.165)))
     # This includes apply_white_follower_preview() inside the reused builder.
     # Reproduce the *saved* table translation/rotation and GUI cup correction.
     table_ids = movie.table_geom_ids(model)
