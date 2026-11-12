@@ -79,3 +79,23 @@ Input: `so101-physical-drop-20261113-004308.zip`, 600 simulation steps / 1.2 s, 
 - The photo-derived camera position/optical axis still needs validation against real Wrist images before ACT. Do not interpret rendered darkness as a camera hardware failure.
 
 Run the documented drop command again with a new output directory. Compare arm silhouette, wrist camera view, body-centre z, object/table penetration and the wrist contact categories. Do not run ACT until camera geometry, meaningful image composition and physical grasp controller are validated.
+
+## 2026-11-13: synchronized Side/Wrist MP4 output (default)
+
+Physical workcell runs now generate `side_wrist_comparison.mp4` automatically alongside the retained PNGs, `physics_trace.csv` and `physics_trace.png`. Each frame shows Side and Wrist views from the same simulation state and includes simulation-time labels. With the default `--render-every 30` at 2ms/physics step, frames are sampled every 0.06s; the default `--video-fps 5` makes playback ~3.3x slower than simulated time for visual inspection. Use `--video-fps 10` for faster review, or `--no-video` to skip encoding. An installed `ffmpeg` is required; if missing, the script preserves PNG/CSV outputs and reports `video_status=ffmpeg_missing` in summary instead of fabricating an MP4.
+
+Example after activation and Git pull:
+
+```bash
+OUT="outputs/so101-physical-push-video-$(date +%Y%m%d-%H%M%S)"
+if python scripts/so101_sim/physical_workcell_sim.py --mode push --steps 600 --render-every 30 --video-fps 5 --out "$OUT"; then
+  if [ -f "$OUT/side_wrist_comparison.mp4" ]; then
+    open "$OUT/side_wrist_comparison.mp4"
+  else
+    echo "MP4 not generated; check ffmpeg and summary.json"
+  fi
+  cat "$OUT/summary.json"
+fi
+```
+
+User-provided Push trial `so101-physical-push-20261113-005841.zip` reported final Muhi displacement 393.407mm, table-contact steps 504/600, cup-contact steps 0, and wrist-contact steps 0. This was an external force of 0.8N over 80 steps; do **not** call it an arm-generated push or a completed pick/place task. An independent 4.2-second slowed comparison MP4 was created from the 21 pairs of user-submitted PNGs. On Mac, the new built-in writer still needs one end-to-end validation run.
