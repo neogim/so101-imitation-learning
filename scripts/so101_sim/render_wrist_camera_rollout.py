@@ -75,6 +75,9 @@ def run(args):
     cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, wrist.CAMERA)
     if cid < 0:
         raise ValueError("Wrist RGB camera missing after compile")
+    inspection_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, wrist.MOUNT_INSPECTION_CAMERA)
+    if inspection_id < 0:
+        raise ValueError("Mount inspection camera missing after compile")
     enabled = wrist.enable_environment_contacts(model)
     max_steps = math.ceil(len(rows) / args.stride)
     args.out.mkdir(parents=True, exist_ok=False)
@@ -84,6 +87,8 @@ def run(args):
     side_dir.mkdir()
     comparison_dir = args.out / "side_wrist_frames"
     comparison_dir.mkdir()
+    inspection_dir = args.out / "mount_inspection_frames"
+    inspection_dir.mkdir()
     report_rows = []
     if args.mode == "physics":
         # The recorded visual home is intentionally outside URDF constraints.
@@ -113,6 +118,9 @@ def run(args):
             renderer.update_scene(data, camera=side_camera)
             side_image = Image.fromarray(renderer.render().copy())
             side_image.save(side_dir / f"side_{i:04d}.png")
+            renderer.update_scene(data, camera=wrist.MOUNT_INSPECTION_CAMERA)
+            inspection_image = Image.fromarray(renderer.render().copy())
+            inspection_image.save(inspection_dir / f"mount_{i:04d}.png")
             comparison = Image.new("RGB", (2 * args.width, args.height + 28), (25, 30, 40))
             comparison.paste(side_image, (0, 28))
             comparison.paste(wrist_image, (args.width, 28))
@@ -145,12 +153,14 @@ def run(args):
         for pattern, filename in [
             ("side_%04d.png", "side_camera.mp4"),
             ("side_wrist_%04d.png", "side_wrist_comparison.mp4"),
+            ("mount_%04d.png", "mount_inspection.mp4"),
         ]:
             subprocess.run([
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                 "-framerate", str(args.fps), "-i",
-                str((side_dir if pattern.startswith("side_") and
-                     pattern != "side_wrist_%04d.png" else comparison_dir) / pattern),
+                str((side_dir if pattern == "side_%04d.png" else
+                     inspection_dir if pattern == "mount_%04d.png"
+                     else comparison_dir) / pattern),
                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart", str(args.out / filename)
             ], check=True)
@@ -158,7 +168,7 @@ def run(args):
         "status": "WRIST_CAMERA_PROVISIONAL_SIM",
         "mode": args.mode, "camera": wrist.CAMERA,
         "side_camera": side_camera,
-        "views": ["side", "wrist", "side_wrist_comparison"],
+        "views": ["side", "wrist", "side_wrist_comparison", "mount_inspection"],
         "attachment_link": "gripper_link",
         "fovy_deg": args.wrist_fovy,
         "width": args.width, "height": args.height,
