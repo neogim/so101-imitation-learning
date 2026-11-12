@@ -17,15 +17,17 @@ MOUNT_INSPECTION_CAMERA = "r2s_wrist_mount_inspection"
 # jaw tips are in approximately the negative Z direction in this frame.
 DEFAULT_MOUNT_POS = (0.0, 0.024, -0.045)
 DEFAULT_MOUNT_RPY_DEG = (0.0, 0.0, 0.0)
-DEFAULT_LOOK_AT = (-0.008, -0.002, -0.165)  # rig-local, beyond jaw tips
+DEFAULT_LOOK_AT = (0.0, -0.024, -0.112)  # rig-local, beyond jaw tips
 DEFAULT_FOVY_DEG = 70.0
 
-# The side-view silhouette is a bent L: a foot screwed to the jaw root,
-# a vertical riser and a horizontal upper shelf. Sizes are in metres.
+# The photographed side profile is a short mounting foot, an OBLIQUE bent
+# rising segment, and a horizontal camera shelf: a `^-`-like silhouette.
+# Coordinates here are still photo-based hypotheses in the rig local frame.
 FOOT_POS = (0.0, 0.0, 0.0)
-RISER_POS = (0.0, 0.0, 0.018)
-TOP_POS = (0.0, 0.022, 0.035)
-BOARD_POS = (0.0, 0.043, 0.035)
+KNEE_POS = (0.0, 0.015, 0.004)
+ELBOW_POS = (0.0, 0.041, 0.032)
+SHELF_END_POS = (0.0, 0.073, 0.032)
+BOARD_POS = (0.0, 0.068, 0.036)
 PCB_HALF = (0.016, 0.016, 0.002)
 BARREL_RADIUS_M = 0.008
 BARREL_HALF_LENGTH_M = 0.013
@@ -93,6 +95,21 @@ def quat_from_basis(right, up, back):
     return ((m10-m01)/s,(m02+m20)/s,(m12+m21)/s,0.25*s)
 
 
+def between_endpoints(a, b, width, thickness):
+    """Center, box size and orientation for a thin segment in the Y-Z plane."""
+    direction = tuple(float(b[i] - a[i]) for i in range(3))
+    length = math.sqrt(sum(v*v for v in direction))
+    if length < 1e-6:
+        raise ValueError("Zero-length plate segment")
+    # Local box +Y points from a toward b; X remains across the bracket.
+    along = tuple(v/length for v in direction)
+    across = (1.0, 0.0, 0.0)
+    normal = normalize(cross(across, along))
+    quat = quat_from_basis(across, along, normal)
+    mid = tuple((a[i]+b[i])/2 for i in range(3))
+    return mid, (width/2, length/2 + 0.001, thickness/2), quat
+
+
 def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
             fovy=DEFAULT_FOVY_DEG, look_at=DEFAULT_LOOK_AT):
     """Install photo-based L-shaped rig with separate hidden collision proxies."""
@@ -109,7 +126,7 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
     # A fixed child body follows J5, not the J6 moving jaw.
     rig = parent.add_body(name=RIG_BODY, pos=pos,
                           euler=[math.radians(v) for v in rpy_deg],
-                          mass=0.025, ipos=[0, 0.023, 0.024],
+                          mass=0.025, ipos=[0, 0.045, 0.023],
                           inertia=[2e-5,2e-5,5e-6])
 
     # Crucial: collision proxies are group 3 (hidden in ordinary rendering);
@@ -119,19 +136,21 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
                      rgba=[0.8,0.3,0.3,0.1], friction=[0.8,0.01,0.001])
     visual = dict(contype=0, conaffinity=0, group=0)
 
-    # Curved real fixture approximated with a connected 90-degree bent L.
-    parts = (
-        ("foot", FOOT_POS, (0.015, 0.012, 0.004)),
-        ("vertical", RISER_POS, (0.007,0.007,0.020)),
-        ("top", TOP_POS, (0.010,0.023,0.004)),
-    )
-    for i,(name,center,halfsize) in enumerate(parts):
+    # Actual fixture: a narrow screw-on foot, an angled up-and-out bridge,
+    # and a small shelf carrying the camera. Each plate is a thin, connected
+    # beam (visual plus independently collidable proxy).
+    foot = (FOOT_POS, (0.015, 0.013, 0.004), (1., 0., 0., 0.))
+    rise = between_endpoints(KNEE_POS, ELBOW_POS, 0.014, 0.006)
+    shelf = between_endpoints(ELBOW_POS, SHELF_END_POS, 0.037, 0.006)
+    for i,(name,(center,halfsize,rotation)) in enumerate(zip(
+        ("foot","diagonal","shelf"),(foot,rise,shelf))):
         rig.add_geom(name=COLLISION_NAMES[i],
                      type=mujoco.mjtGeom.mjGEOM_BOX, pos=center,
-                     size=halfsize, **collision)
+                     quat=rotation, size=halfsize, **collision)
         rig.add_geom(name="r2s_wrist_visual_"+name,
                      type=mujoco.mjtGeom.mjGEOM_BOX, pos=center,
-                     size=halfsize, rgba=[0.92,0.91,0.87,1], **visual)
+                     quat=rotation, size=halfsize,
+                     rgba=[0.92,0.91,0.87,1], **visual)
 
     # The board is oriented perpendicular to the *actual optical direction*,
     # not always parallel to the wrist X-Y plane. The lens and optical point
