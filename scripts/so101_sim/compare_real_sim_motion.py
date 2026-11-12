@@ -66,7 +66,7 @@ def video_object_layout(T_base_cv, intrinsics, muhi_pixel=(255., 360.),
 
 def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
                           table_extra_left_m=.04, table_extra_front_m=.05,
-                          *, wrist_camera=False, wrist_mount_pos=(0., -.014, .037),
+                          *, wrist_camera=False, wrist_mount_pos=(0., 0., -.048),
                           wrist_mount_rpy_deg=(0., 0., 0.), wrist_fovy=75.):
     import mujoco
 
