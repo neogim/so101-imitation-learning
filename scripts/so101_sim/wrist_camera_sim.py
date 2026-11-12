@@ -71,9 +71,12 @@ def install(spec, *, pos=(0.0, -0.014, 0.037),
                  pos=[0, -0.013, 0.060], euler=[math.pi / 2, 0, 0],
                  size=[0.008, 0.013, 0], rgba=[0.08, 0.09, 0.10, 1],
                  **common)
-    # Align optical axis with the approximate lens outward direction (-Y).
+    # The first version aimed along -Y and largely missed the gripper. Aim
+    # downward toward the tool tip in the gripper-local Y/Z plane instead.
+    # MuJoCo camera looks along -Z; optical calibration is still provisional.
+    # Camera position is just beyond the projecting lens, not on the PCB.
     rig.add_camera(name=CAMERA, pos=[0, -0.028, 0.060],
-                   xyaxes=[1, 0, 0, 0, 0, -1], fovy=fovy)
+                   xyaxes=[1, 0, 0, 0, 0.985, 0.174], fovy=fovy)
     return rig
 
 
