@@ -17,8 +17,8 @@ import wrist_camera_sim as wrist
 
 class WristCameraRigTests(unittest.TestCase):
     def test_validate_mount_rejects_units_and_nonfinite(self):
-        self.assertEqual(wrist.validate_mount((0, -.014, .037), (0, 0, 0))[0],
-                         (0., -.014, .037))
+        self.assertEqual(wrist.validate_mount((0, 0, -.048), (0, 0, 0))[0],
+                         (0., 0., -.048))
         for pos, rpy in [
             ((0, 0, 600), (0, 0, 0)),
             ((math.nan, 0, 0), (0, 0, 0)),
@@ -27,6 +27,16 @@ class WristCameraRigTests(unittest.TestCase):
         ]:
             with self.subTest(pos=pos, rpy=rpy), self.assertRaises(ValueError):
                 wrist.validate_mount(pos, rpy)
+
+    def test_photographed_j5_j6_bracket_is_contiguous(self):
+        # Bracket foot and stem must overlap; otherwise the rig floats.
+        self.assertEqual(wrist.DEFAULT_MOUNT_POS, (0.0, 0.0, -0.048))
+        self.assertLessEqual(wrist.BRACKET_STEM_CENTER_Z - 0.029,
+                             wrist.BRACKET_BASE_Z + 0.006)
+        self.assertGreaterEqual(wrist.BRACKET_STEM_CENTER_Z + 0.029,
+                                wrist.BRACKET_TOP_Z - 0.004)
+        self.assertLess(wrist.CAMERA_Z, wrist.LENS_Z)
+        self.assertLess(wrist.LENS_Z, wrist.PCB_Z)
 
     def test_mujoco_compile_camera_follows_joint_and_colliders_exist(self):
         import mujoco
