@@ -164,7 +164,7 @@ def run(args):
             comparison.paste(wrist_image, (args.width, 28))
             draw = ImageDraw.Draw(comparison)
             draw.text((6, 7), f"SIDE | {rows[row_idx].get('stage', '')} | frame {row_idx}", fill="white")
-            draw.text((args.width + 6, 7), "WRIST | provisional pose", fill="white")
+            draw.text((args.width + 6, 7), "WRIST | shelf-aligned camera (photo estimate)", fill="white")
             comparison.save(comparison_dir / f"side_wrist_{i:04d}.png")
             report_rows.append({
                 "frame": i, "source_frame": row_idx,
@@ -272,12 +272,12 @@ def main():
     p.add_argument("--kd", type=float, default=1.1)
     p.add_argument("--torque", type=float, default=3.)
     p.add_argument("--wrist-mount-pos", type=float, nargs=3,
-                   default=(0., .024, -.045), metavar=("X", "Y", "Z"))
+                   default=wrist.DEFAULT_MOUNT_POS, metavar=("X", "Y", "Z"))
     p.add_argument("--wrist-mount-rpy-deg", type=float, nargs=3,
-                   default=(0., 0., 0.), metavar=("R", "P", "Y"))
-    p.add_argument("--wrist-fovy", type=float, default=70.)
+                   default=wrist.DEFAULT_MOUNT_RPY_DEG, metavar=("R", "P", "Y"))
+    p.add_argument("--wrist-fovy", type=float, default=wrist.DEFAULT_FOVY_DEG)
     p.add_argument("--wrist-look-at", type=float, nargs=3,
-                   default=(0.,-.024,-.112), metavar=("X","Y","Z"))
+                   default=wrist.DEFAULT_LOOK_AT, metavar=("X","Y","Z"))
     p.add_argument("--dataset-root", type=Path, default=scene.DATASET)
     p.add_argument("--episode", type=int, default=4)
     p.add_argument("--object-layout-json", type=Path, default=scene.OBJECTS)
