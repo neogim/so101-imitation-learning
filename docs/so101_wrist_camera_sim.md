@@ -77,3 +77,31 @@ cat "$OUT_PHYS/summary.json"
 3. In the contact CSV, deliberate rig-table or rig-cup geometry overlaps produce named wrist contact pairs (initial unintended overlaps must be diagnosed, not ignored).
 4. On physics mode, track joint-error and contact dynamics; compare with and without the camera, then measure actual mass/pose if needed.
 5. Do not connect the robot to these experimental scripts.
+
+## 2026-11-12: user-run review and synchronized Side/Wrist fix
+
+The user ran the first wrist-only prototype and supplied `so101-wrist-camera-20261112-220725.zip`. Observed: 48 rendered 320×240 frames, the wrist view looked sideways / toward tabletop undersides and did not consistently include the end effector. The approximate camera rig looked detached/floating; this is a **real failure of placement calibration**, not evidence of satisfactory assembly. Collision log: 48/48 frames with wrist contacts and negative distances. Unnamed opposite geoms require body-ID classification; many appear to be robot self-contacts. Do NOT call 48/48 a real object collision rate.
+
+Changes on this branch:
+- The provisional wrist optical axis is now pitched toward the gripper/tip rather than pointing approximately sideways; this is a visual hypothesis, not measured extrinsics.
+- The video script captures synchronized **Side**, **Wrist**, and **Side/Wrist comparison** views from identical simulation states.
+- Contact JSON now includes raw geom IDs, body names and categories (robot_self, table, object, world), even if the imported URDF geoms are unnamed.
+- Physical bracket/PCB/lens geometry is still a simplified proxy. **No claim is made that a newly added shape is physically attached at the correct pose.** Use Side view to identify mounting offset and refine the proxy before assessing safety.
+
+After the usual `conda activate so101-real2sim` and `git pull --ff-only`:
+
+```bash
+python -m unittest discover -s scripts/so101_sim -p 'test_wrist_camera_sim.py' -v
+ROLL_OUT="$(find outputs -type f -name rollout.csv | grep -Ei 'j5|ablation' | sort | tail -n 1)"
+test -f "$ROLL_OUT" || { echo 'Missing J5 rollout.csv' >&2; exit 1; }
+OUT="outputs/so101-wrist-dualview-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/render_wrist_camera_rollout.py \
+  --rollout "$ROLL_OUT" --policy normal --mode kinematic \
+  --stride 4 --save-video --out "$OUT"
+open "$OUT/side_wrist_comparison.mp4"
+open "$OUT/side_camera.mp4"
+open "$OUT/wrist_camera.mp4"
+cat "$OUT/summary.json"
+```
+
+Further calibration needs a correct actual mount-to-`gripper_link` translation/rotation or visual fitting with verified STL coordinate systems. Do not tune collision margins to hide incorrect alignment. Real-object physics, collision-safe PD and ACT are not yet validated.
