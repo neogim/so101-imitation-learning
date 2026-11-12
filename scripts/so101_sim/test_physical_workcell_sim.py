@@ -26,6 +26,11 @@ class PhysicalWorkcellTest(unittest.TestCase):
             name="r2s_muhi_cap", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
             pos=[.05, .0485, .0175], quat=[.70710678, .70710678, 0, 0],
             size=[.0175, .016975, 0], contype=0, conaffinity=0)
+        spec.worldbody.add_geom(
+            name="r2s_cup_base", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            pos=[.18, .1, .001], size=[.039, .001, 0],
+            contype=0, conaffinity=0)
+        physical.enable_static_contacts_in_spec(spec)
         physical.install_dynamic_muhi(spec)
         model = spec.compile()
         data = mujoco.MjData(model)
