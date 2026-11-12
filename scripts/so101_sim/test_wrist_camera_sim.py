@@ -20,7 +20,7 @@ import wrist_camera_sim as wrist
 class WristCameraTests(unittest.TestCase):
     def test_mount_validation_and_defaults(self):
         self.assertEqual(wrist.validate_mount(wrist.DEFAULT_MOUNT_POS,(0,0,0))[0],
-                         (0.0,0.024,-0.045))
+                         (0.0,0.022,-0.016))
         for xyz,rpy in [((0,0,100),(0,0,0)),
                         ((math.nan,0,0),(0,0,0)),
                         ((0,0,0),(0,math.inf,0)),
@@ -38,11 +38,17 @@ class WristCameraTests(unittest.TestCase):
         self.assertGreater(elbow[1],knee[1])
         self.assertGreater(elbow[2],knee[2])
         self.assertGreater(end[1],elbow[1])
-        self.assertAlmostEqual(end[2],elbow[2])
+        # Photo: outer camera shelf is tilted, NOT parallel to J5 foot.
+        self.assertLess(end[2], elbow[2] - 0.012)
+        self.assertAlmostEqual(foot[2], knee[2])
         self.assertLess(abs(wrist.BOARD_POS[1]-end[1]),0.01)
         centre,size,quat=wrist.between_endpoints(knee,elbow,.014,.006)
         self.assertGreater(size[1],.015)
         self.assertAlmostEqual(sum(q*q for q in quat),1.,places=6)
+        # PCB lies on the tilted shelf rather than floating above its end.
+        slope=(end[2]-elbow[2])/(end[1]-elbow[1])
+        expected=elbow[2]+slope*(wrist.BOARD_POS[1]-elbow[1])
+        self.assertAlmostEqual(wrist.BOARD_POS[2],expected,delta=0.002)
 
     def test_optical_camera_looks_at_target(self):
         origin=wrist.BOARD_POS
@@ -91,11 +97,19 @@ class WristCameraTests(unittest.TestCase):
             self.assertEqual(model.geom_contype[gid],0)
             self.assertEqual(model.geom_group[gid],0)
         mujoco.mj_forward(model,data)
+        # Camera PCB and outer shelf must have matching rotation matrices.
+        pcbid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                "r2s_wrist_visual_pcb")
+        shelfid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                  "r2s_wrist_visual_shelf")
+        np.testing.assert_allclose(data.geom_xmat[pcbid],data.geom_xmat[shelfid],atol=1e-6)
+        np.testing.assert_allclose(data.cam_xmat[cid],data.geom_xmat[pcbid],atol=1e-6)
         before=data.cam_xmat[cid].copy()
         qid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"wrist_roll")
         data.qpos[model.jnt_qposadr[qid]]=math.pi/2
         mujoco.mj_forward(model,data)
         self.assertGreater(np.linalg.norm(data.cam_xmat[cid]-before),1e-3)
+        np.testing.assert_allclose(data.cam_xmat[cid],data.geom_xmat[shelfid],atol=1e-6)
 
     def test_install_twice_fails(self):
         import mujoco
