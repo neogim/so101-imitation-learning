@@ -15,19 +15,20 @@ MOUNT_INSPECTION_CAMERA = "r2s_wrist_mount_inspection"
 
 # The J5 wrist_roll child and J6 finger parent is gripper_link. The common
 # jaw tips are in approximately the negative Z direction in this frame.
-DEFAULT_MOUNT_POS = (0.0, 0.024, -0.045)
+DEFAULT_MOUNT_POS = (0.0, 0.022, -0.016)
 DEFAULT_MOUNT_RPY_DEG = (0.0, 0.0, 0.0)
-DEFAULT_LOOK_AT = (0.0, -0.024, -0.112)  # rig-local, beyond jaw tips
+DEFAULT_LOOK_AT = (0.0, -0.030, -0.135)  # rig-local orientation check
 DEFAULT_FOVY_DEG = 70.0
 
-# The photographed side profile is a short mounting foot, an OBLIQUE bent
-# rising segment, and a horizontal camera shelf: a `^-`-like silhouette.
-# Coordinates here are still photo-based hypotheses in the rig local frame.
+# The side photograph shows a short foot by J5, an upward diagonal,
+# and a distinctly DOWN-SLOPING outer camera shelf (not parallel to foot).
+# Together these form the photographed bent fixture profile.
+# Positions are still photo-based estimates, not calibrated CAD measurements.
 FOOT_POS = (0.0, 0.0, 0.0)
-KNEE_POS = (0.0, 0.015, 0.004)
-ELBOW_POS = (0.0, 0.041, 0.032)
-SHELF_END_POS = (0.0, 0.073, 0.032)
-BOARD_POS = (0.0, 0.068, 0.036)
+KNEE_POS = (0.0, 0.013, 0.0)
+ELBOW_POS = (0.0, 0.038, 0.031)
+SHELF_END_POS = (0.0, 0.074, 0.009)
+BOARD_POS = (0.0, 0.065, 0.0145)
 PCB_HALF = (0.016, 0.016, 0.002)
 BARREL_RADIUS_M = 0.008
 BARREL_HALF_LENGTH_M = 0.013
@@ -112,7 +113,7 @@ def between_endpoints(a, b, width, thickness):
 
 def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
             fovy=DEFAULT_FOVY_DEG, look_at=DEFAULT_LOOK_AT):
-    """Install photo-based L-shaped rig with separate hidden collision proxies."""
+    """Install the bent J5-side fixture and its aligned camera board."""
     import mujoco
     pos, rpy_deg = validate_mount(pos, rpy_deg)
     if not math.isfinite(fovy) or not 20 <= fovy <= 130:
@@ -152,12 +153,17 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
                      quat=rotation, size=halfsize,
                      rgba=[0.92,0.91,0.87,1], **visual)
 
-    # The board is oriented perpendicular to the *actual optical direction*,
-    # not always parallel to the wrist X-Y plane. The lens and optical point
-    # are constructed from this same basis, so they cannot disagree.
-    right,up,back = camera_axes(BOARD_POS, look_at)
-    rotation = quat_from_basis(right,up,back)
+    # Keep the PCB, lens and optical camera rigidly PARALLEL to the tilted
+    # outer shelf; look-at must not independently rotate the camera away from
+    # its bracket. The shelf's +Y is the camera's up axis, -Z points at jaws.
+    right = (1.0, 0.0, 0.0)
+    up = normalize(tuple(SHELF_END_POS[i] - ELBOW_POS[i] for i in range(3)))
+    back = normalize(cross(right, up))
+    rotation = quat_from_basis(right, up, back)
     board = tuple(float(v) for v in BOARD_POS)
+    target_direction = normalize(tuple(float(look_at[i])-board[i] for i in range(3)))
+    if sum(-back[i]*target_direction[i] for i in range(3)) < 0.98:
+        raise ValueError("Look-at disagrees with shelf/PCB angle; adjust the fixture together")
     lens_center = tuple(board[i]-back[i]*0.014 for i in range(3))
     optical_center = tuple(board[i]-back[i]*0.029 for i in range(3))
 
