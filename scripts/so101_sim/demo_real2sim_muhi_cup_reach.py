@@ -117,6 +117,7 @@ def create_scene(args):
         extras, intr, args.urdf, layout,
         table_extra_left_m=float(cup["table_extra_left_cm"])/100,
         table_extra_front_m=float(cup["table_extra_front_cm"])/100,
+        physical_objects=getattr(args, "physical_objects", False),
         wrist_camera=getattr(args, "wrist_camera", False),
         wrist_mount_pos=getattr(args, "wrist_mount_pos", (0., .024, -.045)),
         wrist_mount_rpy_deg=getattr(args, "wrist_mount_rpy_deg", (0., 0., 0.)),
@@ -140,6 +141,9 @@ def create_scene(args):
         xyz_m=cup["cup_delta_base_m"])
 
     data = mujoco.MjData(model)
+    if getattr(args, "physical_objects", False):
+        import physical_workcell_sim
+        physical_workcell_sim.configure_dynamic_muhi(model, data)
     episode = r2s.read_episode(args.dataset_root.resolve(strict=True),
                                args.episode, stride=1, max_frames=1)
     state = episode["rows"][0]["state"]
