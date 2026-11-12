@@ -237,7 +237,7 @@ def main():
                    default=(0., 0., 0.), metavar=("R", "P", "Y"))
     p.add_argument("--wrist-fovy", type=float, default=70.)
     p.add_argument("--wrist-look-at", type=float, nargs=3,
-                   default=(-.008,-.002,-.165), metavar=("X","Y","Z"))
+                   default=(0.,-.024,-.112), metavar=("X","Y","Z"))
     p.add_argument("--dataset-root", type=Path, default=scene.DATASET)
     p.add_argument("--episode", type=int, default=4)
     p.add_argument("--object-layout-json", type=Path, default=scene.OBJECTS)
