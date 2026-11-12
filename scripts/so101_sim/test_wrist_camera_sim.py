@@ -37,6 +37,12 @@ class WristCameraRigTests(unittest.TestCase):
                                 wrist.BRACKET_TOP_Z - 0.004)
         self.assertLess(wrist.CAMERA_Z, wrist.LENS_Z)
         self.assertLess(wrist.LENS_Z, wrist.PCB_Z)
+        # Board and L-bracket must physically meet; 0.004 is top half-thickness
+        # and 0.003 is PCB half-thickness (metres).
+        self.assertLessEqual(wrist.PCB_Z - 0.003,
+                             wrist.BRACKET_TOP_Z + 0.004)
+        self.assertLessEqual(wrist.PCB_Z - 0.003,
+                             wrist.LENS_Z + 0.012)
 
     def test_mujoco_compile_camera_follows_joint_and_colliders_exist(self):
         import mujoco
