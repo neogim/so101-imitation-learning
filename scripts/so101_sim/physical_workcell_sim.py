@@ -179,6 +179,11 @@ def run(args):
         data.qpos[adr+2] += args.drop_height_mm / 1000
     mujoco.mj_forward(model, data)
     initial_xyz = data.qpos[adr:adr+3].copy()
+    fixed_robot_qpos = data.qpos[:adr].copy()
+    fixed_robot_vel_len = object_dof
+    # Drop/push isolate object physics: the robot is a prescribed, immobile
+    # collision obstacle, NOT a dynamically controlled arm. Replay uses PD.
+    robot_mode = "pd_replay" if args.mode == "replay" else "fixed_kinematic"
     if args.mode == "replay":
         targets = read_replay(args.rollout)
     else:
@@ -205,14 +210,27 @@ def run(args):
             if args.mode == "push" and step < args.force_steps:
                 data.xfrc_applied[object_id, 0] = args.force_n
             data.qfrc_applied[:] = 0
+            if robot_mode == "fixed_kinematic":
+                data.qpos[:adr] = fixed_robot_qpos
+                data.qvel[:fixed_robot_vel_len] = 0
+                mujoco.mj_forward(model, data)
             if args.mode == "replay":
                 target = np.clip(targets[min(step//args.control_substeps, len(targets)-1)], low, high)
                 demand = args.kp*(target-data.qpos[qids]) - args.kd*data.qvel[dids] + data.qfrc_bias[dids]
                 data.qfrc_applied[dids] = np.clip(demand, -args.torque, args.torque)
             mujoco.mj_step(model, data)
+            if robot_mode == "fixed_kinematic":
+                data.qpos[:adr] = fixed_robot_qpos
+                data.qvel[:fixed_robot_vel_len] = 0
+                mujoco.mj_forward(model, data)
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError("Nonfinite MuJoCo state; inspect self collision and gains")
-            categories, min_dist, _ = summarize_contacts(model, data, object_id)
+            categories, min_dist, contacts_detail = summarize_contacts(model, data, object_id)
+            muhi_table_depth = min((c["distance_mm"] for c in contacts_detail
+                                    if c["category"] == "muhi_table"), default=None)
+            wrist_external_depth = min((c["distance_mm"] for c in contacts_detail
+                                        if c["category"] in ("wrist_table", "wrist_cup")
+                                        or c["wrist_muhi"]), default=None)
             point = np.asarray(data.qpos[adr:adr+3]).copy()
             rows = {
                 "step": step, "time_s": float(data.time),
@@ -222,6 +240,8 @@ def run(args):
                 "muhi_velocity_m_s": float(np.linalg.norm(data.qvel[object_dof:object_dof+3])),
                 "contacts": int(data.ncon),
                 "min_contact_distance_mm": min_dist,
+                "min_muhi_table_distance_mm": muhi_table_depth,
+                "min_wrist_external_distance_mm": wrist_external_depth,
                 **categories,
             }
             records.append(rows)
@@ -253,6 +273,8 @@ def run(args):
         "status": "PHYSICAL_MUHI_WORKCELL_EXPERIMENTAL",
         "mode": args.mode,
         "simulation_only": True,
+        "robot_control_mode": robot_mode,
+        "robot_control_warning": ("Drop/push rigidly hold robot joint coordinates between physics steps; object dynamics are active but robot reaction motion is suppressed." if robot_mode == "fixed_kinematic" else "PD replay is not SAC inference; initial pose may be dynamically unstable."),
         "source_scene": "saved Episode 4 real-to-sim approximation",
         "physical_time_s": float(data.time),
         "frames": len(records),
@@ -264,6 +286,10 @@ def run(args):
         "steps_with_muhi_cup_contact": sum(r["muhi_cup"]>0 for r in records),
         "steps_with_muhi_table_contact": sum(r["muhi_table"]>0 for r in records),
         "steps_with_wrist_contact": sum((r["wrist_table"]+r["wrist_cup"]+r["wrist_muhi"]+r["wrist_robot_self"])>0 for r in records),
+        "steps_with_wrist_external_contact": sum((r["wrist_table"]+r["wrist_cup"]+r["wrist_muhi"])>0 for r in records),
+        "steps_with_wrist_self_contact": sum(r["wrist_robot_self"]>0 for r in records),
+        "minimum_muhi_table_distance_mm": min((r["min_muhi_table_distance_mm"] for r in records if r["min_muhi_table_distance_mm"] is not None), default=None),
+        "minimum_wrist_external_distance_mm": min((r["min_wrist_external_distance_mm"] for r in records if r["min_wrist_external_distance_mm"] is not None), default=None),
         "environment_geoms_enabled": enabled,
         "physical_body": DYNAMIC_BODY,
         "physical_geom_names": DYNAMIC_GEOMS,
@@ -277,6 +303,7 @@ def run(args):
             "Muhi mass, static cup geometry, wrist mount, friction and calibration are provisional.",
             "Original URDF has potentially spurious base/shoulder mesh contacts.",
             "Metrics are MuJoCo numeric simulation results, not real hardware observations.",
+            "Drop/push hold robot joint states kinematically; only Muhi is dynamic. This is NOT a test of arm reaction forces.",
         ]
     }
     (args.out/"summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
