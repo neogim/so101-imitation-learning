@@ -44,6 +44,23 @@ class PhysicalComparisonTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 comparison.load_comparison(path)
 
+    def test_out_of_bounds_visual_home_rejected_by_default(self):
+        source=np.array([0.,.9,-.1,0.,0.])
+        low=np.array([-.5]*5)
+        high=np.array([.5]*5)
+        audit=comparison.initial_pose_audit(source,low,high)
+        self.assertFalse(audit["matches_visual_initial_pose"])
+        self.assertAlmostEqual(audit["max_clip_delta_deg"],np.degrees(.4))
+        with self.assertRaisesRegex(ValueError,"PHYSICS BASELINE REJECTED"):
+            comparison.assert_initial_pose_fidelity(audit)
+        self.assertIs(comparison.assert_initial_pose_fidelity(
+            audit,allow_clipped_diagnostic=True),audit)
+
+    def test_valid_initial_pose_not_modified(self):
+        audit=comparison.initial_pose_audit(np.zeros(5),-np.ones(5),np.ones(5))
+        self.assertTrue(audit["matches_visual_initial_pose"])
+        comparison.assert_initial_pose_fidelity(audit)
+
     def test_pd_changes_joint_through_step_not_teleport(self):
         spec=mujoco.MjSpec()
         body=spec.worldbody.add_body(name="arm",pos=[0,0,.1])
