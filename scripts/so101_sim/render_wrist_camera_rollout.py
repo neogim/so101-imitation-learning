@@ -18,7 +18,7 @@ from pathlib import Path
 
 import mujoco
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import demo_real2sim_muhi_cup_reach as scene
 import wrist_camera_sim as wrist
@@ -80,6 +80,10 @@ def run(args):
     args.out.mkdir(parents=True, exist_ok=False)
     image_dir = args.out / "wrist_frames"
     image_dir.mkdir()
+    side_dir = args.out / "side_frames"
+    side_dir.mkdir()
+    comparison_dir = args.out / "side_wrist_frames"
+    comparison_dir.mkdir()
     report_rows = []
     if args.mode == "physics":
         # The recorded visual home is intentionally outside URDF constraints.
@@ -102,7 +106,20 @@ def run(args):
             contacts = wrist.contact_summary(model, data)
             renderer.update_scene(data, camera=wrist.CAMERA)
             pixels = renderer.render().copy()
-            Image.fromarray(pixels).save(image_dir / f"wrist_{i:04d}.png")
+            wrist_image = Image.fromarray(pixels)
+            wrist_image.save(image_dir / f"wrist_{i:04d}.png")
+            # Render the SAME pose through the known side view; crucial for
+            # checking whether the camera/brace floats or intersects the arm.
+            renderer.update_scene(data, camera=side_camera)
+            side_image = Image.fromarray(renderer.render().copy())
+            side_image.save(side_dir / f"side_{i:04d}.png")
+            comparison = Image.new("RGB", (2 * args.width, args.height + 28), (25, 30, 40))
+            comparison.paste(side_image, (0, 28))
+            comparison.paste(wrist_image, (args.width, 28))
+            draw = ImageDraw.Draw(comparison)
+            draw.text((6, 7), f"SIDE | {rows[row_idx].get('stage', '')} | frame {row_idx}", fill="white")
+            draw.text((args.width + 6, 7), "WRIST | provisional pose", fill="white")
+            comparison.save(comparison_dir / f"side_wrist_{i:04d}.png")
             report_rows.append({
                 "frame": i, "source_frame": row_idx,
                 "stage": rows[row_idx].get("stage"),
@@ -125,9 +142,23 @@ def run(args):
             "-pix_fmt", "yuv420p", "-movflags", "+faststart",
             str(args.out / "wrist_camera.mp4")
         ], check=True)
+        for pattern, filename in [
+            ("side_%04d.png", "side_camera.mp4"),
+            ("side_wrist_%04d.png", "side_wrist_comparison.mp4"),
+        ]:
+            subprocess.run([
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-framerate", str(args.fps), "-i",
+                str((side_dir if pattern.startswith("side_") and
+                     pattern != "side_wrist_%04d.png" else comparison_dir) / pattern),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", str(args.out / filename)
+            ], check=True)
     summary = {
         "status": "WRIST_CAMERA_PROVISIONAL_SIM",
         "mode": args.mode, "camera": wrist.CAMERA,
+        "side_camera": side_camera,
+        "views": ["side", "wrist", "side_wrist_comparison"],
         "attachment_link": "gripper_link",
         "fovy_deg": args.wrist_fovy,
         "width": args.width, "height": args.height,
