@@ -105,3 +105,20 @@ cat "$OUT/summary.json"
 ```
 
 Further calibration needs a correct actual mount-to-`gripper_link` translation/rotation or visual fitting with verified STL coordinate systems. Do not tune collision margins to hide incorrect alignment. Real-object physics, collision-safe PD and ACT are not yet validated.
+
+## 2026-11-12: corrected J5–J6 jaw-root mount (photograph-based revision)
+
+**Correction to previous explanation:** The `gripper_link` selection was already correct. URDF: `wrist_roll` (J5) connects `wrist_link` to `gripper_link`; `gripper` (J6) connects `gripper_link` to `moving_jaw_so101_v1_link`. The issue was the **wrong local offset, disconnected visual blocks and optical direction**, not a J4 parent.
+
+Four additional photographs show the bracket's **foot attached to the common gripper/jaw-root base**, with a white bent riser supporting a 32 mm PCB and lens looking along the jaws. Camera must not be parented to a moving finger (J6).
+
+New provisional `gripper_link` local coordinates (metres):
+- Bracket-foot anchor: `(0, 0, -0.048)`; the prior `(0, -0.014, +0.037)` raised the assembly near the upstream wrist.
+- Connected foot, stem, top and PCB; lens extends from PCB in local **-Z**, and sensor at `rig z=+0.032` points mostly in gripper **-Z** (with slight tilt). This aims to include a modest amount of jaw tips at the image edge.
+- Top of the bracket and bottom of the PCB proxies overlap slightly rather than float. Additional collision primitive is `r2s_wrist_bracket_foot_collision`.
+- Mount position passed from the existing scene builder, standalone renderer and unit tests now shares this default. The script retains `--wrist-mount-pos` / `--wrist-mount-rpy-deg` overrides.
+- Side/Wrist synchronized videos and contact-by-body/category log remain enabled. Source URDF/STL and original SAC remain untouched.
+
+**Validation warning**: This is a photo-based starting hypothesis, not a calibrated CAD placement. Geometry is primitive proxies, not the mixed-unit STL files. Neither actual 3D rendering nor collision clearance after this patch has been verified remotely. Confirm in Side video that the bracket foot touches the J5/J6 jaw root and in Wrist video that a small portion of the end effector appears. Do not hide unexpected self-contacts by globally disabling collisions. If the attachment remains misaligned, determine the true gripper-local mount transform with the CAD or visual landmarks rather than blindly shifting positions.
+
+For Mac test and dual video generation, use the earlier commands in this document, beginning with `conda activate so101-real2sim`.
