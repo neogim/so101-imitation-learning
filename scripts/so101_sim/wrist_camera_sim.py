@@ -115,9 +115,28 @@ def contact_summary(model, data):
     for c in data.contact[:data.ncon]:
         if int(c.geom1) not in wrist_ids and int(c.geom2) not in wrist_ids:
             continue
+        id1, id2 = int(c.geom1), int(c.geom2)
+        body1, body2 = int(model.geom_bodyid[id1]), int(model.geom_bodyid[id2])
+        name1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, id1)
+        name2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, id2)
+        other_id = id2 if id1 in wrist_ids else id1
+        other_body = int(model.geom_bodyid[other_id])
+        other_name = (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, other_id)
+                      or f"geom{other_id}")
+        if other_name.startswith(("r2s_preview_table", "r2s_table_front_")):
+            category = "table"
+        elif other_name.startswith(("r2s_muhi_", "r2s_cup_")):
+            category = "object"
+        elif other_body == 0:
+            category = "world"
+        else:
+            category = "robot_self"
         result.append({
-            "geom1": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(c.geom1)),
-            "geom2": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, int(c.geom2)),
+            "geom1": name1 or f"geom{id1}", "geom2": name2 or f"geom{id2}",
+            "geom1_id": id1, "geom2_id": id2,
+            "body1": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body1) or f"body{body1}",
+            "body2": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body2) or f"body{body2}",
+            "category": category,
             "distance_mm": float(c.dist) * 1000,
             "constraint_active": int(c.efc_address) >= 0,
         })
