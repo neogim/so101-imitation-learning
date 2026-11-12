@@ -68,9 +68,16 @@ def initial_pose_audit(source_q, low, high, *, tolerance_deg=0.1):
 def assert_initial_pose_fidelity(audit, *, allow_clipped_diagnostic=False):
     """Do not compare unlike initial states under a 'same scene' label."""
     if not audit["matches_visual_initial_pose"] and not allow_clipped_diagnostic:
+        joint_details=", ".join(
+            f"J{i+1}: source={a:.2f} deg, clipped={b:.2f} deg, delta={d:+.2f} deg"
+            for i,(a,b,d) in enumerate(zip(
+                audit["source_joint_deg"],
+                audit["physics_initial_joint_deg"],
+                audit["clip_delta_deg"])))
         raise ValueError(
             "PHYSICS BASELINE REJECTED: the saved visual initial pose lies "
             f"outside the URDF joint limits (max clip {audit['max_clip_delta_deg']:.2f} deg). "
+            f"Per-joint audit: {joint_details}. "
             "Instant clipping changes the robot's appearance and invalidates a direct "
             "DLS vs SAC physics extension. Check the real-to-sim joint zero/sign/limits "
             "and derive a physically valid shared initial pose. For exploratory "
