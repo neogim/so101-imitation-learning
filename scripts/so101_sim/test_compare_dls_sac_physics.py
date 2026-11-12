@@ -61,6 +61,13 @@ class PhysicalComparisonTests(unittest.TestCase):
         self.assertTrue(audit["matches_visual_initial_pose"])
         comparison.assert_initial_pose_fidelity(audit)
 
+    def test_reference_frame_period_uses_physical_timestep(self):
+        steps=[comparison.physics_substeps_for_frame(i,.002,reference_fps=8.) for i in range(8)]
+        self.assertEqual(sum(steps),500)
+        self.assertTrue(set(steps).issubset({62,63}))
+        self.assertEqual(comparison.physics_substeps_for_frame(0,.002,
+                         reference_fps=8.,fixed_substeps=10),10)
+
     def test_pd_changes_joint_through_step_not_teleport(self):
         spec=mujoco.MjSpec()
         body=spec.worldbody.add_body(name="arm",pos=[0,0,.1])
