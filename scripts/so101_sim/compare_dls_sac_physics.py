@@ -98,13 +98,42 @@ def pd_step(model, data, qids, dids, target, *, kp, kd, max_torque, gripper_qid,
         raise FloatingPointError("Nonfinite physics state (check initial self-collisions and PD gains)")
 
 
-def frame_image(renderer, data, camera, option, label):
+def add_reference_markers(render_scene, goals, tcp_trail=None):
+    """Reuse earlier visual comparison goal cues; geoms are render-only."""
+    palette={"muhi":[.95,.25,.20,1.],"cup":[.15,.75,.40,1.]}
+    for name,xyz in goals.items():
+        if name not in palette or render_scene.ngeom>=render_scene.maxgeom:
+            continue
+        g=render_scene.geoms[render_scene.ngeom]
+        mujoco.mjv_initGeom(g,mujoco.mjtGeom.mjGEOM_SPHERE,
+                           np.array([.010,.010,.010]),
+                           np.asarray(xyz,float),np.eye(3).ravel(),
+                           np.asarray(palette[name],np.float32))
+        render_scene.ngeom+=1
+    if tcp_trail:
+        for a,b in zip(tcp_trail[:-1],tcp_trail[1:]):
+            if render_scene.ngeom>=render_scene.maxgeom:break
+            g=render_scene.geoms[render_scene.ngeom]
+            mujoco.mjv_initGeom(g,mujoco.mjtGeom.mjGEOM_LINE,
+                               np.zeros(3),np.zeros(3),np.eye(3).ravel(),
+                               np.asarray([.99,.8,.25,1],np.float32))
+            mujoco.mjv_connector(g,mujoco.mjtGeom.mjGEOM_LINE,2,
+                                np.asarray(a,float),np.asarray(b,float))
+            render_scene.ngeom+=1
+
+
+def frame_image(renderer, data, camera, option, label, *, goals=None, tcp_trail=None, extra_label=None):
     from PIL import Image, ImageDraw
     renderer.update_scene(data, camera=camera, scene_option=option)
+    if goals is not None:
+        add_reference_markers(renderer.scene,goals,tcp_trail=tcp_trail)
     raw = Image.fromarray(renderer.render().copy())
-    out = Image.new("RGB", (raw.width, raw.height+32), (20,28,40))
-    out.paste(raw, (0,32))
-    ImageDraw.Draw(out).text((8,9), label, fill="white")
+    out = Image.new("RGB", (raw.width, raw.height+56), (20,28,40))
+    out.paste(raw, (0,56))
+    d=ImageDraw.Draw(out)
+    d.text((8,6), label, fill="white")
+    if extra_label:
+        d.text((8,30), extra_label, fill="#ffd080")
     return out
 
 
@@ -170,6 +199,7 @@ def run(args):
     render_option = mujoco.MjvOption()
     render_option.geomgroup[3] = 0
     results = []
+    trail = {p:[] for p in POLICIES}
     render_count = 0
     from PIL import Image
     with mujoco.Renderer(model, width=args.width, height=args.height) as renderer:
@@ -186,6 +216,7 @@ def run(args):
                 mujoco.mj_forward(model, data)
                 target_xyz = np.array(goals[row["stage"]],float) if row["stage"] in goals else None
                 tcp_xyz = data.xpos[tcp].copy()
+                trail[policy].append(tcp_xyz.copy())
                 distance_mm = float(np.linalg.norm(tcp_xyz-target_xyz)*1000) if target_xyz is not None else None
                 contact_groups, min_dist, contacts = phys.summarize_contacts(model,data,muhi_body_id)
                 measured = {
@@ -205,13 +236,20 @@ def run(args):
                 if frame % args.render_every == 0 or frame == total_frames-1:
                     for cam, cam_name in ((side,"SIDE"),(wrist.CAMERA,"WRIST")):
                         label = f"{policy.upper()} {cam_name} | {row['stage']} | {data.time:.2f}s"
-                        panels[policy,cam_name] = frame_image(renderer,data,cam,render_option,label)
+                        warning = ("CLIPPED START: NOT SAME AS ORIGINAL" if not pose_audit["matches_visual_initial_pose"]
+                                   else "PHYSICS: PD + CONTACT (NO GRASP)")
+                        err = "HOME (visual reference)" if distance_mm is None else f"TCP error {distance_mm:.1f} mm"
+                        panels[policy,cam_name] = frame_image(
+                            renderer,data,cam,render_option,label,
+                            goals=goals if cam_name=="SIDE" else None,
+                            tcp_trail=trail[policy] if cam_name=="SIDE" else None,
+                            extra_label=f"{err} | {warning}")
             if panels:
-                canvas = Image.new("RGB",(2*args.width,2*(args.height+32)),(28,36,45))
+                canvas = Image.new("RGB",(2*args.width,2*(args.height+56)),(28,36,45))
                 for x,policy in enumerate(POLICIES):
                     for y,cam_name in enumerate(("SIDE","WRIST")):
                         canvas.paste(panels[policy,cam_name],
-                                     (x*args.width,y*(args.height+32)))
+                                     (x*args.width,y*(args.height+56)))
                 canvas.save(image_dir/f"comparison_{render_count:05d}.png")
                 render_count += 1
     with (args.out/"physics_comparison.csv").open("x",newline="",encoding="utf-8") as f:
