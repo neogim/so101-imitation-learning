@@ -67,7 +67,8 @@ def video_object_layout(T_base_cv, intrinsics, muhi_pixel=(255., 360.),
 def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
                           table_extra_left_m=.04, table_extra_front_m=.05,
                           *, wrist_camera=False, wrist_mount_pos=(0., .024, -.045),
-                          wrist_mount_rpy_deg=(0., 0., 0.), wrist_fovy=75.):
+                          wrist_mount_rpy_deg=(0., 0., 0.), wrist_fovy=70.,
+                          wrist_look_at=(-.008,-.002,-.165)):
     import mujoco
 
     position, quat = comparison.mujoco_camera_pose(extrinsics["T_base_camera"])
@@ -84,7 +85,7 @@ def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
         import wrist_camera_sim
         wrist_camera_sim.install(
             spec, pos=wrist_mount_pos, rpy_deg=wrist_mount_rpy_deg,
-            fovy=wrist_fovy)
+            fovy=wrist_fovy, look_at=wrist_look_at)
     camera = "r2s_side_calibrated_candidate"
     spec.worldbody.add_camera(name=camera, pos=position, quat=quat, fovy=fovy)
     model = spec.compile()
