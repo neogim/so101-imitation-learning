@@ -73,26 +73,26 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS,
                           mass=0.025, ipos=[0.0, 0.0, 0.032],
                           inertia=[2.0e-5, 2.0e-5, 5.0e-6])
     common = dict(contype=1, conaffinity=1, friction=[0.8, 0.01, 0.001])
-    rig.add_geom(name=COLLISION_NAMES[0], type=mujoco.mjtGeom.mjGEOM_BOX,
+    rig.add_geom(name=COLLISION_NAMES[1], type=mujoco.mjtGeom.mjGEOM_BOX,
                  pos=[0, 0, BRACKET_STEM_CENTER_Z],
                  size=[0.006, 0.009, 0.029],
                  rgba=[0.88, 0.87, 0.83, 1], **common)
     # A broad bracket foot actually touches the parent gripper's root; the
     # stem spans Z=-0.004..+0.054 and the top starts at +0.052.
-    rig.add_geom(name="r2s_wrist_bracket_foot_collision",
+    rig.add_geom(name=COLLISION_NAMES[0],
                  type=mujoco.mjtGeom.mjGEOM_BOX,
                  pos=[0, 0, BRACKET_BASE_Z],
                  size=[0.014, 0.013, 0.006],
                  rgba=[0.88, 0.87, 0.83, 1], **common)
-    rig.add_geom(name=COLLISION_NAMES[1], type=mujoco.mjtGeom.mjGEOM_BOX,
+    rig.add_geom(name=COLLISION_NAMES[2], type=mujoco.mjtGeom.mjGEOM_BOX,
                  pos=[0, 0, BRACKET_TOP_Z],
                  size=[0.019, 0.019, 0.004],
                  rgba=[0.92, 0.91, 0.87, 1], **common)
-    rig.add_geom(name=COLLISION_NAMES[2], type=mujoco.mjtGeom.mjGEOM_BOX,
+    rig.add_geom(name=COLLISION_NAMES[3], type=mujoco.mjtGeom.mjGEOM_BOX,
                  pos=[0, 0, PCB_Z], size=[0.016, 0.016, 0.003],
                  rgba=[0.12, 0.23, 0.28, 1], **common)
     # Lens protrudes toward the gripper fingers (-Z), not sideways -Y.
-    rig.add_geom(name=COLLISION_NAMES[3],
+    rig.add_geom(name=COLLISION_NAMES[4],
                  type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                  pos=[0, 0, LENS_Z], size=[0.008, 0.012, 0],
                  rgba=[0.08, 0.09, 0.10, 1], **common)
