@@ -28,7 +28,7 @@ This document is a **project-wide, non-personal** handoff for coding assistants.
 - Keep kinematic FK / `qpos` + `mj_forward` experiments separate from MuJoCo dynamic stepping / actuator control. Kinematic TCP reach is **not** proof of contact avoidance, grasp, lift, or place.
 - For physical simulation, inspect collision geoms and `contype/conaffinity`, free-body and inertia definitions, friction, actuator control, joint limits, and `mj_step`. Avoid deleting all collisions as a permanent fix. Preserve visual shapes independently of collision proxies.
 - Prioritize fast focused checks by default. If the user explicitly wants deep verification, thoroughly test hypotheses, instrumentation, visualization, and edge cases; do not dismiss this as over-testing.
-- Record numerical configuration, seed, baseline, observations, uncertainty, exact code/commit, and output artifacts. Do not claim Sim2Real safety from MuJoCo results alone.
+- Record numerical configuration, seed, baseline, observations, uncertainty, exact code/commit, and output artifacts. For numerical experiment results, add a graph/figure and interpretation to the existing Notion experiment log; if no run has occurred, explicitly record that no empirical graph is available rather than fabricating results. Do not claim Sim2Real safety from MuJoCo results alone.
 - Preserve the existing Notion page structure: update the plan for milestones, append evidence to the experiment log, and append collision/PD findings to the dedicated note. Never create redundant pages when an existing log fits.
 
 ## Mandatory post-commit response
