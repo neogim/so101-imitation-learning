@@ -141,9 +141,6 @@ def create_scene(args):
         xyz_m=cup["cup_delta_base_m"])
 
     data = mujoco.MjData(model)
-    if getattr(args, "physical_objects", False):
-        import physical_workcell_sim
-        physical_workcell_sim.configure_dynamic_muhi(model, data)
     episode = r2s.read_episode(args.dataset_root.resolve(strict=True),
                                args.episode, stride=1, max_frames=1)
     state = episode["rows"][0]["state"]
@@ -179,6 +176,9 @@ def create_scene(args):
 
     data.qpos[:] = model.qpos0
     data.qpos[qids] = q0
+    if getattr(args, "physical_objects", False):
+        import physical_workcell_sim
+        physical_workcell_sim.configure_dynamic_muhi(model, data)
     mujoco.mj_forward(model, data)
     # Gripper angle is only a display approximation, not a trained controller.
     movie.set_visual_gripper(model, data, state[5])
