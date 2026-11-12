@@ -41,6 +41,39 @@ def load_rollout(path, policy):
     return rows, q
 
 
+def jaw_centers_in_wrist_view(model, data, width, height):
+    """Approximate jaw visibility using geom centres, not a pixel-level mask.
+
+    This is a diagnostic only: it does not guarantee rendered jaw pixels are
+    visible (geometry may be occluded or its centre may be outside the view).
+    """
+    cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, wrist.CAMERA)
+    origin = data.cam_xpos[cid]
+    R = data.cam_xmat[cid].reshape(3, 3)
+    vertical = math.tan(math.radians(float(model.cam_fovy[cid])) / 2)
+    aspect = float(width) / float(height)
+    matches = []
+    for i in range(model.ngeom):
+        body_name = (mujoco.mj_id2name(
+            model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[i])) or "")
+        if not any(token in body_name.lower() for token in ("jaw", "finger")):
+            continue
+        local = R.T @ (data.geom_xpos[i] - origin)
+        depth = -float(local[2])
+        if depth <= 0:
+            continue
+        xnorm = float(local[0]) / (depth * vertical * aspect)
+        ynorm = float(local[1]) / (depth * vertical)
+        if abs(xnorm) <= 1 and abs(ynorm) <= 1:
+            matches.append({
+                "body": body_name,
+                "screen_u": round((xnorm + 1) / 2, 4),
+                "screen_v": round((1 - ynorm) / 2, 4),
+                "depth_m": round(depth, 4),
+            })
+    return matches
+
+
 def physical_track(model, data, qids, dids, target, steps, kp, kd, torque):
     """Bounded PD with bias compensation: deliberately no teleport after start."""
     for _ in range(steps):
@@ -113,6 +146,7 @@ def run(args):
                                np.clip(target, low, high),
                                args.substeps, args.kp, args.kd, args.torque)
             contacts = wrist.contact_summary(model, data)
+            jaw_view = jaw_centers_in_wrist_view(model, data, args.width, args.height)
             renderer.update_scene(data, camera=wrist.CAMERA, scene_option=render_options)
             pixels = renderer.render().copy()
             wrist_image = Image.fromarray(pixels)
@@ -135,6 +169,8 @@ def run(args):
             report_rows.append({
                 "frame": i, "source_frame": row_idx,
                 "stage": rows[row_idx].get("stage"),
+                "jaw_geometry_centers_in_wrist_fov": len(jaw_view),
+                "jaw_view_geometry": jaw_view,
                 "wrist_contacts": len(contacts),
                 "penetrating_contacts": sum(c["distance_mm"] < 0 for c in contacts),
                 "most_negative_distance_mm": min(
@@ -183,6 +219,9 @@ def run(args):
         "mount_rpy_deg": list(args.wrist_mount_rpy_deg),
         "rig_mass_kg_provisional": 0.025,
         "frames": len(report_rows),
+        "frames_with_jaw_geom_centers_in_fov": sum(
+            r["jaw_geometry_centers_in_wrist_fov"] > 0 for r in report_rows),
+        "jaw_fov_metric_limitation": "Geom-centre projection only; occlusion and jaw pixel area are not measured.",
         "frames_with_wrist_contact": sum(r["wrist_contacts"] > 0 for r in report_rows),
         "frames_with_wrist_penetration": sum(
             r["penetrating_contacts"] > 0 for r in report_rows),
@@ -204,7 +243,8 @@ def run(args):
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     with (args.out / "contact_frames.csv").open("x", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=[
-            "frame", "source_frame", "stage", "wrist_contacts",
+            "frame", "source_frame", "stage",
+            "jaw_geometry_centers_in_wrist_fov", "wrist_contacts",
             "penetrating_contacts", "most_negative_distance_mm",
             "joint_tracking_error_deg"])
         w.writeheader()
