@@ -98,6 +98,10 @@ def run(args):
         mujoco.mj_forward(model, data)
     model.vis.global_.offwidth = max(model.vis.global_.offwidth, args.width)
     model.vis.global_.offheight = max(model.vis.global_.offheight, args.height)
+    render_options = mujoco.MjvOption()
+    # Geom group 3 contains only wrist collision proxies; never display
+    # the physical colliders on top of the L-bracket visual geometry.
+    render_options.geomgroup[3] = 0
     with mujoco.Renderer(model, width=args.width, height=args.height) as renderer:
         for i, row_idx in enumerate(range(0, len(rows), args.stride)):
             target = q[row_idx]
@@ -109,16 +113,16 @@ def run(args):
                                np.clip(target, low, high),
                                args.substeps, args.kp, args.kd, args.torque)
             contacts = wrist.contact_summary(model, data)
-            renderer.update_scene(data, camera=wrist.CAMERA)
+            renderer.update_scene(data, camera=wrist.CAMERA, scene_option=render_options)
             pixels = renderer.render().copy()
             wrist_image = Image.fromarray(pixels)
             wrist_image.save(image_dir / f"wrist_{i:04d}.png")
             # Render the SAME pose through the known side view; crucial for
             # checking whether the camera/brace floats or intersects the arm.
-            renderer.update_scene(data, camera=side_camera)
+            renderer.update_scene(data, camera=side_camera, scene_option=render_options)
             side_image = Image.fromarray(renderer.render().copy())
             side_image.save(side_dir / f"side_{i:04d}.png")
-            renderer.update_scene(data, camera=wrist.MOUNT_INSPECTION_CAMERA)
+            renderer.update_scene(data, camera=wrist.MOUNT_INSPECTION_CAMERA, scene_option=render_options)
             inspection_image = Image.fromarray(renderer.render().copy())
             inspection_image.save(inspection_dir / f"mount_{i:04d}.png")
             comparison = Image.new("RGB", (2 * args.width, args.height + 28), (25, 30, 40))
@@ -171,6 +175,9 @@ def run(args):
         "views": ["side", "wrist", "side_wrist_comparison", "mount_inspection"],
         "attachment_link": "gripper_link",
         "fovy_deg": args.wrist_fovy,
+        "look_at_rig_local_m": list(args.wrist_look_at),
+        "visual_geom_group": 0,
+        "collision_proxy_group_hidden": 3,
         "width": args.width, "height": args.height,
         "mount_pos_m": list(args.wrist_mount_pos),
         "mount_rpy_deg": list(args.wrist_mount_rpy_deg),
@@ -228,7 +235,9 @@ def main():
                    default=(0., .024, -.045), metavar=("X", "Y", "Z"))
     p.add_argument("--wrist-mount-rpy-deg", type=float, nargs=3,
                    default=(0., 0., 0.), metavar=("R", "P", "Y"))
-    p.add_argument("--wrist-fovy", type=float, default=75.)
+    p.add_argument("--wrist-fovy", type=float, default=70.)
+    p.add_argument("--wrist-look-at", type=float, nargs=3,
+                   default=(-.008,-.002,-.165), metavar=("X","Y","Z"))
     p.add_argument("--dataset-root", type=Path, default=scene.DATASET)
     p.add_argument("--episode", type=int, default=4)
     p.add_argument("--object-layout-json", type=Path, default=scene.OBJECTS)
