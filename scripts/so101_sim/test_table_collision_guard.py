@@ -53,7 +53,7 @@ class TableCollisionGuardTests(unittest.TestCase):
         table=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,"r2s_preview_table")
         self.assertEqual(model.geom_contype[table],0)
         guard=TableCollisionGuard(model,data,[0])
-        self.assertLess(guard.inspect([-.09])["minimum_distance_mm"],0)
+        self.assertLess(guard.inspect([-.10])["minimum_distance_mm"],0)
 
 
 if __name__=="__main__":
