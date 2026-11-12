@@ -110,7 +110,10 @@ def summarize_contacts(model, data, object_body_id):
                   "wrist_robot_self": 0, "other": 0}
     minimum = None
     details = []
-    wrist_ids = {geom_id(model, n) for n in wrist.COLLISION_NAMES}
+    wrist_ids = {
+        i for n in wrist.COLLISION_NAMES
+        if (i := mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, n)) >= 0
+    }
     for con in data.contact[:data.ncon]:
         a, b = int(con.geom1), int(con.geom2)
         names = [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, x) or f"geom{x}"
