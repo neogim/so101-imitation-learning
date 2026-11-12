@@ -67,3 +67,15 @@ fi
 The first CI run for the synthetic drop test failed: a dynamic Muhi fell through the synthetic table (final body Z approximately -4.815 m after 500 steps). This was an **actual failed test**, not a successful physical contact demonstration. The initial implementation enabled collision masks for the old display-only table geoms **after compilation**. The follow-up change now marks table and cup geoms collidable in `MjSpec` before `spec.compile()`, and the synthetic test creates a matching cup and applies the same preprocessing. The previously saved `kinematic` comparison continues to use the original non-collidable previews.
 
 Do not infer the fix is successful until the new CI run and local Mac scene run pass. Keep this failure as evidence of the importance of collision-pair generation and model construction order.
+
+## 2026-11-13 Mac Episode-4 drop audit — user-provided archive
+
+Input: `so101-physical-drop-20261113-004308.zip`, 600 simulation steps / 1.2 s, with `summary.json`, `physics_trace.csv`, plot and 21 synchronized Side/Wrist frame pairs.
+
+- Muhi stops on the tabletop: table contact 564/600 steps, at final body-centre z ≈12.384 mm, final displacement 25.116 mm and speed ≈0.000075 m/s. It initially dropped ~30 mm before settling. No cup contacts (0 steps).
+- The **robot itself fell/collapsed** during the drop because previous `drop` and `push` did not control its joints. This is NOT a successful full arm physics simulation. Wrist rendered frames increasingly show black/partial table and a small jaw fragment, not useful task observations.
+- Total minimum signed contact distance was −79.824 mm, **not** proven bottle/table penetration. Robot self-collisions contribute strongly; 547 steps with wrist contact were mostly wrist/self contact, while actual wrist/table recorded only a short transient and wrist/cup and wrist/Muhi were zero.
+- Fix: `drop` and `push` now use a **kinematically held robot obstacle** while the bottle remains fully dynamic; `replay` continues to use PD and may still be unstable. This deliberately isolates free-body dynamics. Not a full dynamic-arm contact-control result and not suitable as an ACT environment yet. New output distinguishes Muhi/table distance, wrist/external distance, wrist-self and wrist-external contact steps.
+- The photo-derived camera position/optical axis still needs validation against real Wrist images before ACT. Do not interpret rendered darkness as a camera hardware failure.
+
+Run the documented drop command again with a new output directory. Compare arm silhouette, wrist camera view, body-centre z, object/table penetration and the wrist contact categories. Do not run ACT until camera geometry, meaningful image composition and physical grasp controller are validated.
