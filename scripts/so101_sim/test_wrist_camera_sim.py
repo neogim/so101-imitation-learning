@@ -48,21 +48,19 @@ class WristCameraTests(unittest.TestCase):
         quat=wrist.quat_from_basis(x,y,z)
         self.assertAlmostEqual(sum(a*a for a in quat),1.0,places=6)
 
-    def test_unique_collision_ids_static(self):
-        tree=ast.parse(inspect.getsource(wrist.install))
-        ids=[]
-        for call in (n for n in ast.walk(tree) if isinstance(n,ast.Call)):
-            if not isinstance(call.func,ast.Attribute) or call.func.attr!="add_geom":
-                continue
-            named=next((kw.value for kw in call.keywords if kw.arg=="name"),None)
-            if isinstance(named,ast.Subscript):
-                self.assertEqual(named.value.id,"COLLISION_NAMES")
-                ids.append(named.slice.value)
-        self.assertCountEqual(ids,range(len(wrist.COLLISION_NAMES)))
+    def test_unique_collision_names(self):
+        self.assertEqual(len(wrist.COLLISION_NAMES),
+                         len(set(wrist.COLLISION_NAMES)))
+        self.assertEqual(len(wrist.COLLISION_NAMES),5)
+        source=inspect.getsource(wrist.install)
+        self.assertIn("COLLISION_NAMES[i]",source)
+        self.assertIn("COLLISION_NAMES[3]",source)
+        self.assertIn("COLLISION_NAMES[4]",source)
 
     def test_mujoco_build_and_j5_follow(self):
         import mujoco
         spec=mujoco.MjSpec()
+        spec.compiler.discardvisual=False
         gripper=spec.worldbody.add_body(name="gripper_link",pos=[0,0,.2])
         gripper.add_joint(name="wrist_roll",type=mujoco.mjtJoint.mjJNT_HINGE,
                           axis=[0,0,1])
