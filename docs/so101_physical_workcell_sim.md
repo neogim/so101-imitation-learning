@@ -61,3 +61,9 @@ fi
 5. The old recorded home violates URDF limits. Physics starts with five joints clipped to model limits, **not** from the exact visual starting pose. PD replay will not produce the same SAC trajectory, and large existing base/shoulder collision hulls may cause instability.
 6. Gripper physical opening/closing, stable Muhi grasp, lift/place, ACT closed-loop inference and task success criteria remain future stages. In particular, Wrist RGB rendering does not by itself guarantee that the ACT model's training camera intrinsics, feature keys, crop or time synchronization match.
 7. When Mac results are received, append the **measured plot**, relevant numbers, failed cases and commit to the existing Notion experiment log; do not fabricate unrun results.
+
+## CI failure and correction (2026-11-13)
+
+The first CI run for the synthetic drop test failed: a dynamic Muhi fell through the synthetic table (final body Z approximately -4.815 m after 500 steps). This was an **actual failed test**, not a successful physical contact demonstration. The initial implementation enabled collision masks for the old display-only table geoms **after compilation**. The follow-up change now marks table and cup geoms collidable in `MjSpec` before `spec.compile()`, and the synthetic test creates a matching cup and applies the same preprocessing. The previously saved `kinematic` comparison continues to use the original non-collidable previews.
+
+Do not infer the fix is successful until the new CI run and local Mac scene run pass. Keep this failure as evidence of the importance of collision-pair generation and model construction order.
