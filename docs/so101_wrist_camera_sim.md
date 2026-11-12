@@ -155,3 +155,40 @@ fi
 The `zsh: command not found: #` lines come from pasting bare `#` comment lines into an interactive zsh session with `interactivecomments` off. They are unrelated to the MuJoCo exception. No personal Mac username or absolute home paths have been recorded in this documentation.
 
 Verification level: Github code review and static name-index inspection completed; full MuJoCo tests and resulting videos still require a Mac run.
+
+## 2026-11-12: second video review — mount hidden in Side, no jaws in Wrist
+
+Evidence: user-submitted `so101-wrist-j5j6-retest-20261112-230017.zip`, 48 sampled frames; the existing SIDE camera is distant and the camera rig is not clearly visible. WRIST frame often shows table or cup but **no end-effector tips**. The reported wrist-contact count is **0 of 48 frames**, unlike the preceding run with contacts 48/48. The discrepancy is consistent with changing geom placement and does not certify the mount is physically correct. No new contact-force or real-world validation is implied.
+
+Root-cause hypothesis after comparing robot URDF and the user's side/front photographs:
+1. The gripper parent link was correct; the previous `(0,0,-0.048)` pose put the L-bracket on the **gripper axis**, where its small proxy was visually occluded by the gripper mesh.
+2. The previous optical `xyaxes` tilts camera viewing direction in **+Y**, away from the finger centerline if the camera is offset in +Y.
+3. The SIDE camera has a wide field of view and renders the whole cell at 320x240, which is insufficient for examining a small 32mm camera board.
+
+New photo-based *hypothesis*, still uncalibrated: a jaw-root mount translated to gripper-local `(0,+0.024,-0.045)` m; a lateral L-bridge to `+0.043m` further Y, then a PCB and lens. Camera optical axis is directed down -Z and inward -Y at ~28°. This deliberately puts the rig outside the gripper silhouette and puts a small portion of jaws near the field edge, matching the intended composition. The camera view has **not** yet been rendered on the Mac; do not claim this geometry matches the real printed fixture.
+
+A third, close-up **mount inspection** view now exists, attached in the same fixed J5/J6 frame, solely for visualization. In addition to `side_camera.mp4`, `wrist_camera.mp4` and `side_wrist_comparison.mp4`, the renderer emits `mount_inspection.mp4` and `mount_inspection_frames/`. This close-up is for checking the bracket foot visibly meets the jaw root; it is NOT an ACT sensor input. A unit test asserts the inspection camera exists.
+
+Run from repository root with zsh (do not paste `#` comment lines):
+
+```bash
+conda activate so101-real2sim
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+if python -m unittest discover -s scripts/so101_sim -p 'test_wrist_camera_sim.py' -v; then
+  ROLL_OUT="$(find outputs -type f -name rollout.csv | grep -Ei 'j5|ablation' | sort | tail -n 1)"
+  if [ -f "$ROLL_OUT" ]; then
+    OUT="outputs/so101-wrist-mount-inspection-$(date +%Y%m%d-%H%M%S)"
+    if python scripts/so101_sim/render_wrist_camera_rollout.py --rollout "$ROLL_OUT" --policy normal --mode kinematic --stride 4 --save-video --out "$OUT"; then
+      open "$OUT/mount_inspection.mp4"
+      open "$OUT/side_wrist_comparison.mp4"
+      open "$OUT/wrist_camera.mp4"
+      cat "$OUT/summary.json"
+    fi
+  else
+    echo "Previously saved J5 rollout.csv was not found"
+  fi
+fi
+```
+
+Acceptance must use BOTH the close-up and normal Side: visually trace the gripper base -> foot -> L-bridge -> PCB -> lens as one connected assembly, then check that the Wrist RGB has at least a narrow band of jaws in the expected image location at multiple J5 poses. Current evidence does not establish pass. Remain in **kinematic** mode for placement calibration; real mass/PD contact response is a separate subsequent test.
