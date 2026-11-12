@@ -33,7 +33,7 @@ if [ ! -f "$ROLL_OUT" ]; then
   echo "No previous Episode-4 DLS/SAC comparison_rollout.csv was found. Run the original compare script or provide its saved output."
 else
   OUT="outputs/so101-dls-sac-physical-$(date +%Y%m%d-%H%M%S)"
-  if python scripts/so101_sim/compare_dls_sac_physics.py --rollout "$ROLL_OUT" --out "$OUT" --substeps 10 --render-every 4 --video-fps 8; then
+  if python scripts/so101_sim/compare_dls_sac_physics.py --rollout "$ROLL_OUT" --out "$OUT" --reference-fps 8 --render-every 4 --video-fps 8; then
     if [ -f "$OUT/dls_vs_sac_physics_side_wrist.mp4" ]; then
       open "$OUT/dls_vs_sac_physics_side_wrist.mp4"
     else
@@ -100,3 +100,11 @@ python scripts/so101_sim/compare_dls_sac_physics.py --rollout "$ROLL_OUT" --out 
 ```
 
 The last command should **reject the known mismatched recorded initial pose**, and explain the reason, unless the underlying pose-mapping issue has been corrected. This rejection is a valid and desirable outcome. Only use `--allow-clipped-diagnostic` when explicitly diagnosing the invalid physics scene; it cannot establish DLS or SAC physical performance.
+
+## Correction: preserve reference display AND its nominal time axis (2026-11-13)
+
+The original `compare_real2sim_muhi_cup_dls_sac.py` displayed approximately `--fps 8`, or 0.125 s per saved reference frame. The first physical experiment used `10 * 0.002 = 0.020 s` per target. That is **6.25x faster**, not a fair same-motion comparison. New default `--reference-fps 8` converts each recorded reference sample into alternating 62/63 MuJoCo steps at 2 ms, preserving 0.125s/sample nominal timing. `--substeps N` now means an explicit *diagnostic override*; the default is `0` (automatic timing).
+
+The **main overview** camera defaults to `--overview-camera reference`, reusing the exact same original free-camera framing, goal markers and TCP trails rather than silently replacing the overview with the calibrated Side optical camera. `--overview-camera side` is still available for real-camera comparison. Wrist renders remain in the bottom row. Default per-panel resolution was restored to 640×480 instead of 320×240. Labels include current stage, physical TCP error, time and (if deliberately enabled) a clear watermark that the source pose was clipped.
+
+**Do not use prior command `--substeps 10` for a fidelity check**: it requests the known invalid 20ms reference timing. The fresh faithful run is *blocked as intended* until the saved initial pose agrees with URDF limits. Use default no-overrides after correcting the source pose, and validate initial contacts before interpreting trajectories.
