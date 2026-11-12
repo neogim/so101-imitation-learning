@@ -12,7 +12,21 @@ import math
 
 RIG_BODY = "r2s_wrist_camera_rig"
 CAMERA = "r2s_wrist_rgb"
+# In the URDF, gripper_link is AFTER wrist_roll (J5), BEFORE gripper (J6).
+# The fingers extend along approximately gripper_link -Z; the photographed
+# mount starts on their common root, not up at wrist_link / J4.
+DEFAULT_MOUNT_POS = (0.0, 0.0, -0.048)  # m, provisional fit to photos
+DEFAULT_MOUNT_RPY_DEG = (0.0, 0.0, 0.0)
+# Bracket foot attaches to the fingertip-root block (gripper_link-local).
+# The mount is one contiguous L-like approximation, not floating blocks.
+BRACKET_BASE_Z = 0.0
+BRACKET_STEM_CENTER_Z = 0.025
+BRACKET_TOP_Z = 0.055
+PCB_Z = 0.063
+LENS_Z = 0.048
+CAMERA_Z = 0.032
 COLLISION_NAMES = (
+    "r2s_wrist_bracket_foot_collision",
     "r2s_wrist_bracket_vertical_collision",
     "r2s_wrist_bracket_top_collision",
     "r2s_wrist_pcb_collision",
@@ -32,8 +46,8 @@ def validate_mount(position, rpy_deg):
     return tuple(float(x) for x in position), tuple(float(x) for x in rpy_deg)
 
 
-def install(spec, *, pos=(0.0, -0.014, 0.037),
-            rpy_deg=(0.0, 0.0, 0.0), fovy=75.0):
+def install(spec, *, pos=DEFAULT_MOUNT_POS,
+            rpy_deg=DEFAULT_MOUNT_RPY_DEG, fovy=75.0):
     """Add camera + visually distinct collidable body, before spec.compile().
 
     Assumptions: camera attached to gripper_link (moves with wrist_roll);
@@ -52,31 +66,41 @@ def install(spec, *, pos=(0.0, -0.014, 0.037),
     if spec.body(RIG_BODY) is not None:
         raise ValueError("Wrist rig already installed")
     rad = [math.radians(x) for x in rpy_deg]
-    # Fixed child body: no joint; the camera follows the parent, including J5.
+    # The fixed child body is anchored at the J5/J6 gripper BASE, not the
+    # upstream J4 wrist. A foot box overlaps the solid base by design; its
+    # contiguous upright connects the PCB to the base in every frame.
     rig = parent.add_body(name=RIG_BODY, pos=pos, euler=rad,
-                          mass=0.025, ipos=[0.0, 0.0, 0.042],
+                          mass=0.025, ipos=[0.0, 0.0, 0.032],
                           inertia=[2.0e-5, 2.0e-5, 5.0e-6])
     common = dict(contype=1, conaffinity=1, friction=[0.8, 0.01, 0.001])
     rig.add_geom(name=COLLISION_NAMES[0], type=mujoco.mjtGeom.mjGEOM_BOX,
-                 pos=[0, 0, 0.023], size=[0.007, 0.009, 0.027],
-                 rgba=[0.86, 0.84, 0.77, 1], **common)
+                 pos=[0, 0, BRACKET_STEM_CENTER_Z],
+                 size=[0.006, 0.009, 0.029],
+                 rgba=[0.88, 0.87, 0.83, 1], **common)
+    # A broad bracket foot actually touches the parent gripper's root; the
+    # stem spans Z=-0.004..+0.054 and the top starts at +0.052.
+    rig.add_geom(name="r2s_wrist_bracket_foot_collision",
+                 type=mujoco.mjtGeom.mjGEOM_BOX,
+                 pos=[0, 0, BRACKET_BASE_Z],
+                 size=[0.014, 0.013, 0.006],
+                 rgba=[0.88, 0.87, 0.83, 1], **common)
     rig.add_geom(name=COLLISION_NAMES[1], type=mujoco.mjtGeom.mjGEOM_BOX,
-                 pos=[0, 0, 0.052], size=[0.019, 0.019, 0.004],
-                 rgba=[0.9, 0.88, 0.82, 1], **common)
+                 pos=[0, 0, BRACKET_TOP_Z],
+                 size=[0.019, 0.019, 0.004],
+                 rgba=[0.92, 0.91, 0.87, 1], **common)
     rig.add_geom(name=COLLISION_NAMES[2], type=mujoco.mjtGeom.mjGEOM_BOX,
-                 pos=[0, 0, 0.060], size=[0.016, 0.016, 0.003],
+                 pos=[0, 0, PCB_Z], size=[0.016, 0.016, 0.003],
                  rgba=[0.12, 0.23, 0.28, 1], **common)
-    # Lens points towards local -Y, approximately matching the user photo.
-    rig.add_geom(name=COLLISION_NAMES[3], type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                 pos=[0, -0.013, 0.060], euler=[math.pi / 2, 0, 0],
-                 size=[0.008, 0.013, 0], rgba=[0.08, 0.09, 0.10, 1],
-                 **common)
-    # The first version aimed along -Y and largely missed the gripper. Aim
-    # downward toward the tool tip in the gripper-local Y/Z plane instead.
-    # MuJoCo camera looks along -Z; optical calibration is still provisional.
-    # Camera position is just beyond the projecting lens, not on the PCB.
-    rig.add_camera(name=CAMERA, pos=[0, -0.028, 0.060],
-                   xyaxes=[1, 0, 0, 0, 0.985, 0.174], fovy=fovy)
+    # Lens protrudes toward the gripper fingers (-Z), not sideways -Y.
+    rig.add_geom(name=COLLISION_NAMES[3],
+                 type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                 pos=[0, 0, LENS_Z], size=[0.008, 0.012, 0],
+                 rgba=[0.08, 0.09, 0.10, 1], **common)
+    # Sensor looks almost along -Z toward the finger tips. Slight tilt in
+    # local Y keeps a little of the end effector in view. Exact lens extrinsics
+    # and FOV require comparison with a real Wrist frame.
+    rig.add_camera(name=CAMERA, pos=[0, 0, CAMERA_Z],
+                   xyaxes=[1, 0, 0, 0, 0.966, 0.259], fovy=fovy)
     return rig
 
 
