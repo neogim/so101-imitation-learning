@@ -73,7 +73,7 @@ def install(spec, *, pos=(0.0, -0.014, 0.037),
                  **common)
     # Align optical axis with the approximate lens outward direction (-Y).
     rig.add_camera(name=CAMERA, pos=[0, -0.028, 0.060],
-                   xyaxes=[1, 0, 0, 0, 0, 1], fovy=fovy)
+                   xyaxes=[1, 0, 0, 0, 0, -1], fovy=fovy)
     return rig
 
 
