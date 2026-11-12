@@ -68,7 +68,7 @@ def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
                           table_extra_left_m=.04, table_extra_front_m=.05,
                           *, wrist_camera=False, wrist_mount_pos=(0., .024, -.045),
                           wrist_mount_rpy_deg=(0., 0., 0.), wrist_fovy=70.,
-                          wrist_look_at=(-.008,-.002,-.165)):
+                          wrist_look_at=(0.,-.024,-.112)):
     import mujoco
 
     position, quat = comparison.mujoco_camera_pose(extrinsics["T_base_camera"])
