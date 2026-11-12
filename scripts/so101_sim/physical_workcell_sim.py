@@ -14,6 +14,8 @@ import argparse
 import csv
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 
 import mujoco
@@ -191,8 +193,11 @@ def run(args):
 
     args.out.mkdir(parents=True, exist_ok=False)
     side_dir, wrist_dir = args.out/"side", args.out/"wrist"
+    compare_dir = args.out/"side_wrist_frames"
     side_dir.mkdir()
     wrist_dir.mkdir()
+    compare_dir.mkdir()
+    rendered_count = 0
     records = []
     render_option = mujoco.MjvOption()
     render_option.geomgroup[3] = 0
@@ -201,7 +206,7 @@ def run(args):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from PIL import Image
+    from PIL import Image, ImageDraw
 
     with mujoco.Renderer(model, width=args.width, height=args.height) as renderer:
         for step in range(args.steps):
@@ -246,11 +251,37 @@ def run(args):
             }
             records.append(rows)
             if step % args.render_every == 0 or step == args.steps-1:
+                images = {}
                 for name, cam, directory in (("side",side_camera,side_dir),
                                               ("wrist",wrist.CAMERA,wrist_dir)):
                     renderer.update_scene(data, camera=cam, scene_option=render_option)
-                    Image.fromarray(renderer.render().copy()).save(
-                        directory / f"{name}_{step:05d}.png")
+                    image = Image.fromarray(renderer.render().copy())
+                    image.save(directory / f"{name}_{step:05d}.png")
+                    images[name] = image
+                comparison = Image.new("RGB", (2*args.width, args.height+34), (22,28,38))
+                comparison.paste(images["side"], (0,34))
+                comparison.paste(images["wrist"], (args.width,34))
+                draw = ImageDraw.Draw(comparison)
+                draw.text((8,8), f"SIDE | sim {data.time:.3f}s", fill="white")
+                draw.text((args.width+8,8), "WRIST | same simulation time", fill="white")
+                comparison.save(compare_dir / f"comparison_{rendered_count:04d}.png")
+                rendered_count += 1
+    video_path = args.out / "side_wrist_comparison.mp4"
+    video_status = "disabled"
+    if args.save_video:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            video_status = "ffmpeg_missing"
+            print("WARNING: ffmpeg not found; install ffmpeg to create Side/Wrist MP4")
+        else:
+            subprocess.run([
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-framerate", str(args.video_fps),
+                "-i", str(compare_dir / "comparison_%04d.png"),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart", str(video_path),
+            ], check=True)
+            video_status = "created"
     with (args.out/"physics_trace.csv").open("x", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=list(records[0]))
         writer.writeheader()
@@ -273,6 +304,10 @@ def run(args):
         "status": "PHYSICAL_MUHI_WORKCELL_EXPERIMENTAL",
         "mode": args.mode,
         "simulation_only": True,
+        "video_status": video_status,
+        "video_file": video_path.name if video_status == "created" else None,
+        "video_fps": args.video_fps,
+        "rendered_frames": rendered_count,
         "robot_control_mode": robot_mode,
         "robot_control_warning": ("Drop/push rigidly hold robot joint coordinates between physics steps; object dynamics are active but robot reaction motion is suppressed." if robot_mode == "fixed_kinematic" else "PD replay is not SAC inference; initial pose may be dynamically unstable."),
         "source_scene": "saved Episode 4 real-to-sim approximation",
@@ -320,6 +355,10 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--steps", type=int, default=600)
     p.add_argument("--render-every", type=int, default=30)
+    p.add_argument("--video-fps", type=float, default=5.,
+                   help="Playback FPS; default 5 slows the sampled physics frames")
+    p.add_argument("--no-video", action="store_false", dest="save_video",
+                   help="Keep PNGs only; MP4 is created by default if ffmpeg is installed")
     p.add_argument("--width", type=int, default=320)
     p.add_argument("--height", type=int, default=240)
     p.add_argument("--drop-height-mm", type=float, default=20)
@@ -346,6 +385,8 @@ def main():
     args = p.parse_args()
     if not np.isfinite([args.drop_height_mm,args.force_n,args.kp,args.kd,args.torque]).all():
         p.error("Nonfinite physical parameters")
+    if not np.isfinite(args.video_fps) or args.video_fps <= 0:
+        p.error("--video-fps must be positive and finite")
     if args.control_substeps < 1 or args.torque <= 0 or args.drop_height_mm < 0:
         p.error("Invalid physical parameters")
     run(args)
