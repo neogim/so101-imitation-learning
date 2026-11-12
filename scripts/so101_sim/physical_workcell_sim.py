@@ -88,8 +88,10 @@ def prepare_environment(model):
 
 
 def summarize_contacts(model, data, object_body_id):
+    """Classify Muhi and wrist-rig collision pairs without double counting."""
     categories = {"muhi_table": 0, "muhi_cup": 0, "muhi_robot": 0,
-                  "wrist_external": 0, "other": 0}
+                  "wrist_table": 0, "wrist_cup": 0, "wrist_muhi": 0,
+                  "wrist_robot_self": 0, "other": 0}
     minimum = None
     details = []
     wrist_ids = {geom_id(model, n) for n in wrist.COLLISION_NAMES}
@@ -97,25 +99,36 @@ def summarize_contacts(model, data, object_body_id):
         a, b = int(con.geom1), int(con.geom2)
         names = [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, x) or f"geom{x}"
                  for x in (a, b)]
-        bottle = int(model.geom_bodyid[a]) == object_body_id or int(model.geom_bodyid[b]) == object_body_id
-        other = names[1] if int(model.geom_bodyid[a]) == object_body_id else names[0]
-        if bottle and (other == "r2s_preview_table" or other.startswith("r2s_table_front_")):
-            category = "muhi_table"
-        elif bottle and other.startswith("r2s_cup_"):
-            category = "muhi_cup"
-        elif bottle:
-            category = "muhi_robot"
-        elif a in wrist_ids or b in wrist_ids:
-            category = "wrist_external"
+        a_bottle = int(model.geom_bodyid[a]) == object_body_id
+        b_bottle = int(model.geom_bodyid[b]) == object_body_id
+        a_wrist, b_wrist = a in wrist_ids, b in wrist_ids
+        if a_bottle or b_bottle:
+            other = names[1] if a_bottle else names[0]
+            if other == "r2s_preview_table" or other.startswith("r2s_table_front_"):
+                category = "muhi_table"
+            elif other.startswith("r2s_cup_"):
+                category = "muhi_cup"
+            else:
+                category = "muhi_robot"
+        elif a_wrist or b_wrist:
+            other = names[1] if a_wrist else names[0]
+            if other == "r2s_preview_table" or other.startswith("r2s_table_front_"):
+                category = "wrist_table"
+            elif other.startswith("r2s_cup_"):
+                category = "wrist_cup"
+            else:
+                category = "wrist_robot_self"
         else:
             category = "other"
         categories[category] += 1
+        if (a_wrist and b_bottle) or (b_wrist and a_bottle):
+            categories["wrist_muhi"] += 1
         distance = float(con.dist) * 1000
         minimum = distance if minimum is None else min(minimum, distance)
         details.append({"geom1": names[0], "geom2": names[1],
-                        "category": category, "distance_mm": distance})
+                        "category": category, "distance_mm": distance,
+                        "wrist_muhi": bool((a_wrist and b_bottle) or (b_wrist and a_bottle))})
     return categories, minimum, details
-
 
 def read_replay(path):
     from render_wrist_camera_rollout import load_rollout
@@ -231,7 +244,7 @@ def run(args):
              if r["min_contact_distance_mm"] is not None), default=None),
         "steps_with_muhi_cup_contact": sum(r["muhi_cup"]>0 for r in records),
         "steps_with_muhi_table_contact": sum(r["muhi_table"]>0 for r in records),
-        "steps_with_wrist_contact": sum(r["wrist_external"]>0 for r in records),
+        "steps_with_wrist_contact": sum((r["wrist_table"]+r["wrist_cup"]+r["wrist_muhi"]+r["wrist_robot_self"])>0 for r in records),
         "environment_geoms_enabled": enabled,
         "physical_body": DYNAMIC_BODY,
         "physical_geom_names": DYNAMIC_GEOMS,
