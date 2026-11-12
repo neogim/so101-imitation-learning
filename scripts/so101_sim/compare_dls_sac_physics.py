@@ -98,19 +98,20 @@ def build_start(args):
     (model, init, qids, dids, low, high, tcp, side, goals,
      *_remainder) = scene.create_scene(args)
     phys.prepare_environment(model)
+    original_q = init.qpos[qids].copy()
     init.qpos[qids] = np.clip(init.qpos[qids], low, high)
     init.qvel[:] = 0
     mujoco.mj_forward(model, init)
-    return model, init, qids, dids, low, high, tcp, side, goals
+    return model, init, qids, dids, low, high, tcp, side, goals, original_q
 
 
 def run(args):
     if args.out.exists():
         raise FileExistsError(args.out)
     comparison = load_comparison(args.rollout)
-    model, init, qids, dids, low, high, tcp, side, goals = build_start(args)
+    model, init, qids, dids, low, high, tcp, side, goals, original_q = build_start(args)
     source_initial = comparison["dls"][1][0]
-    if np.max(np.abs(source_initial-init.qpos[qids])) > args.max_initial_delta_rad:
+    if np.max(np.abs(source_initial-original_q)) > args.max_initial_delta_rad:
         raise ValueError("Input trajectory initial joint pose mismatches saved scene: "
                          "verify this is Episode-4 DLS/SAC comparison_rollout.csv")
     states = {}
