@@ -51,6 +51,34 @@ def load_comparison(path):
     return result
 
 
+def initial_pose_audit(source_q, low, high, *, tolerance_deg=0.1):
+    """Report exact joint mismatch rather than quietly altering the baseline."""
+    src=np.asarray(source_q,float)
+    clipped=np.clip(src,low,high)
+    delta=np.degrees(clipped-src)
+    return {
+        "source_joint_deg":np.degrees(src).round(4).tolist(),
+        "physics_initial_joint_deg":np.degrees(clipped).round(4).tolist(),
+        "clip_delta_deg":np.round(delta,4).tolist(),
+        "max_clip_delta_deg":float(np.max(np.abs(delta))),
+        "matches_visual_initial_pose":bool(np.max(np.abs(delta))<=tolerance_deg),
+    }
+
+
+def assert_initial_pose_fidelity(audit, *, allow_clipped_diagnostic=False):
+    """Do not compare unlike initial states under a 'same scene' label."""
+    if not audit["matches_visual_initial_pose"] and not allow_clipped_diagnostic:
+        raise ValueError(
+            "PHYSICS BASELINE REJECTED: the saved visual initial pose lies "
+            f"outside the URDF joint limits (max clip {audit['max_clip_delta_deg']:.2f} deg). "
+            "Instant clipping changes the robot's appearance and invalidates a direct "
+            "DLS vs SAC physics extension. Check the real-to-sim joint zero/sign/limits "
+            "and derive a physically valid shared initial pose. For exploratory "
+            "NON-COMPARABLE debugging only, use --allow-clipped-diagnostic; this "
+            "will visibly watermark the video and preserve the audit.")
+    return audit
+
+
 def target_sequence(rollout, index, low, high):
     rows, joint_targets = rollout
     source_index = min(index, len(rows)-1)
@@ -99,17 +127,20 @@ def build_start(args):
      *_remainder) = scene.create_scene(args)
     phys.prepare_environment(model)
     original_q = init.qpos[qids].copy()
+    pose_audit = initial_pose_audit(original_q, low, high)
+    assert_initial_pose_fidelity(
+        pose_audit, allow_clipped_diagnostic=args.allow_clipped_diagnostic)
     init.qpos[qids] = np.clip(init.qpos[qids], low, high)
     init.qvel[:] = 0
     mujoco.mj_forward(model, init)
-    return model, init, qids, dids, low, high, tcp, side, goals, original_q
+    return model, init, qids, dids, low, high, tcp, side, goals, original_q, pose_audit
 
 
 def run(args):
     if args.out.exists():
         raise FileExistsError(args.out)
     comparison = load_comparison(args.rollout)
-    model, init, qids, dids, low, high, tcp, side, goals, original_q = build_start(args)
+    model, init, qids, dids, low, high, tcp, side, goals, original_q, pose_audit = build_start(args)
     source_initial = comparison["dls"][1][0]
     if np.max(np.abs(source_initial-original_q)) > args.max_initial_delta_rad:
         raise ValueError("Input trajectory initial joint pose mismatches saved scene: "
@@ -205,7 +236,10 @@ def run(args):
         "status":"DLS_VS_SAC_SAVED_JOINT_TRAJECTORY_PD_PHYSICS_NOT_CLOSED_LOOP",
         "source_rollout":args.rollout.name,
         "policies":list(POLICIES),
-        "same_start":True,
+        "same_start_between_policies":True,
+        "same_start_as_original_visual":pose_audit["matches_visual_initial_pose"],
+        "initial_pose_audit":pose_audit,
+        "comparison_validity":("PRELIMINARY_PHYSICAL_TRACKING" if pose_audit["matches_visual_initial_pose"] else "NON_COMPARABLE_CLIPPED_DIAGNOSTIC_ONLY"),
         "mode":"capped_torque_PD_mj_step",
         "kp":args.kp,"kd":args.kd,"max_torque_nm":args.max_torque,
         "substeps_per_source_frame":args.substeps,
@@ -258,6 +292,8 @@ def main():
     p.add_argument("--kd",type=float,default=1.1)
     p.add_argument("--max-torque",type=float,default=3.)
     p.add_argument("--max-initial-delta-rad",type=float,default=.10)
+    p.add_argument("--allow-clipped-diagnostic",action="store_true",
+                   help="Only for debugging. Original out-of-limit pose is clipped, not comparable.")
     p.add_argument("--dataset-root",type=Path,default=scene.DATASET)
     p.add_argument("--episode",type=int,default=4)
     p.add_argument("--object-layout-json",type=Path,default=scene.OBJECTS)
