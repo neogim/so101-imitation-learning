@@ -233,3 +233,35 @@ fi
 **Remaining acceptance tests on the Mac:** (a) fixture appears as attached L shape in Mount view, (b) actual gripper mesh appears naturally in Wrist imagery; color from the real URDF/off-white preview, not the collision proxy, (c) visible object orientation/field aligns with real Wrist reference, (d) no false contact with adjacent robot parts or missed environment contacts. If a visual mismatch persists, get actual Wrist image and measured CAD-to-`gripper_link` transform; do not guess offsets indefinitely.
 
 **Verification status:** GitHub source and regression assertions reviewed; live MuJoCo compile/render not available in the coding runtime. No claim that the newly produced frames have passed acceptance yet. Static source changes do not convert Muhi/cup into dynamic objects, nor do they implement ACT inference.
+
+## 2026-11-12: actual camera fixture is bent ^- profile, not an upright L
+
+Evidence: latest user photo (side view of the actual white 3D-printed bracket mounted to the common jaw root) and `so101-wrist-visual-v2-20261112-233859.zip` (48-frame previous render). The real bracket runs **from the jaw-root fixing foot, diagonally outward/upward, then horizontally along a shelf holding the PCB**, rather than a simple straight upright with a right-angle top. The real wrist view is intended to include the gripper jaws **throughout the manipulation** so that the closing instant can be observed; the prior Sim had insufficient jaw visibility.
+
+Model revision: preserve fixed `gripper_link` parent between J5 and J6 and keep visual/collision geometries separate. Three thin boxes now describe the continuous foot, **oriented diagonal riser**, and nearly horizontal shelf in the rig YZ plane; `between_endpoints()` computes the riser's centre, size and orientation from two endpoints. The 32mm camera board remains at the shelf end, and the black barrel projects along the optically calculated -Z direction. All contact proxies use the same positions and quaternions as visual shapes, and remain hidden in camera RGB renderings. The scene is still provisional photo-based geometry, **not a verified import of the actual printed STL**.
+
+The wrist RGB target is now approximately the jaw closing region, `look_at=(0,-0.024,-0.112)` metres in rig-local coordinates, replacing the previous aim beyond the fingertips `(-0.008,-0.002,-0.165)`. For every frame, output `summary.json` and `contact_frames.csv` now contain a **jaw-geometry centre in-FOV** metric. This is only a camera-frustum test based on named `jaw/finger` body geoms; it **does not prove visible pixels or lack of occlusion**. The user must review Wrist and Mount inspection videos together.
+
+Mac commands (from the repository root, no `#` comment lines for interactive zsh):
+
+```bash
+conda activate so101-real2sim
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+if python -m unittest discover -s scripts/so101_sim -p 'test_wrist_camera_sim.py' -v; then
+  ROLL_OUT="$(find outputs -type f -name rollout.csv | grep -Ei 'j5|ablation' | sort | tail -n 1)"
+  if [ -f "$ROLL_OUT" ]; then
+    OUT="outputs/so101-wrist-bent-fixture-$(date +%Y%m%d-%H%M%S)"
+    if python scripts/so101_sim/render_wrist_camera_rollout.py --rollout "$ROLL_OUT" --policy normal --mode kinematic --stride 4 --save-video --out "$OUT"; then
+      open "$OUT/mount_inspection.mp4"
+      open "$OUT/side_wrist_comparison.mp4"
+      open "$OUT/wrist_camera.mp4"
+      python -c 'import json,sys; x=json.load(open(sys.argv[1])); print("Jaw geom-centre frames inside Wrist FOV:",x["frames_with_jaw_geom_centers_in_fov"],"/",x["frames"]); print("Wrist contacts:",x["frames_with_wrist_contact"])' "$OUT/summary.json"
+    fi
+  else
+    echo "J5 rollout.csv not found"
+  fi
+fi
+```
+
+**State:** Code committed, no new Mac runtime/render has yet been carried out after this change. Do not report the angled bracket or constant jaw visibility as validated until the new output is inspected. If the jaw remains invisible, check actual jaw/body naming in the URDF and the camera extrinsics; a zero centre-in-FOV score may arise if geoms have different names. The real USB cable is not yet simulated; realistic visual texture/lighting and CAD precision remain pending. Avoid committing personal Mac paths or login names.
