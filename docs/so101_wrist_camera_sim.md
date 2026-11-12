@@ -122,3 +122,36 @@ New provisional `gripper_link` local coordinates (metres):
 **Validation warning**: This is a photo-based starting hypothesis, not a calibrated CAD placement. Geometry is primitive proxies, not the mixed-unit STL files. Neither actual 3D rendering nor collision clearance after this patch has been verified remotely. Confirm in Side video that the bracket foot touches the J5/J6 jaw root and in Wrist video that a small portion of the end effector appears. Do not hide unexpected self-contacts by globally disabling collisions. If the attachment remains misaligned, determine the true gripper-local mount transform with the CAD or visual landmarks rather than blindly shifting positions.
 
 For Mac test and dual video generation, use the earlier commands in this document, beginning with `conda activate so101-real2sim`.
+
+## 2026-11-12 Mac error follow-up: duplicate geom name fixed
+
+The first J5–J6 patch introduced a coding error: `r2s_wrist_bracket_foot_collision` was registered **twice**, because a newly inserted foot element changed the `COLLISION_NAMES` indices and the original stem was still assigned index 0. The resulting `ValueError: repeated name 'r2s_wrist_bracket_foot_collision' in geom` occurred during `spec` construction, before video generation. The subsequent 'video file does not exist' messages were consequences, NOT missing `rollout.csv`.
+
+Correction: five add_geom calls now use unique indices `[1,0,2,3,4]` of `COLLISION_NAMES`, covering foot, stem, top, PCB and lens exactly once. `test_no_duplicate_collision_names_in_install_source` statically checks this mapping, while MuJoCo compile tests check actual construction.
+
+Use these **zsh-friendly no-comment lines**. Open videos only after successful script exit; the `set -e` shell option is not required:
+
+```bash
+conda activate so101-real2sim
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+python -m unittest discover -s scripts/so101_sim -p 'test_wrist_camera_sim.py' -v
+ROLL_OUT="$(find outputs -type f -name rollout.csv | grep -Ei 'j5|ablation' | sort | tail -n 1)"
+if [ ! -f "$ROLL_OUT" ]; then
+  echo "J5 rollout.csv not found under outputs"; 
+else
+  OUT="outputs/so101-wrist-j5j6-retest-$(date +%Y%m%d-%H%M%S)"
+  if python scripts/so101_sim/render_wrist_camera_rollout.py --rollout "$ROLL_OUT" --policy normal --mode kinematic --stride 4 --save-video --out "$OUT"; then
+    open "$OUT/side_wrist_comparison.mp4"
+    open "$OUT/side_camera.mp4"
+    open "$OUT/wrist_camera.mp4"
+    cat "$OUT/summary.json"
+  else
+    echo "Rendering failed; no videos opened."
+  fi
+fi
+```
+
+The `zsh: command not found: #` lines come from pasting bare `#` comment lines into an interactive zsh session with `interactivecomments` off. They are unrelated to the MuJoCo exception. No personal Mac username or absolute home paths have been recorded in this documentation.
+
+Verification level: Github code review and static name-index inspection completed; full MuJoCo tests and resulting videos still require a Mac run.
