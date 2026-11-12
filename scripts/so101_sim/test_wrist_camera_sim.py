@@ -31,20 +31,21 @@ class WristCameraRigTests(unittest.TestCase):
                 wrist.validate_mount(pos, rpy)
 
     def test_photographed_j5_j6_bracket_is_contiguous(self):
-        # Bracket foot and stem must overlap; otherwise the rig floats.
-        self.assertEqual(wrist.DEFAULT_MOUNT_POS, (0.0, 0.0, -0.048))
-        self.assertLessEqual(wrist.BRACKET_STEM_CENTER_Z - 0.029,
-                             wrist.BRACKET_BASE_Z + 0.006)
-        self.assertGreaterEqual(wrist.BRACKET_STEM_CENTER_Z + 0.029,
+        # The mounting point sits off the jaw-root central axis and supports
+        # a connected PCB/lens, not blocks floating near the J4 wrist.
+        self.assertEqual(wrist.DEFAULT_MOUNT_POS, (0.0, 0.024, -0.045))
+        self.assertGreater(wrist.DEFAULT_MOUNT_POS[1], 0.0)
+        self.assertLessEqual(0.019 - 0.020, 0.013)
+        self.assertGreaterEqual(0.019 + 0.020,
+                                wrist.BRACKET_OUTBOARD_Y - 0.018)
+        self.assertLessEqual(wrist.BRACKET_STEM_CENTER_Z + 0.012,
+                             wrist.BRACKET_TOP_Z + 0.004)
+        self.assertGreaterEqual(wrist.BRACKET_STEM_CENTER_Z + 0.012,
                                 wrist.BRACKET_TOP_Z - 0.004)
-        self.assertLess(wrist.CAMERA_Z, wrist.LENS_Z)
-        self.assertLess(wrist.LENS_Z, wrist.PCB_Z)
-        # Board and L-bracket must physically meet; 0.004 is top half-thickness
-        # and 0.003 is PCB half-thickness (metres).
         self.assertLessEqual(wrist.PCB_Z - 0.003,
                              wrist.BRACKET_TOP_Z + 0.004)
-        self.assertLessEqual(wrist.PCB_Z - 0.003,
-                             wrist.LENS_Z + 0.012)
+        self.assertLess(wrist.CAMERA_Z, wrist.LENS_Z)
+        self.assertLess(wrist.LENS_Z, wrist.PCB_Z)
 
     def test_no_duplicate_collision_names_in_install_source(self):
         # Static regression: catches duplicate geom names even without
@@ -79,6 +80,9 @@ class WristCameraRigTests(unittest.TestCase):
         qid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "wrist_roll")
         cid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, wrist.CAMERA)
         self.assertGreaterEqual(cid, 0)
+        self.assertGreaterEqual(mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_CAMERA,
+            wrist.MOUNT_INSPECTION_CAMERA), 0)
         for name in wrist.COLLISION_NAMES:
             geom = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
             self.assertGreaterEqual(geom, 0)
