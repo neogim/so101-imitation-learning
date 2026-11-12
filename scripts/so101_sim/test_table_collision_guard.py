@@ -20,6 +20,13 @@ class TableCollisionGuardTests(unittest.TestCase):
                         axis=[0,0,1],range=[-.3,.3],limited=True)
         robot.add_geom(name="guarded_tip",type=mujoco.mjtGeom.mjGEOM_SPHERE,
                        size=[.02,0,0],mass=.1,contype=1,conaffinity=1)
+        # A rendered-only geometry is intentionally located inside the table.
+        # It must NOT trigger the physical collision exclusion zone.
+        robot.add_geom(name="visual_only_overlap",
+                       type=mujoco.mjtGeom.mjGEOM_BOX,
+                       pos=[0,0,-.14],size=[.01,.01,.01],
+                       contype=0,conaffinity=0,
+                       rgba=[1,0,0,1])
         model=spec.compile()
         data=mujoco.MjData(model)
         mujoco.mj_forward(model,data)
@@ -47,6 +54,14 @@ class TableCollisionGuardTests(unittest.TestCase):
         self.assertGreater(target[0],-.15)
         self.assertTrue(guard.inspect(target)["clearance_satisfied"])
         self.assertAlmostEqual(data.qpos[0],0)
+
+    def test_visual_only_robot_geom_not_counted_as_collision(self):
+        model,data=self.setup_scene()
+        guard=TableCollisionGuard(model,data,[0],clearance_mm=3)
+        visual_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                    "visual_only_overlap")
+        self.assertNotIn(visual_id,guard.robot_ids)
+        self.assertTrue(guard.inspect([0])["clearance_satisfied"])
 
     def test_original_display_only_geoms_still_checked(self):
         model,data=self.setup_scene()
