@@ -147,7 +147,9 @@ def make_video(args, model, data, qids, goals, side, rows_by_policy, out):
                     for rr,cam in enumerate((camera,wrist.CAMERA)):
                         renderer.update_scene(data,camera=cam,scene_option=option)
                         if rr==0:
-                            add_reference_markers(renderer.scene,goals)
+                            trail=[np.array([item["tcp_x"],item["tcp_y"],item["tcp_z"]],float)
+                                   for item in rows[:min(index,len(rows)-1)+1]]
+                            add_reference_markers(renderer.scene,goals,tcp_trail=trail)
                         image=Image.fromarray(renderer.render().copy())
                         x,y=width*col, (height+48)*rr
                         canvas.paste(image,(x,y+48))
