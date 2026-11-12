@@ -28,15 +28,21 @@ class WristCameraTests(unittest.TestCase):
             with self.subTest(xyz=xyz,rpy=rpy),self.assertRaises(ValueError):
                 wrist.validate_mount(xyz,rpy)
 
-    def test_visual_L_is_contiguous(self):
-        self.assertLessEqual(abs(wrist.RISER_POS[2]-wrist.FOOT_POS[2]),
-                             0.020+0.004)
-        self.assertLessEqual(abs(wrist.RISER_POS[2]-wrist.TOP_POS[2]),
-                             0.020+0.004)
-        self.assertLessEqual(abs(wrist.TOP_POS[1]-wrist.RISER_POS[1]),
-                             0.023+0.007)
-        self.assertLessEqual(abs(wrist.BOARD_POS[1]-wrist.TOP_POS[1]),
-                             0.023+0.016)
+    def test_bent_mount_has_connected_angled_riser_and_shelf(self):
+        foot=wrist.FOOT_POS
+        knee=wrist.KNEE_POS
+        elbow=wrist.ELBOW_POS
+        end=wrist.SHELF_END_POS
+        self.assertLess(abs(knee[1]-foot[1]),0.016)
+        self.assertLess(abs(knee[2]-foot[2]),0.009)
+        self.assertGreater(elbow[1],knee[1])
+        self.assertGreater(elbow[2],knee[2])
+        self.assertGreater(end[1],elbow[1])
+        self.assertAlmostEqual(end[2],elbow[2])
+        self.assertLess(abs(wrist.BOARD_POS[1]-end[1]),0.01)
+        centre,size,quat=wrist.between_endpoints(knee,elbow,.014,.006)
+        self.assertGreater(size[1],.015)
+        self.assertAlmostEqual(sum(q*q for q in quat),1.,places=6)
 
     def test_optical_camera_looks_at_target(self):
         origin=wrist.BOARD_POS
@@ -78,7 +84,7 @@ class WristCameraTests(unittest.TestCase):
             self.assertGreaterEqual(gid,0)
             self.assertEqual(model.geom_contype[gid],1)
             self.assertEqual(model.geom_group[gid],3)
-        for name in ("foot","vertical","top","pcb","lens"):
+        for name in ("foot","diagonal","shelf","pcb","lens"):
             gid=mujoco.mj_name2id(
                 model,mujoco.mjtObj.mjOBJ_GEOM,"r2s_wrist_visual_"+name)
             self.assertGreaterEqual(gid,0)
