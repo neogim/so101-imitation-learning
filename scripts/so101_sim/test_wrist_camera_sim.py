@@ -4,6 +4,8 @@ Run in the existing macOS conda environment. No physical robot.
 """
 from __future__ import annotations
 
+import ast
+import inspect
 import math
 import sys
 import unittest
@@ -43,6 +45,24 @@ class WristCameraRigTests(unittest.TestCase):
                              wrist.BRACKET_TOP_Z + 0.004)
         self.assertLessEqual(wrist.PCB_Z - 0.003,
                              wrist.LENS_Z + 0.012)
+
+    def test_no_duplicate_collision_names_in_install_source(self):
+        # Static regression: catches duplicate geom names even without
+        # installing MuJoCo or compiling a full scene.
+        tree = ast.parse(inspect.getsource(wrist.install))
+        indices = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "add_geom":
+                continue
+            named = next((kw.value for kw in node.keywords if kw.arg == "name"), None)
+            self.assertIsInstance(named, ast.Subscript)
+            self.assertIsInstance(named.value, ast.Name)
+            self.assertEqual(named.value.id, "COLLISION_NAMES")
+            self.assertIsInstance(named.slice, ast.Constant)
+            indices.append(named.slice.value)
+        self.assertCountEqual(indices, range(len(wrist.COLLISION_NAMES)))
 
     def test_mujoco_compile_camera_follows_joint_and_colliders_exist(self):
         import mujoco
