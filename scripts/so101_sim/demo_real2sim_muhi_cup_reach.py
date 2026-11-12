@@ -116,7 +116,11 @@ def create_scene(args):
     model, side_camera = movie.make_calibrated_model(
         extras, intr, args.urdf, layout,
         table_extra_left_m=float(cup["table_extra_left_cm"])/100,
-        table_extra_front_m=float(cup["table_extra_front_cm"])/100)
+        table_extra_front_m=float(cup["table_extra_front_cm"])/100,
+        wrist_camera=getattr(args, "wrist_camera", False),
+        wrist_mount_pos=getattr(args, "wrist_mount_pos", (0., -.014, .037)),
+        wrist_mount_rpy_deg=getattr(args, "wrist_mount_rpy_deg", (0., 0., 0.)),
+        wrist_fovy=getattr(args, "wrist_fovy", 75.))
     # This includes apply_white_follower_preview() inside the reused builder.
     # Reproduce the *saved* table translation/rotation and GUI cup correction.
     table_ids = movie.table_geom_ids(model)
