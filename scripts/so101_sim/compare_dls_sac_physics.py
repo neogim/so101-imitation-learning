@@ -85,6 +85,15 @@ def target_sequence(rollout, index, low, high):
     return rows[source_index], np.clip(joint_targets[source_index], low, high), source_index
 
 
+def physics_substeps_for_frame(frame, timestep, *, reference_fps=8., fixed_substeps=0):
+    """Match original nominal kinematic frame period, never invent 20ms timing."""
+    if fixed_substeps:
+        return fixed_substeps
+    previous=round(frame/(reference_fps*timestep))
+    current=round((frame+1)/(reference_fps*timestep))
+    return max(1,current-previous)
+
+
 def pd_step(model, data, qids, dids, target, *, kp, kd, max_torque, gripper_qid, gripper_did, gripper_goal):
     """Apply joint torques (not direct five-joint qpos writes)."""
     data.qfrc_applied[:] = 0
@@ -207,11 +216,14 @@ def run(args):
     with mujoco.Renderer(model, width=args.width, height=args.height) as renderer:
         for frame in range(total_frames):
             frame_record = {}
+            steps_this_frame = physics_substeps_for_frame(
+                frame, model.opt.timestep, reference_fps=args.reference_fps,
+                fixed_substeps=args.substeps)
             panels = {}
             for policy in POLICIES:
                 data = states[policy]
                 row, target, source_index = target_sequence(comparison[policy], frame, low, high)
-                for _ in range(args.substeps):
+                for _ in range(steps_this_frame):
                     pd_step(model, data, qids, dids, target,
                             kp=args.kp, kd=args.kd, max_torque=args.max_torque,
                             gripper_qid=gripper_qid, gripper_did=gripper_did, gripper_goal=gripper_goal)
@@ -283,7 +295,9 @@ def run(args):
         "mode":"capped_torque_PD_mj_step",
         "overview_camera_mode":args.overview_camera,
         "kp":args.kp,"kd":args.kd,"max_torque_nm":args.max_torque,
-        "substeps_per_source_frame":args.substeps,
+        "substeps_per_source_frame":(args.substeps if args.substeps else "derived_from_reference_fps"),
+        "reference_fps":args.reference_fps,
+        "reference_period_s":1/args.reference_fps,
         "sim_timestep_s":float(model.opt.timestep),
         "source_frames":total_frames,
         "rendered_frames":render_count,"video_status":video_status,
@@ -321,7 +335,10 @@ def main():
     p.add_argument("--rollout",type=Path,required=True,
                    help="comparison_rollout.csv from previous Episode-4 DLS vs SAC")
     p.add_argument("--out",type=Path,required=True)
-    p.add_argument("--substeps",type=int,default=10)
+    p.add_argument("--substeps",type=int,default=0,
+                   help="Override timing for diagnostics; 0 uses reference FPS")
+    p.add_argument("--reference-fps",type=float,default=8.,
+                   help="Nominal frame sampling rate of original DLS/SAC comparison")
     p.add_argument("--max-frames",type=int,default=0,
                    help="0 uses entire saved trajectory")
     p.add_argument("--render-every",type=int,default=4)
@@ -355,8 +372,9 @@ def main():
     if not args.rollout.is_file():
         p.error("Missing comparison_rollout.csv")
     if args.out.exists():p.error("Output exists")
-    if (args.substeps<1 or args.render_every<1 or args.width<64 or args.height<64
-            or args.max_frames<0 or not np.isfinite([args.kp,args.kd,args.max_torque,args.video_fps]).all()
+    if (args.substeps<0 or args.render_every<1 or args.width<64 or args.height<64
+            or args.max_frames<0 or not np.isfinite([args.kp,args.kd,args.max_torque,args.video_fps,args.reference_fps]).all()
+            or args.reference_fps<=0
             or args.kp<=0 or args.kd<0 or args.max_torque<=0 or args.video_fps<=0):
         p.error("Invalid physics, render or timing parameters")
     run(args)
