@@ -58,13 +58,17 @@ class WristCameraRigTests(unittest.TestCase):
             self.assertGreaterEqual(geom, 0)
             self.assertEqual(model.geom_contype[geom], 1)
         mujoco.mj_forward(model, data)
-        before = data.cam_xpos[cid].copy()
+        before_pos = data.cam_xpos[cid].copy()
+        before_rot = data.cam_xmat[cid].copy()
         data.qpos[model.jnt_qposadr[qid]] = math.pi / 2
         mujoco.mj_forward(model, data)
-        after = data.cam_xpos[cid].copy()
-        self.assertGreater(np.linalg.norm(before - after), 1e-3)
-        self.assertAlmostEqual(float(np.linalg.norm(after - [.0, .0, .2])),
-                               float(np.linalg.norm(before - [.0, .0, .2])),
+        after_pos = data.cam_xpos[cid].copy()
+        after_rot = data.cam_xmat[cid].copy()
+        # A centered camera can sit on the J5 rotation axis: position need
+        # not change even though its optical orientation DOES follow J5.
+        self.assertGreater(np.linalg.norm(before_rot - after_rot), 1e-3)
+        self.assertAlmostEqual(float(np.linalg.norm(after_pos - [.0, .0, .2])),
+                               float(np.linalg.norm(before_pos - [.0, .0, .2])),
                                delta=1e-4)
 
     def test_duplicate_rig_rejected(self):
