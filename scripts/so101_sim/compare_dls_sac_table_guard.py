@@ -212,7 +212,7 @@ def run(args):
         args.out.mkdir(parents=True,exist_ok=False)
         report_file=args.out/"preflight_diagnostic.json"
         report_file.write_text(
-            json.dumps(report,indent=2,ensure_ascii=False)+"\\n",encoding="utf-8")
+            json.dumps(report,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
         if args.preflight_only:
             print(json.dumps({
                 "status":report["status"],"initial_clearance":initial_check,
