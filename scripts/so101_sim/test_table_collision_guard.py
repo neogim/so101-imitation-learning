@@ -63,6 +63,17 @@ class TableCollisionGuardTests(unittest.TestCase):
         self.assertNotIn(visual_id,guard.robot_ids)
         self.assertTrue(guard.inspect([0])["clearance_satisfied"])
 
+    def test_diagnostic_identifies_actual_geom_and_restores_state(self):
+        model,data=self.setup_scene()
+        guard=TableCollisionGuard(model,data,[0])
+        old=float(data.qpos[0])
+        pairs=guard.nearest_pairs([-.10],limit=3)
+        self.assertEqual(pairs[0]["robot_geom_name"],"guarded_tip")
+        self.assertEqual(pairs[0]["robot_body"],"upper_arm_link")
+        self.assertEqual(pairs[0]["table_geom_name"],"r2s_preview_table")
+        self.assertLess(pairs[0]["distance_mm"],0)
+        self.assertAlmostEqual(float(data.qpos[0]),old)
+
     def test_original_display_only_geoms_still_checked(self):
         model,data=self.setup_scene()
         table=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,"r2s_preview_table")
