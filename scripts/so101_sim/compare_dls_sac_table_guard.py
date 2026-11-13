@@ -187,11 +187,12 @@ def run(args):
         max_delta_rad=args.check_resolution_rad,
         include_cup=args.include_cup)
     initial_check=guard.inspect(start)
-    if not initial_check["clearance_satisfied"]:
+    if args.preflight_only or not initial_check["clearance_satisfied"]:
         # A preflight failure is an actual experiment result: persist the
         # diagnostic BEFORE raising, rather than leaving an absent OUT folder.
         report={
-            "status":"TABLE_CLEARANCE_BASELINE_REJECTED",
+            "status":("TABLE_CLEARANCE_PREFLIGHT_PASS" if initial_check["clearance_satisfied"]
+                      else "TABLE_CLEARANCE_BASELINE_REJECTED"),
             "meaning":"Geometric tabletop clearance failure, not proof of real-world penetration",
             "clearance_requested_mm":args.clearance_mm,
             "original_visual_joint_deg":np.degrees(source).round(5).tolist(),
@@ -212,6 +213,11 @@ def run(args):
         report_file=args.out/"preflight_diagnostic.json"
         report_file.write_text(
             json.dumps(report,indent=2,ensure_ascii=False)+"\\n",encoding="utf-8")
+        if args.preflight_only:
+            print(json.dumps({
+                "status":report["status"],"initial_clearance":initial_check,
+                "report":str(report_file)},indent=2,ensure_ascii=False))
+            return
         pair=report["nearest_pairs_clipped"][0]
         raise ValueError(
             "TABLE CLEARANCE BASELINE REJECTED: saved scene has a "
@@ -279,6 +285,8 @@ def run(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sac-model",type=Path,required=True)
+    p.add_argument("--preflight-only",action="store_true",
+                   help="Write tabletop collision report and exit without running policies or video")
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--clearance-mm",type=float,default=3.)
     p.add_argument("--check-resolution-rad",type=float,default=.01)
