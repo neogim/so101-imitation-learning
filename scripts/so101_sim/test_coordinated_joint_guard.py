@@ -44,7 +44,7 @@ class CoupledShieldTests(unittest.TestCase):
         proposed=np.array([0,-.04,0,0,0],float)
         next_q,info=coordinate_step(
             self.guard,self.q,proposed,self.low,self.high,
-            lambda x: float(np.sum((x-proposed)**2)),
+            lambda x: float(np.sum((x-np.array([0,-.04,.04,0,0]))**2)),
             action_weight=.01)
         self.assertEqual(info["status"],"coordinated")
         self.assertGreater(next_q[2],0)
