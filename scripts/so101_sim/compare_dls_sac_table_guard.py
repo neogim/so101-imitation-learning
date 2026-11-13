@@ -188,11 +188,39 @@ def run(args):
         include_cup=args.include_cup)
     initial_check=guard.inspect(start)
     if not initial_check["clearance_satisfied"]:
+        # A preflight failure is an actual experiment result: persist the
+        # diagnostic BEFORE raising, rather than leaving an absent OUT folder.
+        report={
+            "status":"TABLE_CLEARANCE_BASELINE_REJECTED",
+            "meaning":"Geometric tabletop clearance failure, not proof of real-world penetration",
+            "clearance_requested_mm":args.clearance_mm,
+            "original_visual_joint_deg":np.degrees(source).round(5).tolist(),
+            "clipped_common_joint_deg":np.degrees(start).round(5).tolist(),
+            "clip_delta_deg":delta.round(5).tolist(),
+            "original_visual_pose_table":guard.inspect(source),
+            "clipped_pose_table":initial_check,
+            "nearest_pairs_clipped":guard.nearest_pairs(start),
+            "nearest_pairs_original":guard.nearest_pairs(source),
+            "notes":[
+                "The saved Episode-4 visual joint calibration is not a verified physical calibration.",
+                "Robot meshes may use conservative convex collision geometry.",
+                "Do not disable the guard or infer a true 9.34mm physical penetration.",
+                "Neither SAC nor DLS was run; correct table/base/gripper geometry first."
+            ],
+        }
+        args.out.mkdir(parents=True,exist_ok=False)
+        report_file=args.out/"preflight_diagnostic.json"
+        report_file.write_text(
+            json.dumps(report,indent=2,ensure_ascii=False)+"\\n",encoding="utf-8")
+        pair=report["nearest_pairs_clipped"][0]
         raise ValueError(
-            "TABLE CLEARANCE BASELINE REJECTED: the shared in-limit initial pose "
-            f"is already too close/penetrating ({initial_check['minimum_distance_mm']:.2f}mm), "
-            f"pair={initial_check['nearest_pair']}. Fix the saved robot/table placement "
-            "or collision proxies before running DLS/SAC; do NOT disable the guard.")
+            "TABLE CLEARANCE BASELINE REJECTED: saved scene has a "
+            f"{initial_check['minimum_distance_mm']:.2f}mm signed gap "
+            f"for geom {pair['robot_geom_id']} "
+            f"({pair['robot_geom_name'] or '<unnamed>'}, body={pair['robot_body']}) "
+            f"vs {pair['table_geom_name']}. "
+            f"Report saved to {report_file}. "
+            "The run is blocked; no SAC/DLS trajectories or MP4 were generated.")
     from stable_baselines3 import SAC
     agent=SAC.load(str(args.sac_model),device="cpu")
     if tuple(agent.observation_space.shape)!=(9,) or tuple(agent.action_space.shape)!=(5,):
