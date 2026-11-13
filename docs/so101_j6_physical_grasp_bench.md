@@ -62,3 +62,15 @@ The user's second Mac test `so101-j6-grasp-fixed-20261114-012551.zip` **did not 
 Inspect `summary.json`: `j5_wrist_roll_deg`, `muhi_orientation`, `setup_search`, `status`. If no valid placement is found, that is a useful failure: do **not** widen the mesh or silently place the object penetrating a jaw. New dynamic results are pending, so neither bilateral contact nor a 3D physical hold is claimed.
 
 The same command uses -90° by default; explicit form is `--j5-deg -90`. Cameras remain uncalibrated bench closeups. 
+
+## Third run: contact geometry clips through the object, corrected the fixture (2026-11-14)
+
+The attached third Mac run `so101-j6-rotated-20261114-013219.zip` recorded:
+- J5 **-90°**, Muhi upright in world Z, white follower.
+- 3,971 placement candidates; selected gap 0.5596mm to fixed jaw and 4.2873mm to moving jaw. Predicted moving-jaw overlap at J6 angle ~1.265 rad was **NOT** a physical grasp.
+- The old virtual fixture **reset object qpos and qvel to a constant every time step during J6 closure**. This prevented Muhi from being pushed towards the opposing finger, causing a maximum measured contact penetration **-26.852mm**. Fixed and moving contact together occurred only **4/500** post-release steps, final displacement **4,516.7mm**. This is a FAIL, not a valid representation of an end effector passing safely through an object.
+- The fact that the moving jaw had contact pairs throughout the held phase DOES NOT mean it was applying physically valid gripping force to a movable object. The forced reset dominated contact response.
+
+**Fix:** remove all per-step object position/velocity resets during MuJoCo integration. While the **setup interval** lasts, apply **bounded compliant force** (spring-to-setup-position plus damping and limited anti-gravity, max 1.5N) to the dynamic Muhi body. At fixture release, applied force becomes exactly zero. This is still a **temporary assisted placement experiment**, not a table pickup or real-world hardware controller. J1–J5 remain kinematically locked and J6 receives bounded PD torque. This preserves MuJoCo's ability to translate/rotate the object in response to collisions in the setup phase.
+
+Success still requires post-release two-sided contacts and stable object position. Significant interpenetration remains an explicit failure. The next run will determine whether the fixed jaw provides support or if jaw collision geometry needs further work. Do not increase physical plausibility claims based on CI or the predicted geometric sweep.
