@@ -216,6 +216,27 @@ def run(args):
         max_delta_rad=args.check_resolution_rad,
         include_cup=args.include_cup)
     initial_check=guard.inspect(start)
+    static_reset_report=None
+    if not initial_check["clearance_satisfied"] and args.initialization=="static-safe-seed":
+        # This is an explicit NEW kinematic simulation initialization, not
+        # a trajectory from the already-penetrating visual-recorded pose.
+        old_tcp=np.asarray(data.xpos[tcp],float).copy()
+        def seed_tcp(q):
+            saved=np.asarray(data.qpos[qids],float).copy()
+            try:
+                data.qpos[qids]=q
+                mujoco.mj_forward(model,data)
+                return np.asarray(data.xpos[tcp],float).copy()
+            finally:
+                data.qpos[qids]=saved
+                mujoco.mj_forward(model,data)
+        start,static_reset_report=coordinated.find_static_safe_seed(
+            guard,source,low,high,max_delta_rad=args.seed_max_delta_rad,
+            tcp_position=old_tcp,tcp_at=seed_tcp)
+        if start is None:
+            start=np.clip(source,low,high)
+        initial_check=guard.inspect(start)
+        args.start_adjusted=bool(np.max(np.abs(start-source))>1e-6)
     if args.preflight_only or not initial_check["clearance_satisfied"]:
         # A preflight failure is an actual experiment result: persist the
         # diagnostic BEFORE raising, rather than leaving an absent OUT folder.
@@ -228,7 +249,9 @@ def run(args):
             "clipped_common_joint_deg":np.degrees(start).round(5).tolist(),
             "clip_delta_deg":delta.round(5).tolist(),
             "original_visual_pose_table":guard.inspect(source),
-            "clipped_pose_table":initial_check,
+            "clipped_pose_table":guard.inspect(np.clip(source,low,high)),
+            "selected_start_pose_table":initial_check,
+            "static_reset_search":static_reset_report,
             "nearest_pairs_clipped":guard.nearest_pairs(start),
             "nearest_pairs_original":guard.nearest_pairs(source),
             "notes":[
@@ -296,6 +319,10 @@ def run(args):
         "coordinated_step_rad":args.coordinated_step_rad if args.guard_mode=="coordinated" else None,
         "source_initial_joint_deg":np.degrees(source).tolist(),
         "common_in_limit_start_joint_deg":np.degrees(start).tolist(),
+        "initialization":args.initialization,
+        "static_reset_search":static_reset_report,
+        "new_simulation_baseline_not_continuous_from_recording":
+            static_reset_report is not None,
         "start_adjustment_deg":delta.tolist(),
         "same_as_original_visual_start":not args.start_adjusted,
         "initial_table_clearance":initial_check,
@@ -304,6 +331,7 @@ def run(args):
         "video_status":video_status,
         "caveats":[
             "New shared in-limit initial pose; not identical to the previous visual-only trajectory.",
+            "If static-safe-seed was used, the original penetrating state is NOT connected by a planned safe motion to the reinitialized state.",
             "The same collision backtracking is applied to DLS and SAC, which have different proposed actions.",
             "No grasp, no physics, no guarantee of obstacle avoidance if no safe local step exists.",
             "Coordinated mode uses finite local joint candidates; NOT a global planner, not a newly trained SAC.",
@@ -320,6 +348,11 @@ def run(args):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--sac-model",type=Path,required=True)
+    p.add_argument("--initialization",choices=("reject","static-safe-seed"),
+                   default="reject",
+                   help="Default reject unsafe recorded start; explicit new static seed is for kinematic simulation only")
+    p.add_argument("--seed-max-delta-rad",type=float,default=.12,
+                   help="J2/J3/J4 static seed grid radius, radians")
     p.add_argument("--preflight-only",action="store_true",
                    help="Write tabletop collision report and exit without running policies or video")
     p.add_argument("--out",type=Path,required=True)
@@ -359,7 +392,9 @@ def main():
             or not math.isfinite(args.video_fps) or args.video_fps<=0
             or not math.isfinite(args.coordinated_step_rad)
             or not 0<args.coordinated_step_rad<=.08
-            or not math.isfinite(args.action_weight) or args.action_weight<0):
+            or not math.isfinite(args.action_weight) or args.action_weight<0
+            or not math.isfinite(args.seed_max_delta_rad)
+            or not 0<args.seed_max_delta_rad<=.5):
         p.error("invalid run parameters")
     run(args)
 
