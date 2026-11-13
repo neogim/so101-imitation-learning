@@ -61,3 +61,22 @@ fi
 5. The *physical* DLS/SAC experiment should only be revisited after the above and self-collision model/PD validation. Kinematic collision-avoidance by itself does not prevent physical momentum-induced penetration, so the physics run needs its own integration and contact checks.
 
 This keeps the original kinematic and physical experiment scripts intact, with a separate opt-in guarded experiment, reducing regressions.
+
+## 2026-11-13 23:18 JST: real Mac preflight result and targeted diagnosis
+
+The user reran the existing collision-guard comparison on the original saved Episode-4 layout. **It rejected the initial pose**, as it must, before executing either DLS or SAC:
+`minimum_distance_mm=-9.34`, robot collision `geom id 70` on **`gripper_link`**, against `r2s_preview_table`. The output folder did not exist because preflight occurred before output creation. J2/J3 still require the explicitly documented 4.46°/2.15° URDF-limit correction. The collision is a **MuJoCo geometry proximity/overlap result**, not proof that the real gripper actually penetrates the real table. Candidate causes: saved workcell/table alignment, gripper collision mesh approximation/convex hull, wrist assembly geometry, or recorded pose calibration.
+
+New diagnosis mode deliberately **does not execute DLS, SAC, PD, or physics**. It saves a JSON report even if preflight rejects the start. On a Mac:
+```bash
+conda activate so101-real2sim
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+SAC_MODEL="outputs/so101-sac-experiment-c2-precision10-train-20261111/sac_reward10_success10mm.zip"
+OUT="outputs/so101-table-preflight-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_dls_sac_table_guard.py \
+  --sac-model "$SAC_MODEL" --clearance-mm 3 --preflight-only --out "$OUT"
+cat "$OUT/preflight_diagnostic.json"
+```
+
+The report identifies the first twelve robot/table geom pairs with geom IDs, names, body, geom types, world-space centers, signed gaps and witness points. It includes both the *original visual* initial joint angles and the *in-limit* initial angles, for comparison. It is not necessary to adjust the table height or to disable contacts merely to generate the report. For normal execution, a failed preflight now also persists this JSON before raising. Following the diagnosis, determine whether geom 70 genuinely represents the gripping link silhouette or a conservative collision-hull artifact, and whether the rendered tabletop pose is correct against the saved image. Do not alter world geometry or bypass the safety filter without evidence.
