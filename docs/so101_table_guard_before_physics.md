@@ -80,3 +80,20 @@ cat "$OUT/preflight_diagnostic.json"
 ```
 
 The report identifies the first twelve robot/table geom pairs with geom IDs, names, body, geom types, world-space centers, signed gaps and witness points. It includes both the *original visual* initial joint angles and the *in-limit* initial angles, for comparison. It is not necessary to adjust the table height or to disable contacts merely to generate the report. For normal execution, a failed preflight now also persists this JSON before raising. Following the diagnosis, determine whether geom 70 genuinely represents the gripping link silhouette or a conservative collision-hull artifact, and whether the rendered tabletop pose is correct against the saved image. Do not alter world geometry or bypass the safety filter without evidence.
+
+## 2026-11-13: preflight_diagnostic.json from user's Mac
+
+The first detailed preflight report is conclusive about the **simulation geometry**, but not about physical hardware calibration.
+
+| Geometry (MuJoCo) | Signed tabletop distance |
+| --- | ---: |
+| `gripper_link` mesh geom ID 70 (unnamed, type 7 = mesh) | **−9.33661 mm** |
+| `moving_jaw_so101_v1_link` mesh geom ID 81 (unnamed, type 7 = mesh) | **−8.03791 mm** |
+| Nearest shoulder mesh geom ID 61 | +21.19994 mm |
+| Wrist fixture foot collision proxy ID 71 | +71.59151 mm |
+
+With the ORIGINAL visual pose (before URDF-limit clipping), the gripper/table minimum distance is **−10.19802 mm**, so clipping J2/J3 is not the sole cause of tabletop overlap. The tabletop collision surface at the nearest sample is z=−0.005 m; the gripper witness point is z=−0.014337 m. The moving jaw witness point is z=−0.013038 m. These are **two distinct finger/palm mesh penetrations**, not the photographed camera-bracket proxy. The approximate required **vertical clearance increase at the witness point** to reach +3mm is 12.34mm for ID 70 and 11.04mm for ID 81, *if everything else were rigidly lifted*. **Do not** translate the entire table, alter the URDF, or assume robot FK clearance changes exactly by these numbers; this is a geometric diagnosis only.
+
+The workcell's table geometry and the robot's original visual joint calibration are candidate estimates, not independently measured physical table-to-finger separation. Follow-up should compare the calibrated table plane, robot base offset and modeled gripper tip surface against the recorded Side image or a measured real pose. Only then choose whether to correct table placement, joint/robot calibration or mesh collision proxy and regenerate fresh collision-safe DLS/SAC trajectories. Never disable the guard just to produce MP4.
+
+The first saved diagnostic JSON includes an erroneous trailing literal `\\n` (rather than a JSON whitespace newline), which makes strict `json.load()` fail despite the JSON body being parseable. Fixed writer in commit `380066c`, **no need for the user to rerun the diagnostic just to repair the file**.
