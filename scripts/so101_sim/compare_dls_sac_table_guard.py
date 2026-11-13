@@ -236,7 +236,10 @@ def run(args):
         if start is None:
             start=np.clip(source,low,high)
         initial_check=guard.inspect(start)
-        args.start_adjusted=bool(np.max(np.abs(start-source))>1e-6)
+        # The overall correction includes BOTH URDF clipping and any
+        # coordinated static seed adjustment. Report the full deviation.
+        delta=np.degrees(start-source)
+        args.start_adjusted=bool(np.max(np.abs(delta))>1e-6)
     if args.preflight_only or not initial_check["clearance_satisfied"]:
         # A preflight failure is an actual experiment result: persist the
         # diagnostic BEFORE raising, rather than leaving an absent OUT folder.
