@@ -194,6 +194,12 @@ def execute(args):
         return
     model,data,qids,dids,lows,highs,jawq,jawd,freeq,fixed,moving,obj,table,center,open_angle,closed_angle,robot_geoms=built
     armhome=data.qpos[list(qids)].copy()
+    grip_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,bench.FINGER_BODY)
+    mj_initial_gripper_z=float(data.xpos[grip_body,2])
+    mj_initial_object_z=float(data.qpos[freeq+2])
+    lift_requested=False
+    lift_started_at=None
+    lift_rejected_steps=0
     rows=[];contactrows=[]
     frames=[]
     render=None
@@ -225,6 +231,41 @@ def execute(args):
                 u=min(1.,(t-args.settle_s)/max(.2,args.close_s))
                 demand=open_angle+u*(closed_angle-open_angle)
                 stage="close" if u<1. else "hold"
+                # Only attempt a kinematically guided 5mm lift after
+                # sustained TWO-JAW contact in recent on-table samples.
+                # A table-supported contact alone never proves a pickup.
+                if (not lift_requested and
+                    t>args.settle_s+args.close_s+.22 and
+                    len(rows)>=60 and
+                    sum(r["bilateral"] for r in rows[-60:])>=48 and
+                    rows[-1]["min_object_contact_depth_mm"]>-2.):
+                    lift_requested=True
+                    lift_started_at=t
+                if lift_requested:
+                    stage="lift"
+                    progress=min(1.,(t-lift_started_at)/.7)
+                    wanted_z=mj_initial_gripper_z+args.lift_mm/1000.*progress
+                    mujoco.mj_forward(model,data)
+                    jac=np.zeros((3,model.nv))
+                    jac_r=np.zeros((3,model.nv))
+                    mujoco.mj_jacBody(model,data,jac,jac_r,grip_body)
+                    J=jac[:,list(dids[:4])]
+                    error=np.array([0.,0.,wanted_z-float(data.xpos[grip_body,2])])
+                    dq=J.T@np.linalg.solve(J@J.T+.035**2*np.eye(3),error)
+                    dq=np.clip(dq,-.002,.002)
+                    oldq=armhome.copy()
+                    trial=armhome.copy()
+                    trial[:4]=np.clip(trial[:4]+dq,lows[:4],highs[:4])
+                    data.qpos[list(qids)]=trial
+                    mujoco.mj_forward(model,data)
+                    clearance=min((bench.signed_pair_gap(model,data,g,table)
+                                  for g in robot_geoms),default=float("inf"))
+                    if clearance>=args.table_clearance_mm/1000.:
+                        armhome=trial
+                    else:
+                        lift_rejected_steps+=1
+                        data.qpos[list(qids)]=oldq
+                        mujoco.mj_forward(model,data)
             torque=args.kp*(demand-data.qpos[jawq])-args.kd*data.qvel[jawd]
             data.qfrc_applied[jawd]=float(np.clip(torque,-args.max_torque,args.max_torque))
             mujoco.mj_step(model,data)
@@ -241,6 +282,8 @@ def execute(args):
             rows.append({
                 "step":i,"time_s":float(data.time),"stage":stage,
                 "j6_rad":float(data.qpos[jawq]),
+                "tcp_gripper_z_m":float(data.xpos[grip_body,2]),
+                "gripper_lift_mm":float((data.xpos[grip_body,2]-mj_initial_gripper_z)*1000.),
                 "j6_target_rad":float(demand),
                 "j6_torque_nm":float(data.qfrc_applied[jawd]),
                 "object_x_m":float(data.qpos[freeq]),
@@ -286,8 +329,25 @@ def execute(args):
     deepest=min(r["min_object_contact_depth_mm"] for r in rows)
     max_tilt=max(r["object_tilt_deg"] for r in rows)
     supported=sum(r["table_contacts"]>0 for r in rows if r["stage"]=="settle")
+    max_lift_z=max((r["object_z_m"]-mj_initial_object_z)*1000.
+                   for r in rows if r["stage"]=="lift") if lift_requested else 0.
+    lift_samples=[r for r in rows if r["stage"]=="lift"]
+    lift_pass=bool(lift_samples and
+        max_lift_z>=.8*args.lift_mm and
+        any(r["table_contacts"]==0 and r["bilateral"] for r in lift_samples) and
+        deepest>-2.)
+    result_status=("SHORT_LIFT_OBSERVED" if lift_pass else
+                   "SHORT_LIFT_FAILED" if lift_requested else
+                   "TABLE_CONTACT_OBSERVED" if simultaneous else
+                   "TABLE_BILATERAL_NOT_OBSERVED")
     info.update({
-        "status":"TABLE_CONTACT_OBSERVED" if simultaneous else "TABLE_BILATERAL_NOT_OBSERVED",
+        "status":result_status,
+        "short_lift_command_mm":args.lift_mm,
+        "short_lift_attempted":lift_requested,
+        "short_lift_success":lift_pass,
+        "max_object_vertical_rise_mm":float(max_lift_z),
+        "lift_table_clearance_rejected_steps":lift_rejected_steps,
+        "arm_lift_control":"DLS kinematic J1-J4; J5 fixed, J6 torque PD; object free dynamics",
         "physics_steps":len(rows),
         "settle_table_contact_steps":supported,
         "hold_steps":len(hold),
@@ -297,8 +357,11 @@ def execute(args):
         "final_object_xyz_m":[float(v) for v in data.qpos[freeq:freeq+3]],
         "final_bilateral":rows[-1]["bilateral"],
         "final_table_supported":bool(rows[-1]["table_contacts"]),
-        "lifting_success":"NOT_TESTED","grasp_success":"NOT_ESTABLISHED",
-        "note":"Bilateral contacts while supported by table cannot prove a physical lift.",
+        "lifting_success":"SHORT_LIFT_OBSERVED" if lift_pass else "NOT_OBSERVED",
+        "grasp_success":"SHORT_LIFT_OBSERVED" if lift_pass else "NOT_ESTABLISHED",
+        "note":"Short lift is eligible only after sustained bilateral table contacts; "
+               "arm is moved kinematically via DLS, not dynamic servo tracking. "
+               "Not a calibrated real robot pickup.",
     })
     if frames:
         frame_dir=args.out/"frames";frame_dir.mkdir()
@@ -317,6 +380,7 @@ def execute(args):
     (args.out/"summary.json").write_text(json.dumps(info,ensure_ascii=False,indent=2)+"\n")
     print(json.dumps({k:info[k] for k in
           ("status","settle_table_contact_steps","hold_bilateral_contact_steps",
+           "short_lift_attempted","short_lift_success",
            "deepest_object_contact_mm","max_object_tilt_deg")},ensure_ascii=False,indent=2))
     print("Output:",args.out)
 
