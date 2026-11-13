@@ -49,3 +49,16 @@ Implementation prepared in GitHub; **Mac MuJoCo run pending**. CI checks do not 
 - [Physical grasp execution plan in Notion](https://app.notion.com/p/41785e16f4dc81e0acd7d28fef1be470)
 - [Previous safe kinematic Reach experiment, video/CSV/graph](https://app.notion.com/p/41785e16f4dc8113a69dfe1abfe14df8)
 - [Existing Muhi drop/push physics workcell](https://github.com/neogim/so101-imitation-learning/blob/feature/so101-sim-data-augmentation/scripts/so101_sim/physical_workcell_sim.py)
+
+## Follow-up trial 2026-11-14: J5 -90° + independent Muhi placement
+
+The user's second Mac test `so101-j6-grasp-fixed-20261114-012551.zip` **did not pass**:
+- The new candidate finder sampled 7,514 placements, predicted 174 J6 jaw crossings, and selected a placement (local x=+48mm, y=-30mm, z=-74mm, Muhi axis `across_x`).
+- Physical trace: fixed-jaw contacts **0**, despite moving-jaw contacts; post-release bilateral contacts **0/500**; deepest penetration **-2.188mm**, final Muhi displacement **4,605mm** (gravity fall).
+- This shows a predicted moving-jaw crossing was NOT sufficient. The fixed jaw never actually supported the object. Do not count geometric predicted collision as a physical successful grasp.
+
+**Change:** Isolated test default J5 is now **-90 degrees about the positive URDF `wrist_roll` axis** (right-hand convention; apparent clockwise depends on viewing direction). The Muhi stays upright along **world Z**, NOT rotated along with J5. Search independently repositions the upright object relative to the new jaw geometry. The script's `--j5-deg` can test another signed angle; it rejects out-of-limit values. Existing table/URDF/world pose data and checkpoints remain unchanged.
+
+Inspect `summary.json`: `j5_wrist_roll_deg`, `muhi_orientation`, `setup_search`, `status`. If no valid placement is found, that is a useful failure: do **not** widen the mesh or silently place the object penetrating a jaw. New dynamic results are pending, so neither bilateral contact nor a 3D physical hold is claimed.
+
+The same command uses -90° by default; explicit form is `--j5-deg -90`. Cameras remain uncalibrated bench closeups. 
