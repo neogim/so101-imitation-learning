@@ -38,53 +38,15 @@ def body_name(model, geom_id):
 
 
 def build_model(args):
-    """Use no copied or modified robot mesh: two isolated compiles only."""
+    """Select Muhi pose ONLY if its supporting table also clears the arm."""
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
-    model=spec.compile()
-    data=mujoco.MjData(model)
-    mujoco.mj_resetData(model,data)
-    qids=[];dids=[]
-    for name in r2s.JOINTS:
-        q,d,limits=bench.joint_addr(model,name)
-        if not limits[0] <= 0 <= limits[1]:
-            raise ValueError(f"{name}: zero not inside URDF limits")
-        data.qpos[q]=0.
-        qids.append(q);dids.append(d)
-    j5q=qids[r2s.JOINTS.index("wrist_roll")]
-    j5rad=math.radians(args.j5_deg)
-    limits=bench.joint_addr(model,"wrist_roll")[2]
-    if not limits[0] <= j5rad <= limits[1]:
-        raise ValueError("J5 angle outside URDF")
-    data.qpos[j5q]=j5rad
-    jawq,jawd,jawlim=bench.joint_addr(model,"gripper")
-    open_angle=float(jawlim[1]); closed_angle=float(jawlim[0])
-    data.qpos[jawq]=open_angle
-    fixed=bench.owned_collision_geoms(model,bench.FINGER_BODY)
-    moving=bench.owned_collision_geoms(model,bench.MOVING_BODY)
-    obj=tuple(physical.geom_id(model,n) for n in physical.DYNAMIC_GEOMS)
-    if not fixed or not moving:
-        raise ValueError("Missing jaw collision geoms")
-    freejoint=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
-    freeq=int(model.jnt_qposadr[freejoint])
-    mujoco.mj_forward(model,data)
-    pose,search=bench.select_bench_pose(model,data,freeq,open_angle,
-                                        closed_angle,jawq,fixed,moving,obj)
-    if pose is None:
-        return None, {"status":"NO_OPEN_JAW_APPROACH","search":search}
-    center,quat=pose[:2]
-    if abs(float(quat[0])-1.)>1e-7 or np.linalg.norm(quat[1:])>1e-7:
-        raise ValueError("Table mode requires a world-upright Muhi")
-    # Construct a genuine static contact geom and recompile. The table top is
-    # just below the bottle's bottom. Do NOT re-use the unverified Episode-4
-    # workcell. Contact must support the object before jaw closure.
-    table_top=float(center[2])-OBJECT_HALF_LENGTH_M-.0005
-    top_center=[float(center[0]),float(center[1]),
-                table_top-TABLE_HALF_THICKNESS_M]
+    # Use an actual small tabletop, not a fake vertical holding force.
+    # Its pose is adjusted during placement search (world geom, no freejoint).
     spec.worldbody.add_geom(
         name=TABLE,type=mujoco.mjtGeom.mjGEOM_BOX,
-        pos=top_center,size=[.16,.16,TABLE_HALF_THICKNESS_M],
+        pos=[0.,0.,-10.],size=[.08,.08,TABLE_HALF_THICKNESS_M],
         rgba=[.47,.51,.56,1.],friction=[.9,.01,.001],
         contype=1,conaffinity=1)
     model=spec.compile()
@@ -92,39 +54,96 @@ def build_model(args):
     model.opt.timestep=.002
     data=mujoco.MjData(model)
     mujoco.mj_resetData(model,data)
-    for i,q in enumerate(qids):
-        data.qpos[q]=0. if i != r2s.JOINTS.index("wrist_roll") else j5rad
+    qids=[];dids=[];lows=[];highs=[]
+    for name in r2s.JOINTS:
+        q,d,limits=bench.joint_addr(model,name)
+        if not limits[0] <= 0 <= limits[1]:
+            raise ValueError(f"{name}: zero not inside URDF limits")
+        data.qpos[q]=0.
+        qids.append(q);dids.append(d)
+        lows.append(float(limits[0]));highs.append(float(limits[1]))
+    j5q=qids[r2s.JOINTS.index("wrist_roll")]
+    j5rad=math.radians(args.j5_deg)
+    if not lows[-1] <= j5rad <= highs[-1]:
+        raise ValueError("J5 angle outside URDF")
+    data.qpos[j5q]=j5rad
+    jawq,jawd,jawlim=bench.joint_addr(model,"gripper")
+    open_angle=float(jawlim[1]);closed_angle=float(jawlim[0])
     data.qpos[jawq]=open_angle
-    data.qpos[freeq:freeq+3]=center
-    data.qpos[freeq+3:freeq+7]=quat
-    mujoco.mj_forward(model,data)
     fixed=bench.owned_collision_geoms(model,bench.FINGER_BODY)
     moving=bench.owned_collision_geoms(model,bench.MOVING_BODY)
     obj=tuple(physical.geom_id(model,n) for n in physical.DYNAMIC_GEOMS)
     table=physical.geom_id(model,TABLE)
+    if not fixed or not moving:
+        raise ValueError("Missing jaw collision geoms")
+    freejoint=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
+    freeq=int(model.jnt_qposadr[freejoint])
+    mujoco.mj_forward(model,data)
+    # Exclude both the bottle and the table from arm collision candidates.
+    robot_geoms=tuple(g for g in range(model.ngeom)
+        if int(model.geom_bodyid[g]) not in
+            (0,int(model.geom_bodyid[obj[0]]))
+        and (model.geom_contype[g] or model.geom_conaffinity[g]))
+    rejected={"tested":0,"rejected":0,"max_rejected_clearance_mm":None}
+    accepted_table_position=None
+    def table_for_candidate(center,quat,xyz):
+        nonlocal accepted_table_position
+        rejected["tested"]+=1
+        table_top=float(center[2])-OBJECT_HALF_LENGTH_M-.0005
+        model.geom_pos[table]=[float(center[0]),float(center[1]),
+                               table_top-TABLE_HALF_THICKNESS_M]
+        mujoco.mj_forward(model,data)
+        gap=min((bench.signed_pair_gap(model,data,g,table)
+                 for g in robot_geoms),default=float("inf"))
+        if gap < args.table_clearance_mm/1000.:
+            rejected["rejected"]+=1
+            if rejected["max_rejected_clearance_mm"] is None or (
+               gap*1000 > rejected["max_rejected_clearance_mm"]):
+                rejected["max_rejected_clearance_mm"]=float(gap*1000)
+            return False
+        accepted_table_position=model.geom_pos[table].copy()
+        return True
+    pose,search=bench.select_bench_pose(
+        model,data,freeq,open_angle,closed_angle,jawq,
+        fixed,moving,obj,candidate_validator=table_for_candidate)
+    if pose is None:
+        return None,{"status":"NO_TABLE_CLEAR_TWO_JAW_SETUP",
+                     "search":search,"table_clearance_search":rejected,
+                     "table_clearance_requirement_mm":args.table_clearance_mm,
+                     "note":"No valid pose at fixed J1-J5. Do not insert "
+                            "table through a robot or enlarge joint limits."}
+    center,quat=pose[:2]
+    if abs(float(quat[0])-1.)>1e-7 or np.linalg.norm(quat[1:])>1e-7:
+        raise ValueError("Table test requires upright Muhi")
+    # The last candidate evaluated in the grid is NOT necessarily the
+    # winning candidate. Reposition table using the selected Muhi.
+    table_top=float(center[2])-OBJECT_HALF_LENGTH_M-.0005
+    model.geom_pos[table]=[float(center[0]),float(center[1]),
+                           table_top-TABLE_HALF_THICKNESS_M]
+    data.qpos[freeq:freeq+3]=center
+    data.qpos[freeq+3:freeq+7]=quat
+    data.qpos[jawq]=open_angle
+    data.qvel[:]=0.
+    mujoco.mj_forward(model,data)
     gap_fixed=bench.geometry_gaps(model,data,obj,fixed)
     gap_moving=bench.geometry_gaps(model,data,obj,moving)
-    robot_geoms=[g for g in range(model.ngeom)
-        if int(model.geom_bodyid[g]) != int(model.geom_bodyid[obj[0]])
-        and int(model.geom_bodyid[g]) != 0
-        and (model.geom_contype[g] or model.geom_conaffinity[g])]
-    robot_table_min=min((bench.signed_pair_gap(model,data,g,table)
-                          for g in robot_geoms),default=float("inf"))
-    diag={"search":search,"initial_fixed_gap_mm":1000*gap_fixed,
-          "initial_moving_gap_mm":1000*gap_moving,
-          "initial_robot_table_gap_mm":1000*robot_table_min,
+    robot_gap=min((bench.signed_pair_gap(model,data,g,table)
+                   for g in robot_geoms),default=float("inf"))
+    diag={"search":search,"table_clearance_search":rejected,
+          "initial_fixed_gap_mm":float(gap_fixed*1000),
+          "initial_moving_gap_mm":float(gap_moving*1000),
+          "initial_robot_table_gap_mm":float(robot_gap*1000),
           "table_top_world_z_m":table_top,
           "muhi_center_world_xyz_m":list(map(float,center)),
           "object_bottom_world_z_m":float(center[2])-OBJECT_HALF_LENGTH_M,
           "table_support_gap_mm":.5}
-    # Allow object above the table by .5mm to settle dynamically.
-    if gap_fixed<.0005 or gap_moving<.0005:
+    if min(gap_fixed,gap_moving)<.0005:
         return None,{"status":"INITIAL_JAW_INTERSECTION","diagnostic":diag}
-    if robot_table_min < .001:
+    if robot_gap<args.table_clearance_mm/1000.:
         return None,{"status":"ROBOT_TABLE_INTERSECTION","diagnostic":diag}
-    return (model,data,tuple(qids),tuple(dids),jawq,jawd,freeq,
-            fixed,moving,obj,table,center,open_angle,closed_angle),diag
-
+    return (model,data,tuple(qids),tuple(dids),np.asarray(lows),np.asarray(highs),
+            jawq,jawd,freeq,fixed,moving,obj,table,center,
+            open_angle,closed_angle,robot_geoms),diag
 
 def contact_observations(model,data,object_geoms,fixed,moving,table_id):
     """Report contact points, force, signed depth and support separately."""
@@ -173,7 +192,7 @@ def execute(args):
         (args.out/"summary.json").write_text(json.dumps(info,indent=2,ensure_ascii=False)+"\n")
         print(json.dumps({"status":info["status"],"diagnostic":diag},ensure_ascii=False,indent=2))
         return
-    model,data,qids,dids,jawq,jawd,freeq,fixed,moving,obj,table,center,open_angle,closed_angle=built
+    model,data,qids,dids,lows,highs,jawq,jawd,freeq,fixed,moving,obj,table,center,open_angle,closed_angle,robot_geoms=built
     armhome=data.qpos[list(qids)].copy()
     rows=[];contactrows=[]
     frames=[]
@@ -307,7 +326,9 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
-    p.add_argument("--duration-s",type=float,default=2.6)
+    p.add_argument("--duration-s",type=float,default=3.0)
+    p.add_argument("--table-clearance-mm",type=float,default=2.0)
+    p.add_argument("--lift-mm",type=float,default=5.0)
     p.add_argument("--settle-s",type=float,default=.35)
     p.add_argument("--close-s",type=float,default=1.2)
     p.add_argument("--kp",type=float,default=2.)
@@ -321,7 +342,8 @@ def main():
                (args.j5_deg,args.duration_s,args.settle_s,args.close_s,
                 args.kp,args.kd,args.max_torque,args.fps)):
         p.error("parameters must be finite")
-    if args.fps<=0:p.error("--fps must be positive")
+    if args.fps<=0 or args.table_clearance_mm<0 or not(0<args.lift_mm<=10):
+        p.error("Invalid FPS, table clearance or lift mm")
     execute(args)
 
 
