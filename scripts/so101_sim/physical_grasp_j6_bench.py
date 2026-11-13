@@ -282,10 +282,14 @@ def run(args):
     released=[row for row in rows if not row["fixture_holding"]]
     bilateral=sum(row["jaw_bilateral_contact"] for row in released)
     final=rows[-1]
-    max_pen=min((row["min_jaw_contact_distance_mm"] for row in released
+    max_pen=min((row["min_jaw_contact_distance_mm"] for row in rows
                  if row["min_jaw_contact_distance_mm"] is not None),default=None)
+    # Deep overlap while the virtual fixture held the object is a setup
+    # failure: do not mistake forced interpenetration for gripping.
+    deep_overlap=bool(max_pen is not None and max_pen < -2.)
     # A deliberately stringent provisional acceptance check, not calibration.
-    success=(bilateral>=max(5,len(released)//4) and
+    success=(not deep_overlap and
+             bilateral>=max(5,len(released)//4) and
              final["object_displacement_mm"] < 10. and
              final["jaw_bilateral_contact"])
     summary.update({
@@ -293,12 +297,14 @@ def run(args):
         "physics_steps":len(rows),"duration_s":float(data.time),
         "post_release_steps":len(released),
         "post_release_bilateral_steps":bilateral,
-        "post_release_min_jaw_contact_distance_mm":max_pen,
+        "min_jaw_contact_distance_mm_all_phases":max_pen,
+        "deep_fixture_interpenetration_detected":deep_overlap,
         "final_object_displacement_mm":final["object_displacement_mm"],
         "final_bilateral_contact":final["jaw_bilateral_contact"],
         "criterion":"Post-release bilateral contact for >=25% of sampled "
                     "steps (min 5), final bilateral contact, displacement <10mm",
         "initial_jaw_contact_count":init_contacts[0]+init_contacts[1],
+        "failed_due_to_forced_overlap":deep_overlap,
         "robot_or_table_contact_grasp":"not tested (no tabletop or arm movement)",
     })
     if frames:
