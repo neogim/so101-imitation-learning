@@ -78,6 +78,7 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
     orientations=(("world_upright_z",np.array([1.,0.,0.,0.])),)
     other = tuple(i for i in range(model.ngeom)
                   if (model.geom_contype[i] or model.geom_conaffinity[i])
+                  and int(model.geom_bodyid[i]) != 0
                   and int(model.geom_bodyid[i]) not in (
                       int(model.geom_bodyid[fixed_geoms[0]]),
                       int(model.geom_bodyid[moving_geoms[0]]),
