@@ -171,6 +171,9 @@ def run(args):
         raise ValueError("Nonfinite control")
     if args.kp <= 0 or args.kd < 0 or args.max_torque <= 0:
         raise ValueError("Invalid PD controller")
+    shift_mm=np.asarray(args.muhi_local_shift_mm,dtype=float)
+    if shift_mm.shape!=(3,) or not np.isfinite(shift_mm).all() or np.max(np.abs(shift_mm))>10.:
+        raise ValueError("Muhi local shift components must each be within +/-10mm")
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
@@ -220,6 +223,8 @@ def run(args):
              "j5_wrist_roll_deg":float(args.j5_deg),
              "j5_rotation_convention":"negative about URDF joint axis, right-hand rule",
              "muhi_orientation":"world Z up; NOT rotated with J5",
+             "muhi_local_shift_mm":shift_mm.tolist(),
+             "muhi_shift_frame":"gripper_link local XYZ at static J5 -90deg pose",
              "physics_object":physical.DYNAMIC_BODY,
              "object_mass_kg_provisional":.050,
              "object_dimensions_m_provisional":[2*physical.MUHI_RADIUS,
@@ -244,11 +249,30 @@ def run(args):
         print(json.dumps({"status":summary["status"],"search":search},indent=2))
         return
     center,quat,_,_,_,_,_,_=pose
+    # Displace only the Muhi, not the gripper or world. The shift is
+    # relative to the STATIC gripper local axes; search pose is unchanged.
+    grip_bid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,FINGER_BODY)
+    data.qpos[jaw_q]=jaw_open
+    mujoco.mj_forward(model,data)
+    R=np.asarray(data.xmat[grip_bid]).reshape(3,3).copy()
+    center=center + R @ (shift_mm/1000.)
     data.qpos[free_q:free_q+3]=center
     data.qpos[free_q+3:free_q+7]=quat
-    data.qpos[jaw_q]=jaw_open
     data.qvel[:]=0
     mujoco.mj_forward(model,data)
+    gap_fixed=geometry_gaps(model,data,dyn,fixed)
+    gap_moving=geometry_gaps(model,data,dyn,moving)
+    summary["shifted_initial_fixed_gap_mm"]=float(gap_fixed*1000.)
+    summary["shifted_initial_moving_gap_mm"]=float(gap_moving*1000.)
+    # Reject changed starting poses that already overlap either finger.
+    if min(gap_fixed,gap_moving)<.0005:
+        summary["status"]="SHIFT_REJECTED_INITIAL_JAW_OVERLAP"
+        (args.out/"summary.json").write_text(
+             json.dumps(summary,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
+        print(summary["status"],"initial gaps",
+              summary["shifted_initial_fixed_gap_mm"],
+              summary["shifted_initial_moving_gap_mm"])
+        return
     init_contacts=jaw_contact_counts(model,data,dyn,fixed,moving)
     if init_contacts[0] or init_contacts[1]:
         raise ValueError("Invalid penetrating initial jaw contact")
@@ -410,6 +434,10 @@ def main():
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.,
                    help="J5 wrist_roll in URDF degrees; -90 is chosen for this trial")
+    p.add_argument("--muhi-local-shift-mm",type=float,nargs=3,
+                   default=(0.,0.,0.),metavar=("X","Y","Z"),
+                   help="Shift Muhi only, in gripper local XYZ (mm), each +/-10; "
+                        "reject if shift initially intersects jaws")
     p.add_argument("--fixture-s",type=float,default=1.6)
     p.add_argument("--duration-s",type=float,default=2.6)
     p.add_argument("--kp",type=float,default=2.0)
