@@ -25,6 +25,7 @@ import numpy as np
 
 import physical_workcell_sim as physical
 import real_to_sim as r2s
+import compare_id1_eye_to_hand as preview
 
 FINGER_BODY = "gripper_link"
 MOVING_BODY = "moving_jaw_so101_v1_link"
@@ -56,64 +57,100 @@ def geometry_gaps(model, data, object_geoms, candidate_geoms):
                for a in object_geoms for b in candidate_geoms)
 
 
-def select_bench_pose(model, data, object_adr, open_angle, open_gripper_adr,
-                      fixed_geoms, moving_geoms, dynamic_geoms):
-    """Bounded open-jaw placement scan: never create initial interpenetration.
+def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
+                      open_gripper_adr, fixed_geoms, moving_geoms, dynamic_geoms):
+    """Find an open, nonpenetrating position with a CLOSING jaw collision path.
 
-    The jaw local XYZ grid is deliberately an exploratory setup fixture; it
-    is NOT a reconstructed Muhi pose or a grasp planner.
+    The Muhi long axis is perpendicular to finger extension (local X/Y),
+    never the old local Z pointing out along the approach direction.
+    A small gap to the fixed jaw plus a predicted crossing by moving jaw
+    are REQUIRED; proximity at the open angle alone is not sufficient.
     """
     grip_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, FINGER_BODY)
     data.qpos[open_gripper_adr] = open_angle
     mujoco.mj_forward(model, data)
-    origin = np.asarray(data.xpos[grip_body]).copy()
-    rot = np.asarray(data.xmat[grip_body]).reshape(3, 3).copy()
-    quat = np.asarray(data.xquat[grip_body]).copy()
+    origin=np.asarray(data.xpos[grip_body]).copy()
+    rot=np.asarray(data.xmat[grip_body]).reshape(3,3).copy()
+    qgrip=np.asarray(data.xquat[grip_body]).copy()
+    rt=math.sqrt(.5)
+    orientations=(
+       ("across_x",np.array([rt,0,rt,0.])),
+       ("across_y",np.array([rt,-rt,0.,0.])),
+    )
     other = tuple(i for i in range(model.ngeom)
                   if (model.geom_contype[i] or model.geom_conaffinity[i])
                   and int(model.geom_bodyid[i]) not in (
                       int(model.geom_bodyid[fixed_geoms[0]]),
                       int(model.geom_bodyid[moving_geoms[0]]),
                       int(model.geom_bodyid[dynamic_geoms[0]])))
-    # Object cylinder long axis along local gripper Z (fingers extend -Z).
-    # Search 0..5 cm either side plus positions along finger length.
-    grid = (
-        np.linspace(-.038, .038, 9),
-        np.linspace(-.045, .045, 9),
-        np.linspace(-.125, -.030, 11),
+    grid=(
+        np.linspace(-.048,.048,17),
+        np.linspace(-.048,.048,17),
+        np.linspace(-.127,-.021,13),
     )
-    best, best_score, diagnostics = None, math.inf, {"evaluated": 0,
-       "positive_clearance": 0, "near_both_jaws": 0,
-       "closest_fixed_gap_mm": None, "closest_moving_gap_mm": None}
-    for xyz in itertools.product(*grid):
-        center = origin + rot @ np.asarray(xyz)
-        data.qpos[object_adr:object_adr+3] = center
-        data.qpos[object_adr+3:object_adr+7] = quat
-        mujoco.mj_forward(model, data)
-        gf = geometry_gaps(model, data, dynamic_geoms, fixed_geoms)
-        gm = geometry_gaps(model, data, dynamic_geoms, moving_geoms)
-        diagnostics["evaluated"] += 1
-        if gf > .0007 and gm > .0007:
-            diagnostics["positive_clearance"] += 1
-        else:
-            continue
-        # Other body collisions are invalid, particularly the arm/palm.
-        if any(geometry_gaps(model, data, dynamic_geoms, (gid,)) < .0007
-               for gid in other):
-            continue
-        if gf > .024 or gm > .024:
-            continue
-        diagnostics["near_both_jaws"] += 1
-        score = abs(gf-.003)+abs(gm-.003)+.03*abs(xyz[2]+.080)
-        if score < best_score:
-            best_score = score
-            best = (center.copy(), quat.copy(), gf, gm, tuple(xyz))
+    diagnostics={"evaluated":0,"open_clear":0,"fixed_jaw_near":0,
+                 "closing_crossings":0,"fully_valid":0}
+    best=None; best_score=math.inf
+    for label,qoffset in orientations:
+        quat=np.empty(4)
+        mujoco.mju_mulQuat(quat,qgrip,qoffset)
+        for xyz in itertools.product(*grid):
+            center=origin+rot@np.asarray(xyz)
+            data.qpos[object_adr:object_adr+3]=center
+            data.qpos[object_adr+3:object_adr+7]=quat
+            data.qpos[open_gripper_adr]=open_angle
+            mujoco.mj_forward(model,data)
+            gf=geometry_gaps(model,data,dynamic_geoms,fixed_geoms)
+            gm=geometry_gaps(model,data,dynamic_geoms,moving_geoms)
+            diagnostics["evaluated"]+=1
+            if gf<=.0005 or gm<=.0005:
+                continue
+            diagnostics["open_clear"]+=1
+            if gf>.007:
+                continue
+            diagnostics["fixed_jaw_near"]+=1
+            # Do not pick a collision with the palm, other arm parts, or mount.
+            if any(geometry_gaps(model,data,dynamic_geoms,(gid,))<.001
+                   for gid in other):
+                continue
+            # Look at the actual swept J6 joint, not just the endpoints:
+            # the jaw may rotate through the object and out again.
+            crossing_angle=None; crossing_gap=None
+            for angle in np.linspace(open_angle,closed_angle,13)[1:]:
+                data.qpos[open_gripper_adr]=float(angle)
+                mujoco.mj_forward(model,data)
+                near=geometry_gaps(model,data,dynamic_geoms,moving_geoms)
+                if near<-.00035:
+                    crossing_angle=float(angle)
+                    crossing_gap=float(near)
+                    break
+            if crossing_angle is None:
+                continue
+            diagnostics["closing_crossings"]+=1
+            # Prefer earliest useful closing contact at a fixed-jaw gap
+            # under 2mm, reducing reliance on free-body translation.
+            if gf>.003:
+                continue
+            diagnostics["fully_valid"]+=1
+            score=3*gf + .2*gm + .1*abs(xyz[2]+.070)
+            if score<best_score:
+                best_score=score
+                best=(center.copy(),quat.copy(),gf,gm,tuple(xyz),label,
+                      crossing_angle,crossing_gap)
+    data.qpos[open_gripper_adr]=open_angle
+    mujoco.mj_forward(model,data)
     if best is not None:
-        diagnostics["closest_fixed_gap_mm"] = best[2]*1000
-        diagnostics["closest_moving_gap_mm"] = best[3]*1000
-        diagnostics["object_gripper_local_xyz_m"] = list(best[4])
-    return best, diagnostics
-
+        diagnostics.update({
+            "fixed_gap_at_open_mm":best[2]*1000,
+            "moving_gap_at_open_mm":best[3]*1000,
+            "object_gripper_local_xyz_m":list(best[4]),
+            "object_long_axis":best[5],
+            "predicted_moving_jaw_contact_angle_rad":best[6],
+            "predicted_collision_gap_mm":best[7]*1000,
+            "predictive_only":"Collision path forecast; actual dynamic grasp "
+                              "must still be established by MuJoCo contacts.",
+        })
+    return best,diagnostics
 
 def jaw_contact_counts(model, data, object_geoms, fixed_geoms, moving_geoms):
     obj=set(object_geoms); fixed=set(fixed_geoms); moving=set(moving_geoms)
@@ -142,6 +179,8 @@ def run(args):
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
     model=spec.compile()
+    # Match the established white SO-101 preview; never recolor source URDF.
+    preview.apply_white_follower_preview(model)
     model.opt.timestep=.002
     data=mujoco.MjData(model)
     mujoco.mj_resetData(model,data)
@@ -165,10 +204,10 @@ def run(args):
     free_j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     free_q=int(model.jnt_qposadr[free_j]);free_d=int(model.jnt_dofadr[free_j])
     mujoco.mj_forward(model,data)
-    pose,search=select_bench_pose(model,data,free_q,jaw_open,jaw_q,
+    pose,search=select_bench_pose(model,data,free_q,jaw_open,jaw_closed,jaw_q,
                                   fixed,moving,dyn)
     args.out.mkdir(parents=True,exist_ok=False)
-    summary={"status":"SETUP_NOT_FOUND" if pose is None else "CONTACT_TEST_COMPLETED",
+    summary={"white_preview_applied":True,"status":"SETUP_NOT_FOUND" if pose is None else "CONTACT_TEST_COMPLETED",
              "simulation_only":True,"experiment":"J6 isolated grasp fixture",
              "original_episode4_scene_used":False,
              "robot":str(args.urdf),"physics_object":physical.DYNAMIC_BODY,
@@ -192,7 +231,7 @@ def run(args):
             json.dumps(summary,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
         print(json.dumps({"status":summary["status"],"search":search},indent=2))
         return
-    center,quat,_,_,_=pose
+    center,quat,_,_,_,_,_,_=pose
     data.qpos[free_q:free_q+3]=center
     data.qpos[free_q+3:free_q+7]=quat
     data.qpos[jaw_q]=jaw_open
@@ -332,8 +371,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
-    p.add_argument("--fixture-s",type=float,default=.9)
-    p.add_argument("--duration-s",type=float,default=1.6)
+    p.add_argument("--fixture-s",type=float,default=1.6)
+    p.add_argument("--duration-s",type=float,default=2.6)
     p.add_argument("--kp",type=float,default=2.0)
     p.add_argument("--kd",type=float,default=.08)
     p.add_argument("--max-torque",type=float,default=.4)
