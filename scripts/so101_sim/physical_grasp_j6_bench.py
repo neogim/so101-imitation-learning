@@ -58,7 +58,8 @@ def geometry_gaps(model, data, object_geoms, candidate_geoms):
 
 
 def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
-                      open_gripper_adr, fixed_geoms, moving_geoms, dynamic_geoms):
+                      open_gripper_adr, fixed_geoms, moving_geoms, dynamic_geoms,
+                      candidate_validator=None):
     """Find an open, nonpenetrating position with a CLOSING jaw collision path.
 
     The Muhi long axis is perpendicular to finger extension (local X/Y),
@@ -87,7 +88,8 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
         np.linspace(-.117,-.027,11),
     )
     diagnostics={"evaluated":0,"open_clear":0,"fixed_jaw_near":0,
-                 "closing_crossings":0,"fully_valid":0}
+                 "closing_crossings":0,"fully_valid":0,
+                 "candidate_validator_rejections":0}
     best=None; best_score=math.inf
     for label,quat in orientations:
         for xyz in itertools.product(*grid):
@@ -127,6 +129,14 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
             # under 2mm, reducing reliance on free-body translation.
             if gf>.003:
                 continue
+            if candidate_validator is not None:
+                # Evaluate environment clearance at this actual open-pose
+                # candidate, rather than choosing one that intersects a table.
+                data.qpos[open_gripper_adr]=open_angle
+                mujoco.mj_forward(model,data)
+                if not candidate_validator(center,quat,tuple(xyz)):
+                    diagnostics["candidate_validator_rejections"]+=1
+                    continue
             diagnostics["fully_valid"]+=1
             score=3*gf + .2*gm + .1*abs(xyz[2]+.070)
             if score<best_score:
