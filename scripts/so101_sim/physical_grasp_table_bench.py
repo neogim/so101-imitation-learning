@@ -85,9 +85,7 @@ def build_model(args):
             (0,int(model.geom_bodyid[obj[0]]))
         and (model.geom_contype[g] or model.geom_conaffinity[g]))
     rejected={"tested":0,"rejected":0,"max_rejected_clearance_mm":None}
-    accepted_table_position=None
     def table_for_candidate(center,quat,xyz):
-        nonlocal accepted_table_position
         rejected["tested"]+=1
         table_top=float(center[2])-OBJECT_HALF_LENGTH_M-.0005
         model.geom_pos[table]=[float(center[0]),float(center[1]),
@@ -101,7 +99,6 @@ def build_model(args):
                gap*1000 > rejected["max_rejected_clearance_mm"]):
                 rejected["max_rejected_clearance_mm"]=float(gap*1000)
             return False
-        accepted_table_position=model.geom_pos[table].copy()
         return True
     pose,search=bench.select_bench_pose(
         model,data,freeq,open_angle,closed_angle,jawq,
@@ -180,7 +177,7 @@ def execute(args):
     args.out.mkdir(parents=True,exist_ok=False)
     info={"experiment":"J6 tabletop supported Muhi contact","version":"v1",
           "simulation_only":True,
-          "not_pick_lift_place":True,
+          "not_full_pick_place":True,
           "no_fixture_force":True,"no_object_pose_reset_during_steps":True,
           "j5_deg":args.j5_deg,"scene":"standalone local table, not saved Episode4",
           "object_mass_provisional_kg":.05,
@@ -238,6 +235,7 @@ def execute(args):
                     t>args.settle_s+args.close_s+.22 and
                     len(rows)>=60 and
                     sum(r["bilateral"] for r in rows[-60:])>=48 and
+                    sum(r["table_contacts"]>0 for r in rows[-60:])>=48 and
                     rows[-1]["min_object_contact_depth_mm"]>-2.):
                     lift_requested=True
                     lift_started_at=t
