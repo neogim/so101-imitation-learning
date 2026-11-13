@@ -23,6 +23,7 @@ import numpy as np
 
 import demo_real2sim_muhi_cup_reach as scene
 import table_collision_guard as collision
+import coordinated_joint_guard as coordinated
 import wrist_camera_sim as wrist
 
 
@@ -71,7 +72,24 @@ def run_policy(name, model, data, guard, qids, dids, low, high, tcp, goals, star
                 action,_=agent.predict(obs,deterministic=True)
                 delta=np.clip(np.asarray(action,float),-1,1)*.04
             proposed=np.clip(q+delta,low,high)
-            next_q,detail=guard.filter_step(q,proposed)
+            if args.guard_mode=="coordinated":
+                # Joint-coupled alternatives are evaluated using the task TCP
+                # distance, but accepted only after swept link/table clearance.
+                def candidate_cost(candidate):
+                    saved=np.asarray(data.qpos[qids],float).copy()
+                    try:
+                        data.qpos[qids]=candidate
+                        mujoco.mj_forward(model,data)
+                        return float((np.linalg.norm(goal-data.xpos[tcp])/.1)**2)
+                    finally:
+                        data.qpos[qids]=saved
+                        mujoco.mj_forward(model,data)
+                next_q,detail=coordinated.coordinate_step(
+                    guard,q,proposed,low,high,candidate_cost,
+                    step_rad=args.coordinated_step_rad,
+                    action_weight=args.action_weight)
+            else:
+                next_q,detail=guard.filter_step(q,proposed)
             if detail["status"] in ("blocked","unsafe_start"):
                 blockers+=1
             else:
@@ -89,7 +107,8 @@ def run_policy(name, model, data, guard, qids, dids, low, high, tcp, goals, star
                       "success":stage_rows[-1]["tcp_error_mm"]<=args.success_mm,
                       "steps":len(stage_rows)-1,
                       "blocked_steps":sum(r["guard_status"] in ("blocked","unsafe_start") for r in stage_rows),
-                      "shortened_steps":sum(r["guard_status"]=="shortened" for r in stage_rows)})
+                      "shortened_steps":sum(r["guard_status"]=="shortened" for r in stage_rows),
+                      "coordinated_steps":sum(r["guard_status"]=="coordinated" for r in stage_rows)})
     # Common home interpolation is guard checked too. The baseline pose is
     # now physically within joint limits (unlike old visual home).
     q_home=np.asarray(start,float)
@@ -106,7 +125,17 @@ def run_policy(name, model, data, guard, qids, dids, low, high, tcp, goals, star
         w=10*z**3-15*z**4+6*z**5
         wished=q_begin+w*(q_home-q_begin)
         desired=q+np.clip(wished-q,-.04,.04)
-        next_q,detail=guard.filter_step(q,desired)
+        # Home is collision-checked too. In coordinated mode the same safe
+        # projection can adjust elbow/wrist on the way back.
+        if args.guard_mode=="coordinated":
+            def home_cost(candidate):
+                return float(np.sum(((candidate-wished)/.1)**2))
+            next_q,detail=coordinated.coordinate_step(
+                guard,q,desired,low,high,home_cost,
+                step_rad=args.coordinated_step_rad,
+                action_weight=args.action_weight)
+        else:
+            next_q,detail=guard.filter_step(q,desired)
         data.qpos[qids]=next_q
         mujoco.mj_forward(model,data)
         output.append(record_row(name,"home",t,next_q,
@@ -258,9 +287,13 @@ def run(args):
     summary={
         "status":"KINEMATIC_DLS_SAC_TABLE_COLLISION_GUARD_EXPERIMENT",
         "physical_dynamics":False,
-        "guard_method":"swept geom signed-distance, backtracking (not obstacle replanning)",
+        "guard_method":("coordinated swept-geometry J2/J3/J4 candidate shield"
+                        if args.guard_mode=="coordinated" else
+                        "swept geom signed-distance, backtracking"),
         "clearance_mm":args.clearance_mm,
         "include_cup":args.include_cup,
+        "guard_mode":args.guard_mode,
+        "coordinated_step_rad":args.coordinated_step_rad if args.guard_mode=="coordinated" else None,
         "source_initial_joint_deg":np.degrees(source).tolist(),
         "common_in_limit_start_joint_deg":np.degrees(start).tolist(),
         "start_adjustment_deg":delta.tolist(),
@@ -273,6 +306,8 @@ def run(args):
             "New shared in-limit initial pose; not identical to the previous visual-only trajectory.",
             "The same collision backtracking is applied to DLS and SAC, which have different proposed actions.",
             "No grasp, no physics, no guarantee of obstacle avoidance if no safe local step exists.",
+            "Coordinated mode uses finite local joint candidates; NOT a global planner, not a newly trained SAC.",
+            "Grip orientation is not optimized until a grounded target grasp attitude is supplied.",
             "Only link-vs-table and optionally cup distances; self-collision and camera pose remain unverified.",
             "Mesh convex hulls may give conservative false positives. A failing preflight is not proof of real hardware interference.",
         ]
@@ -289,6 +324,10 @@ def main():
                    help="Write tabletop collision report and exit without running policies or video")
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--clearance-mm",type=float,default=3.)
+    p.add_argument("--guard-mode",choices=("coordinated","backtrack"),default="coordinated",
+                   help="Joint-coupled local safety shield (SAC and DLS), or old step backtracking")
+    p.add_argument("--coordinated-step-rad",type=float,default=.04)
+    p.add_argument("--action-weight",type=float,default=.05)
     p.add_argument("--check-resolution-rad",type=float,default=.01)
     p.add_argument("--include-cup",action="store_true")
     p.add_argument("--max-steps",type=int,default=120)
@@ -317,7 +356,10 @@ def main():
     args=p.parse_args()
     if (args.max_steps<1 or args.home_steps<1 or args.blocked_patience<1
             or args.render_every<1 or args.width<64 or args.height<64
-            or not math.isfinite(args.video_fps) or args.video_fps<=0):
+            or not math.isfinite(args.video_fps) or args.video_fps<=0
+            or not math.isfinite(args.coordinated_step_rad)
+            or not 0<args.coordinated_step_rad<=.08
+            or not math.isfinite(args.action_weight) or args.action_weight<0):
         p.error("invalid run parameters")
     run(args)
 
