@@ -249,13 +249,18 @@ def run(args):
             "meaning":"Geometric tabletop clearance failure, not proof of real-world penetration",
             "clearance_requested_mm":args.clearance_mm,
             "original_visual_joint_deg":np.degrees(source).round(5).tolist(),
-            "clipped_common_joint_deg":np.degrees(start).round(5).tolist(),
-            "clip_delta_deg":delta.round(5).tolist(),
+            "urdf_clipped_original_joint_deg":
+                np.degrees(np.clip(source,low,high)).round(5).tolist(),
+            "clip_delta_deg":
+                np.degrees(np.clip(source,low,high)-source).round(5).tolist(),
+            "selected_start_joint_deg":np.degrees(start).round(5).tolist(),
+            "selected_start_delta_deg":delta.round(5).tolist(),
             "original_visual_pose_table":guard.inspect(source),
             "clipped_pose_table":guard.inspect(np.clip(source,low,high)),
             "selected_start_pose_table":initial_check,
             "static_reset_search":static_reset_report,
-            "nearest_pairs_clipped":guard.nearest_pairs(start),
+            "nearest_pairs_clipped":guard.nearest_pairs(np.clip(source,low,high)),
+            "nearest_pairs_selected_start":guard.nearest_pairs(start),
             "nearest_pairs_original":guard.nearest_pairs(source),
             "notes":[
                 "The saved Episode-4 visual joint calibration is not a verified physical calibration.",
@@ -273,7 +278,7 @@ def run(args):
                 "status":report["status"],"initial_clearance":initial_check,
                 "report":str(report_file)},indent=2,ensure_ascii=False))
             return
-        pair=report["nearest_pairs_clipped"][0]
+        pair=report["nearest_pairs_selected_start"][0]
         raise ValueError(
             "TABLE CLEARANCE BASELINE REJECTED: saved scene has a "
             f"{initial_check['minimum_distance_mm']:.2f}mm signed gap "
