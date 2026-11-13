@@ -100,3 +100,73 @@ def coordinate_step(guard,current,proposed,low,high,goal_cost, *,
         return q.copy(),{"status":"blocked","candidate_count":len(candidates),
                         "scale":0.0,**start}
     return best,best_info
+
+def find_static_safe_seed(guard, source, low, high, *, max_delta_rad=.12,
+                          grid_offsets=(-1.,-.75,-.5,-.25,0.,.25,.5,.75,1.),
+                          indices=(1,2,3), tcp_position=None,
+                          tcp_at=None, position_weight=1.):
+    """Search a nearby *static* table-clear pose for simulation reinitialization.
+
+    This is NOT a collision-free transition from the unsafe recorded state.
+    Candidate coordinates include shoulder/elbow/wrist (J2/J3/J4). Other joints
+    remain unchanged. URDF clipping is explicit. For identical clearance,
+    prefer the least joint adjustment plus modest TCP displacement.
+    """
+    q0=np.asarray(source,float)
+    low=np.asarray(low,float)
+    high=np.asarray(high,float)
+    if q0.ndim!=1 or not(q0.shape==low.shape==high.shape):
+        raise ValueError("Invalid q shapes")
+    if not all(np.isfinite(x).all() for x in (q0,low,high)):
+        raise ValueError("Invalid q values")
+    if not(0<max_delta_rad<=.5):
+        raise ValueError("Invalid search radius")
+    indices=tuple(indices)
+    if len(set(indices))!=len(indices) or not indices:
+        raise ValueError("Invalid indices")
+    if any(i<0 or i>=len(q0) for i in indices):
+        raise ValueError("Invalid search index")
+    base=np.clip(q0,low,high)
+    # Evaluate all static poses before scoring; no force or dynamics.
+    checks=0
+    safe=0
+    best=None
+    best_cost=float("inf")
+    best_report=None
+    for factors in itertools.product(grid_offsets,repeat=len(indices)):
+        candidate=base.copy()
+        for index,f in zip(indices,factors):
+            candidate[index]+=float(f)*max_delta_rad
+        candidate=np.clip(candidate,low,high)
+        result=guard.inspect(candidate)
+        checks+=1
+        if not result["clearance_satisfied"]:
+            continue
+        safe+=1
+        delta=candidate-base
+        cost=float(np.dot(delta,delta))
+        if tcp_position is not None:
+            if tcp_at is None:
+                raise ValueError("tcp_at callback required with tcp_position")
+            difference=np.asarray(tcp_at(candidate),float)-np.asarray(tcp_position,float)
+            cost+=float(position_weight)*float(np.dot(difference,difference))
+        if cost<best_cost:
+            best=candidate.copy()
+            best_cost=cost
+            best_report=result
+    return best,{
+        "status":"FOUND_STATIC_SAFE_SIM_INITIALIZATION" if best is not None
+                 else "NO_STATIC_SAFE_SEED_IN_GRID",
+        "evaluated_configurations":checks,
+        "safe_configurations":safe,
+        "original_q_rad":q0.tolist(),
+        "urdf_clipped_q_rad":base.tolist(),
+        "new_start_q_rad":best.tolist() if best is not None else None,
+        "joint_adjustment_from_clipped_deg":
+            np.degrees(best-base).tolist() if best is not None else None,
+        "objective":best_cost if best is not None else None,
+        "clearance":best_report,
+        "warning":"Static simulation reset ONLY. The motion from the old "
+                   "penetrating or out-of-limit home to this new seed was "
+                   "NOT planned or validated. This is a new comparison baseline.",
+    }
