@@ -228,8 +228,10 @@ def run(args):
              "gripper_closed_rad":jaw_closed,"gripper_open_rad":jaw_open,
              "gripper_calibration":"URDF limits; physical close direction NOT verified",
              "fixture_hold_until_s":args.fixture_s,
-             "fixture_warning":"Until release the object pose is explicitly held; "
-                               "only post-release is a contact-and-gravity retention test.",
+             "fixture_warning":"Before release only a bounded, compliant external "
+                               "translation force assists the freely moving bottle. "
+                               "The object qpos/qvel are NEVER reset during stepping; "
+                               "after release all fixture forces are zero.",
              "setup_search":search,
              "camera":"MuJoCo free-view closeups, not calibrated Side/Wrist",
              "not_tested":["Pickup from saved tabletop","Lift","Place","SAC","DLS",
@@ -253,6 +255,15 @@ def run(args):
 
     locked_q=data.qpos[np.asarray(qids,dtype=int)].copy()
     fixture_q=data.qpos[free_q:free_q+7].copy()
+    object_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,
+                                  physical.DYNAMIC_BODY)
+    # IMPORTANT: The old code overwrote the object's qpos every step,
+    # forcing the jaw through a rigidly immobilized object. The NEW
+    # virtual fixture applies bounded external force to a FREE object.
+    # Translation and rotation always evolve under mj_step contacts.
+    fixture_force_cap_n=1.5
+    fixture_position_kp=40.
+    fixture_velocity_kd=2.
     rows=[];frames=[]
     width,height=480,360
     renderer=None
@@ -272,31 +283,45 @@ def run(args):
         for step in range(n):
             clock=step*model.opt.timestep
             hold=clock < args.fixture_s
-            # The arm is an immobile geometric fixture, only J6 dynamic.
+            # J1-J5 are held kinematically; J6 and the free object are
+            # NEVER reset between physics steps. This is an isolated bench.
             data.qpos[qids]=locked_q
             data.qvel[dids]=0
-            if hold:
-                data.qpos[free_q:free_q+7]=fixture_q
-                data.qvel[free_d:free_d+6]=0
             mujoco.mj_forward(model,data)
-            # Smoothly approach closed limit during the setup fixture phase.
+            # A weak compliant fixture offsets gravity and allows the bottle
+            # to move toward the fixed jaw during closure. It is removed
+            # completely during the post-fixture retention evaluation.
+            data.xfrc_applied[:]=0
+            fixture_force=np.zeros(3)
+            if hold:
+                displacement=fixture_q[:3]-data.qpos[free_q:free_q+3]
+                velocity=data.qvel[free_d:free_d+3]
+                requested=(fixture_position_kp*displacement
+                           -fixture_velocity_kd*velocity
+                           -float(model.body_mass[object_body])
+                            *np.asarray(model.opt.gravity,float))
+                norm=float(np.linalg.norm(requested))
+                fixture_force=requested*min(1.,fixture_force_cap_n/max(norm,1e-12))
+                data.xfrc_applied[object_body,:3]=fixture_force
+            # Close in a bounded torque-control mode, allowing contact
+            # force to prevent further motion instead of force-closing it.
             u=min(1.,clock/max(.1,args.fixture_s*.85))
             target=jaw_open + u*(jaw_closed-jaw_open)
             force=args.kp*(target-data.qpos[jaw_q])-args.kd*data.qvel[jaw_d]
             data.qfrc_applied[:]=0
             data.qfrc_applied[jaw_d]=float(np.clip(force,-args.max_torque,args.max_torque))
             mujoco.mj_step(model,data)
-            data.qpos[qids]=locked_q;data.qvel[dids]=0
-            if hold:
-                data.qpos[free_q:free_q+7]=fixture_q
-                data.qvel[free_d:free_d+6]=0
+            data.qpos[qids]=locked_q
+            data.qvel[dids]=0
             mujoco.mj_forward(model,data)
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"Nonfinite MuJoCo state at step {step}")
             c1,c2,min_depth=jaw_contact_counts(model,data,dyn,fixed,moving)
             displacement=np.linalg.norm(data.qpos[free_q:free_q+3]-center)*1000
             rows.append({"step":step,"time_s":float(data.time),
-                         "fixture_holding":hold,"jaw_angle_rad":float(data.qpos[jaw_q]),
+                         "fixture_holding":hold,
+                         "fixture_force_n":float(np.linalg.norm(fixture_force)),
+                         "jaw_angle_rad":float(data.qpos[jaw_q]),
                          "jaw_target_rad":float(target),
                          "jaw_applied_torque_nm":float(data.qfrc_applied[jaw_d]),
                          "fixed_jaw_contacts":c1,"moving_jaw_contacts":c2,
@@ -354,6 +379,8 @@ def run(args):
                     "steps (min 5), final bilateral contact, displacement <10mm",
         "initial_jaw_contact_count":init_contacts[0]+init_contacts[1],
         "failed_due_to_forced_overlap":deep_overlap,
+        "fixture_max_force_n":fixture_force_cap_n,
+        "fixture_type":"bounded compliant force; no qpos reset",
         "robot_or_table_contact_grasp":"not tested (no tabletop or arm movement)",
     })
     if frames:
