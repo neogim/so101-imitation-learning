@@ -71,12 +71,10 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
     mujoco.mj_forward(model, data)
     origin=np.asarray(data.xpos[grip_body]).copy()
     rot=np.asarray(data.xmat[grip_body]).reshape(3,3).copy()
-    qgrip=np.asarray(data.xquat[grip_body]).copy()
-    rt=math.sqrt(.5)
-    orientations=(
-       ("across_x",np.array([rt,0,rt,0.])),
-       ("across_y",np.array([rt,-rt,0.,0.])),
-    )
+    # Keep the physical Muhi standing in WORLD Z independently from J5.
+    # Rotating both gripper and object together would change nothing about
+    # their relative approach, defeating the intended wrist-roll experiment.
+    orientations=(("world_upright_z",np.array([1.,0.,0.,0.])),)
     other = tuple(i for i in range(model.ngeom)
                   if (model.geom_contype[i] or model.geom_conaffinity[i])
                   and int(model.geom_bodyid[i]) not in (
@@ -84,16 +82,14 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
                       int(model.geom_bodyid[moving_geoms[0]]),
                       int(model.geom_bodyid[dynamic_geoms[0]])))
     grid=(
-        np.linspace(-.048,.048,17),
-        np.linspace(-.048,.048,17),
-        np.linspace(-.127,-.021,13),
+        np.linspace(-.054,.054,19),
+        np.linspace(-.054,.054,19),
+        np.linspace(-.117,-.027,11),
     )
     diagnostics={"evaluated":0,"open_clear":0,"fixed_jaw_near":0,
                  "closing_crossings":0,"fully_valid":0}
     best=None; best_score=math.inf
-    for label,qoffset in orientations:
-        quat=np.empty(4)
-        mujoco.mju_mulQuat(quat,qgrip,qoffset)
+    for label,quat in orientations:
         for xyz in itertools.product(*grid):
             center=origin+rot@np.asarray(xyz)
             data.qpos[object_adr:object_adr+3]=center
@@ -193,6 +189,16 @@ def run(args):
             raise ValueError(f"Cannot hold {name} at zero")
         qids.append(qa);dids.append(da)
         data.qpos[qa]=0.
+    # "Clockwise" is view-dependent. Explicitly define this test as
+    # -90 deg about the URDF positive J5 joint axis (right-hand rule).
+    # It is a NEW bench pose, never an instruction to a physical robot.
+    j5_index=r2s.JOINTS.index("wrist_roll")
+    j5_q=qids[j5_index]
+    j5_limits=joint_addr(model,"wrist_roll")[2]
+    j5_rad=math.radians(args.j5_deg)
+    if not j5_limits[0] <= j5_rad <= j5_limits[1]:
+        raise ValueError(f"Requested J5 {args.j5_deg} deg outside URDF limits")
+    data.qpos[j5_q]=j5_rad
     jaw_q,jaw_d,jaw_limits=joint_addr(model,"gripper")
     jaw_open=float(jaw_limits[1]);jaw_closed=float(jaw_limits[0])
     if jaw_closed >= jaw_open: raise ValueError("J6 range malformed")
@@ -210,7 +216,11 @@ def run(args):
     summary={"white_preview_applied":True,"status":"SETUP_NOT_FOUND" if pose is None else "CONTACT_TEST_COMPLETED",
              "simulation_only":True,"experiment":"J6 isolated grasp fixture",
              "original_episode4_scene_used":False,
-             "robot":str(args.urdf),"physics_object":physical.DYNAMIC_BODY,
+             "robot":str(args.urdf),
+             "j5_wrist_roll_deg":float(args.j5_deg),
+             "j5_rotation_convention":"negative about URDF joint axis, right-hand rule",
+             "muhi_orientation":"world Z up; NOT rotated with J5",
+             "physics_object":physical.DYNAMIC_BODY,
              "object_mass_kg_provisional":.050,
              "object_dimensions_m_provisional":[2*physical.MUHI_RADIUS,
                                                   physical.MUHI_LENGTH],
@@ -371,6 +381,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
+    p.add_argument("--j5-deg",type=float,default=-90.,
+                   help="J5 wrist_roll in URDF degrees; -90 is chosen for this trial")
     p.add_argument("--fixture-s",type=float,default=1.6)
     p.add_argument("--duration-s",type=float,default=2.6)
     p.add_argument("--kp",type=float,default=2.0)
