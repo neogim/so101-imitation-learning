@@ -4,8 +4,11 @@
 <robot name="so101_new_calib">
 
   <!-- Materials -->
+  <!-- SO-101's white 3D-printed parts; this material is shared by all
+       3d_printed visual meshes. Keep dark STS3215 servo material unchanged.
+       Geometry, inertia, joints and collisions remain unchanged. -->
   <material name="3d_printed">
-    <color rgba="1.0 0.82 0.12 1.0"/>
+    <color rgba="0.92 0.92 0.90 1.0"/>
   </material>
   <material name="sts3215">
     <color rgba="0.1 0.1 0.1 1.0"/>
