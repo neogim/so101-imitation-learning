@@ -95,6 +95,50 @@ class TableCollisionGuard:
             self.data.qpos[self.qids] = prior
             mujoco.mj_forward(self.model, self.data)
 
+    def nearest_pairs(self, q, *, limit=12):
+        """Rank real moving robot collision geoms vs tabletop; diagnostic only.
+
+        Preserve the current MjData state. Include geom IDs, body labels,
+        type and world-space centers so the correct STL/proxy can be found.
+        """
+        q=np.asarray(q,dtype=float)
+        if q.shape != self.qids.shape or not np.isfinite(q).all():
+            raise ValueError("joint vector shape / value mismatch")
+        if limit < 1:
+            raise ValueError("limit must be >= 1")
+        old=self.data.qpos[self.qids].copy()
+        try:
+            self.data.qpos[self.qids]=q
+            mujoco.mj_forward(self.model,self.data)
+            results=[]
+            for ri in self.robot_ids:
+                for ti in self.table_ids:
+                    witness=np.zeros(6)
+                    gap=float(mujoco.mj_geomDistance(
+                        self.model,self.data,int(ri),int(ti),.1,witness))
+                    body=int(self.model.geom_bodyid[ri])
+                    results.append({
+                        "distance_mm":round(gap*1000,5),
+                        "robot_geom_id":int(ri),
+                        "robot_geom_name":mujoco.mj_id2name(
+                            self.model,mujoco.mjtObj.mjOBJ_GEOM,int(ri)),
+                        "robot_body":mujoco.mj_id2name(
+                            self.model,mujoco.mjtObj.mjOBJ_BODY,body),
+                        "robot_geom_type":int(self.model.geom_type[ri]),
+                        "robot_geom_center_world_m":
+                            self.data.geom_xpos[ri].round(6).tolist(),
+                        "table_geom_id":int(ti),
+                        "table_geom_name":mujoco.mj_id2name(
+                            self.model,mujoco.mjtObj.mjOBJ_GEOM,int(ti)),
+                        "table_geom_center_world_m":
+                            self.data.geom_xpos[ti].round(6).tolist(),
+                        "witness_points_world_m":witness.round(6).tolist(),
+                    })
+            return sorted(results,key=lambda x:x["distance_mm"])[:limit]
+        finally:
+            self.data.qpos[self.qids]=old
+            mujoco.mj_forward(self.model,self.data)
+
     def filter_step(self, current, proposed):
         """Backtrack toward current; block if no collision-free positive step."""
         current, proposed = np.asarray(current,float), np.asarray(proposed,float)
