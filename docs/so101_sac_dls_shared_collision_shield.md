@@ -55,3 +55,28 @@ python scripts/so101_sim/compare_dls_sac_table_guard.py \
 ```
 
 **At present this command is expected to reject the known unsafe Episode 4 initial pose** (and persist `preflight_diagnostic.json`), so do not rerun without changing the geometry source for a grounded reason. CI synthetic tests do not demonstrate Mac Episode 4 trajectory success, successful Muhi grasp, or physical contact correctness. To train a new SAC to learn this behavior intrinsically, separately enforce identical constraints in the RL environment transition, design collision penalty/observation and evaluate with unseen scenes. A shield is useful regardless of retraining.
+
+## New opt-in simulation safe-start exploration (2026-11-14)
+
+Because the user's Episode 4 original home is *already* penetrating the tabletop in the imported scene (-9.34mm signed), the default behavior remains strict `--initialization reject`.
+
+For **simulation-only evaluation of the multi-joint shield**, we have added:
+- `coordinated_joint_guard.find_static_safe_seed()`: searches a local grid of J2/J3/J4 angle candidates within `--seed-max-delta-rad` from the *clipped* source pose, with no change to J1/J5. Each candidate is required to have the configured clearance. Rank by smallest joint offset, with TCP displacement as an optional tie-breaker.
+- `compare_dls_sac_table_guard.py --initialization static-safe-seed`: makes both DLS and SAC start from exactly the same **new** collision-free static configuration. The source visual pose, clipped pose and chosen seed including offset and minimum clearance are saved in JSON. Both controllers still run the same swept collision shield after the reset.
+
+**Crucial distinction**: reset from an invalid saved visual pose to a safe simulation start is an **initial state selection**, not a collision-free transition or proof of match to the physical Episode 4 image. It must not be used for real robot commands or as a physics fidelity baseline. No table shift, URDF edit, collision disabling, or fake transition is done. If the grid finds no safe candidate, it rejects and writes preflight diagnostics.
+
+A single Mac run (only after pulling the commit) can evaluate whether the NEW kinematic simulation baseline is viable:
+```bash
+conda activate so101-real2sim
+git switch feature/so101-sim-data-augmentation
+git pull --ff-only origin feature/so101-sim-data-augmentation
+SAC_MODEL="outputs/so101-sac-experiment-c2-precision10-train-20261111/sac_reward10_success10mm.zip"
+OUT="outputs/so101-coordinated-safe-seed-$(date +%Y%m%d-%H%M%S)"
+python scripts/so101_sim/compare_dls_sac_table_guard.py \
+  --sac-model "$SAC_MODEL" --guard-mode coordinated \
+  --initialization static-safe-seed --seed-max-delta-rad .12 \
+  --clearance-mm 3 --out "$OUT"
+```
+
+If there is no validated source geometry correction yet, the desired NEXT step is to compare the new visualization with the original recorded Side image and verify the new common start is reasonable. Then confirm CSV minimum clearance across accepted actions and detect any physical objects hit. Do not interpret TCP Reach as actual Muhi grasp.
