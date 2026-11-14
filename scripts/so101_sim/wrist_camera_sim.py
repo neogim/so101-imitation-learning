@@ -12,6 +12,7 @@ import math
 RIG_BODY = "r2s_wrist_camera_rig"
 CAMERA = "r2s_wrist_rgb"
 SHELF_DIAGNOSTIC_CAMERA = "r2s_wrist_rgb_shelf"
+RETRACTED_DIAGNOSTIC_CAMERA = "r2s_wrist_rgb_retracted"
 MOUNT_INSPECTION_CAMERA = "r2s_wrist_mount_inspection"
 
 # The J5 wrist_roll child and J6 finger parent is gripper_link. The common
@@ -125,12 +126,15 @@ def between_endpoints(a, b, width, thickness):
 
 def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
             fovy=DEFAULT_FOVY_DEG, look_at=DEFAULT_LOOK_AT,
-            bracket_profile="legacy", camera_aim_at=None):
+            bracket_profile="legacy", camera_aim_at=None,
+            camera_retract_mm=0.):
     """Install the bent J5-side fixture and its aligned camera board."""
     import mujoco
     pos, rpy_deg = validate_mount(pos, rpy_deg)
     if not math.isfinite(fovy) or not 20 <= fovy <= 130:
         raise ValueError("FOV must be 20..130 degrees")
+    if not math.isfinite(camera_retract_mm) or not 0 <= camera_retract_mm <= 15:
+        raise ValueError("camera_retract_mm must be 0..15")
     if bracket_profile not in ("legacy", "ruler_15_35_35"):
         raise ValueError(f"Unknown bracket profile: {bracket_profile}")
     if bracket_profile=="ruler_15_35_35":
@@ -226,6 +230,15 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
     if camera_aim_at is not None:
         rig.add_camera(name=SHELF_DIAGNOSTIC_CAMERA,
                        pos=optical_center,xyaxes=list(right+up),fovy=fovy)
+        if camera_retract_mm > 0:
+            # Camera-only virtual diagnostic: the physical mount, PCB,
+            # collision proxies and regular camera are NOT moved.
+            shifted=tuple(optical_center[i]+back[i]*camera_retract_mm/1000.
+                          for i in range(3))
+            shifted_right,shifted_up,_=camera_axes(shifted,camera_aim_at)
+            rig.add_camera(name=RETRACTED_DIAGNOSTIC_CAMERA,
+                           pos=shifted,xyaxes=list(shifted_right+shifted_up),
+                           fovy=fovy)
 
     # The inspection camera is not an ACT input. It stays on the rig so it
     # follows J5 and shows the L from the side for mechanical verification.
