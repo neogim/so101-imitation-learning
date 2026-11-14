@@ -625,6 +625,7 @@ def execute(args):
     rows=[];contactrows=[]
     j6_blocking_contacts=[]
     jaw_contact_phase_records=[]
+    physical_arm_hold_active=False
     no_table_support=False
     contact_overpenetration_abort=False
     contact_overpenetration_step=None
@@ -862,7 +863,13 @@ def execute(args):
                         t>=j1_force_seek_start and
                         j1_precontact_reached and
                         not j1_precontact_exceeded_tilt)
-            if dynamic_j1:
+            if physical_arm_hold_active:
+                # Unlike the legacy fixture, DO NOT overwrite the dynamic
+                # arm pose or velocity. The solver must be allowed to
+                # resolve object/jaw contact against the same moving arm
+                # dynamics that are integrated into the next timestep.
+                pass
+            elif dynamic_j1:
                 data.qpos[list(qids[1:])]=armhome[1:]
                 data.qvel[list(dids[1:])]=0.
             else:
@@ -998,22 +1005,42 @@ def execute(args):
                     oldq=armhome.copy()
                     trial=armhome.copy()
                     trial[:4]=np.clip(trial[:4]+dq,lows[:4],highs[:4])
-                    data.qpos[list(qids)]=trial
-                    mujoco.mj_forward(model,data)
-                    clearance=min((bench.signed_pair_gap(model,data,g,table)
-                                  for g in robot_geoms),default=float("inf"))
-                    if clearance>=args.table_clearance_mm/1000.:
+                    if args.physical_arm_hold:
+                        # Physical arm hold moves only the TARGET; never
+                        # teleport the actual arm during the lift.
                         armhome=trial
                     else:
-                        lift_rejected_steps+=1
-                        data.qpos[list(qids)]=oldq
+                        data.qpos[list(qids)]=trial
                         mujoco.mj_forward(model,data)
+                        clearance=min((bench.signed_pair_gap(model,data,g,table)
+                                      for g in robot_geoms),default=float("inf"))
+                        if clearance>=args.table_clearance_mm/1000.:
+                            armhome=trial
+                        else:
+                            lift_rejected_steps+=1
+                            data.qpos[list(qids)]=oldq
+                            mujoco.mj_forward(model,data)
             # Hold J6 OPEN during prealignment as J1..J5 are also
             # kinematically prescribed. Old weak PD permitted ~50deg
             # closing drift before the closure phase even began.
             # Switch back to dynamic torque control during J6 closure.
             preclose=stage in ("settle","j234_prealign","j1_precontact",
                                 "j1_force_seek","j1_precontact_failed")
+            if args.physical_arm_hold and not preclose:
+                physical_arm_hold_active=True
+                # Unlike geometric kinematic assignment, physical PD
+                # introduces genuine generalized forces into mj_step.
+                # Add a gravity/bias compensation term at the CURRENT
+                # dynamic state; values are sim-only provisional.
+                for k,(qadr,dadr) in enumerate(zip(qids,dids)):
+                    error=float(armhome[k]-data.qpos[qadr])
+                    vel=float(data.qvel[dadr])
+                    torque=(float(data.qfrc_bias[dadr])+
+                            args.arm_hold_kp*error-
+                            args.arm_hold_kd*vel)
+                    data.qfrc_applied[dadr]=float(np.clip(
+                        torque,-args.arm_hold_max_torque,
+                        args.arm_hold_max_torque))
             if dynamic_j1:
                 if j1_force_pd_target_rad is None:
                     j1_force_pd_target_rad=float(armhome[0]+
@@ -1163,7 +1190,11 @@ def execute(args):
                     c["grasp_depth_from_tcp_mm"]=None
                     c["in_target_depth_band"]=False
                 c["solver_time_s"]=float(data.time-model.opt.timestep)
-            if dynamic_j1:
+            if physical_arm_hold_active:
+                # Allow the integrated arm state to persist. Overwriting
+                # these qpos/qvel values invalidates the collision solver.
+                pass
+            elif dynamic_j1:
                 data.qpos[list(qids[1:])]=armhome[1:]
                 data.qvel[list(dids[1:])]=0.
             else:
@@ -1267,6 +1298,10 @@ def execute(args):
             rows.append({
                 "step":i,"time_s":float(data.time),"stage":stage,
                 "j1_rad":float(data.qpos[qids[0]]),
+                "physical_arm_hold_active":bool(physical_arm_hold_active),
+                "arm_hold_error_max_deg":float(max(
+                    abs(math.degrees(float(data.qpos[q]-armhome[k])))
+                    for k,q in enumerate(qids))),
                 "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
                 "moving_jaw_gap_poststep_mm":float(
                     1000.*bench.geometry_gaps(model,data,obj,moving)),
@@ -1790,6 +1825,18 @@ def execute(args):
             "efc_reference_acceleration and efc_position come from "
             "the same mj_step solver snapshot as mj_contactForce; "
             "velocity uses MuJoCo constraint coordinates"),
+        "physical_arm_hold_enabled":bool(args.physical_arm_hold),
+        "physical_arm_hold_control":(
+            "J1-J5 physical torque PD + gravity/bias compensation "
+            "during closure; no qpos/qvel teleport; before closure "
+            "kinematic alignment remains."
+            if args.physical_arm_hold else None),
+        "arm_hold_gain_kp_nm_rad":(
+            args.arm_hold_kp if args.physical_arm_hold else None),
+        "arm_hold_gain_kd_nm_s_rad":(
+            args.arm_hold_kd if args.physical_arm_hold else None),
+        "arm_hold_max_torque_nm":(
+            args.arm_hold_max_torque if args.physical_arm_hold else None),
         "j6_actual_speed_limit_target_deg_s":(
             args.j6_actual_speed_limit_deg_s
             if args.gentle_jaw_contact else None),
@@ -1976,6 +2023,16 @@ def main():
     p.add_argument("--j6-actual-speed-limit-deg-s",type=float,default=35.,
                    help="Measured J6 speed threshold for active physical "
                         "braking in gentle-jaw-contact mode (deg/s)")
+    p.add_argument("--physical-arm-hold",action="store_true",
+                   help="Study mode: hold J1-J5 via physical PD during "
+                        "J6 closure, never teleport their qpos/qvel at "
+                        "each timestep. Test for kinematic-fixture effects.")
+    p.add_argument("--arm-hold-kp",type=float,default=20.,
+                   help="J1-J5 sim-only PD stiffness Nm/rad")
+    p.add_argument("--arm-hold-kd",type=float,default=2.,
+                   help="J1-J5 sim-only PD damping Nm*s/rad")
+    p.add_argument("--arm-hold-max-torque",type=float,default=8.,
+                   help="J1-J5 sim-only torque cap Nm (NOT STS3215 rated)")
     p.add_argument("--gentle-jaw-contact",action="store_true",
                    help="Study-only: reduce J6 setpoint lead and actuator "
                         "force near Muhi; never override contact physics")
@@ -2082,6 +2139,11 @@ def main():
         p.error("--moving-jaw-surface-proxy requires fixed jaw proxy")
     if not (5. <= args.j6_actual_speed_limit_deg_s <= 60.):
         p.error("--j6-actual-speed-limit-deg-s must be 5--60 deg/s")
+    if args.physical_arm_hold and not args.simple_grasp:
+        p.error("--physical-arm-hold requires --simple-grasp")
+    if (args.arm_hold_kp<=0 or args.arm_hold_kd<0 or
+            args.arm_hold_max_torque<=0):
+        p.error("J1-J5 arm-hold gains and torque cap must be valid")
     if args.gentle_jaw_contact and not (
         args.simple_grasp and args.moving_jaw_surface_proxy):
         p.error("--gentle-jaw-contact requires --simple-grasp "
