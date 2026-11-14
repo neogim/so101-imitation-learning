@@ -44,9 +44,15 @@ def build_model(args):
     physical.install_dynamic_muhi(spec)
     # Use an actual small tabletop, not a fake vertical holding force.
     # Its pose is adjusted during placement search (world geom, no freejoint).
-    spec.worldbody.add_geom(
+    # A direct worldbody geom is compiled as a STATIC world geom. Editing
+    # model.geom_pos later leaves its world contact pose stale in mjData.
+    # Instead attach the table to a mocap body, and move that body only
+    # during candidate selection. mj_forward then updates the contact pose.
+    table_body_spec=spec.worldbody.add_body(
+        name="j6_bench_table_mocap",mocap=True,pos=[0.,0.,-10.])
+    table_body_spec.add_geom(
         name=TABLE,type=mujoco.mjtGeom.mjGEOM_BOX,
-        pos=[0.,0.,-10.],size=[.08,.08,TABLE_HALF_THICKNESS_M],
+        pos=[0.,0.,0.],size=[.08,.08,TABLE_HALF_THICKNESS_M],
         rgba=[.47,.51,.56,1.],friction=[.9,.01,.001],
         contype=1,conaffinity=1)
     model=spec.compile()
@@ -74,6 +80,11 @@ def build_model(args):
     moving=bench.owned_collision_geoms(model,bench.MOVING_BODY)
     obj=tuple(physical.geom_id(model,n) for n in physical.DYNAMIC_GEOMS)
     table=physical.geom_id(model,TABLE)
+    table_body_id=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_BODY,"j6_bench_table_mocap")
+    table_mocap_id=int(model.body_mocapid[table_body_id])
+    if table_mocap_id < 0:
+        raise ValueError("Bench table is not attached to a mocap body")
     if not fixed or not moving:
         raise ValueError("Missing jaw collision geoms")
     freejoint=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
@@ -88,8 +99,9 @@ def build_model(args):
     def table_for_candidate(center,quat,xyz):
         rejected["tested"]+=1
         table_top=float(center[2])-OBJECT_HALF_LENGTH_M-.0005
-        model.geom_pos[table]=[float(center[0]),float(center[1]),
-                               table_top-TABLE_HALF_THICKNESS_M]
+        data.mocap_pos[table_mocap_id]=[
+            float(center[0]),float(center[1]),
+            table_top-TABLE_HALF_THICKNESS_M]
         mujoco.mj_forward(model,data)
         gap=min((bench.signed_pair_gap(model,data,g,table)
                  for g in robot_geoms),default=float("inf"))
@@ -115,8 +127,9 @@ def build_model(args):
     # The last candidate evaluated in the grid is NOT necessarily the
     # winning candidate. Reposition table using the selected Muhi.
     table_top=float(center[2])-OBJECT_HALF_LENGTH_M-.0005
-    model.geom_pos[table]=[float(center[0]),float(center[1]),
-                           table_top-TABLE_HALF_THICKNESS_M]
+    data.mocap_pos[table_mocap_id]=[
+        float(center[0]),float(center[1]),
+        table_top-TABLE_HALF_THICKNESS_M]
     data.qpos[freeq:freeq+3]=center
     data.qpos[freeq+3:freeq+7]=quat
     data.qpos[jawq]=open_angle
@@ -126,7 +139,16 @@ def build_model(args):
     gap_moving=bench.geometry_gaps(model,data,obj,moving)
     robot_gap=min((bench.signed_pair_gap(model,data,g,table)
                    for g in robot_geoms),default=float("inf"))
+    expected_table_center=np.array(
+        [float(center[0]),float(center[1]),
+         table_top-TABLE_HALF_THICKNESS_M])
+    actual_table_center=np.asarray(data.geom_xpos[table]).copy()
+    if np.linalg.norm(actual_table_center-expected_table_center)>.0001:
+        return None,{"status":"TABLE_KINEMATICS_INVALID",
+                     "expected_table_center":expected_table_center.tolist(),
+                     "actual_table_center":actual_table_center.tolist()}
     diag={"search":search,"table_clearance_search":rejected,
+          "table_actual_world_center_xyz_m":actual_table_center.tolist(),
           "initial_fixed_gap_mm":float(gap_fixed*1000),
           "initial_moving_gap_mm":float(gap_moving*1000),
           "initial_robot_table_gap_mm":float(robot_gap*1000),
@@ -179,6 +201,7 @@ def execute(args):
           "simulation_only":True,
           "not_full_pick_place":True,
           "no_fixture_force":True,"no_object_pose_reset_during_steps":True,
+          "table_is_mocap_fixed_during_simulation":True,
           "j5_deg":args.j5_deg,"scene":"standalone local table, not saved Episode4",
           "object_mass_provisional_kg":.05,
           "object_diameter_provisional_m":.035,
