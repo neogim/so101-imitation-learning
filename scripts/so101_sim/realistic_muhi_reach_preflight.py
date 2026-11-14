@@ -69,8 +69,8 @@ def main():
                     help="Search ONLY J1 home yaw candidates for a separated "
                          "initial scene, never relocate Muhi/table")
     ap.add_argument("--pregrasp-offset-m", type=float, nargs=3,
-                    default=[0., -.075, .015],
-                    help="WORLD offset from Muhi center to TCP")
+                    default=[0., .075, .015],
+                    help="WORLD offset: approach from robot/home +Y side; TCP")
     ap.add_argument("--min-initial-clearance-mm", type=float, default=45.)
     ap.add_argument("--min-path-clearance-mm", type=float, default=4.)
     ap.add_argument("--tcp-tolerance-mm", type=float, default=12.)
@@ -91,7 +91,9 @@ def main():
     ap.add_argument("--render", action="store_true",
                     help="Save start, middle and final snapshots")
     ap.add_argument("--video", action="store_true",
-                    help="Render MP4 side + wrist camera videos; requires ffmpeg")
+                    help="Render original 2-side + 3-wrist combined MP4 and separate camera MP4s")
+    ap.add_argument("--wrist-retract-mm", type=float, default=5.,
+                    help="Virtual retracted wrist optic comparison, millimeters")
     ap.add_argument("--fps", type=int, default=15,
                     help="Playback fps for diagnostic Reach video")
     ap.add_argument("--video-every-waypoints", type=int, default=2,
@@ -114,6 +116,7 @@ def main():
             10 <= args.max_iterations <= 1500 and
             30 <= args.via_height_mm <= 250 and
             1 <= args.j4_weight <= 1000 and
+            0 <= args.wrist_retract_mm <= 15 and
             1 <= args.fps <= 60 and
             1 <= args.video_every_waypoints <= 30):
         ap.error("Invalid guard thresholds")
@@ -143,12 +146,14 @@ def main():
         tcp_rig_local=tuple(
             TCP_LOCAL[i]-wrist.DEFAULT_MOUNT_POS[i] for i in range(3))
         wrist.install(spec,bracket_profile="ruler_15_35_35",
-                      camera_aim_at=tcp_rig_local)
+                      camera_aim_at=tcp_rig_local,
+                      camera_retract_mm=args.wrist_retract_mm)
         report["wrist_camera_mount"]={
             "installed":True,"camera_name":wrist.CAMERA,
             "bracket_profile":"ruler_15_35_35",
             "geometry":"visual and collision",
-            "mount_calibration":"photo/ruler estimate, not calibrated"}
+            "mount_calibration":"photo/ruler estimate, not calibrated",
+            "virtual_retract_mm":float(args.wrist_retract_mm)}
         grip = spec.body("gripper_link")
         if grip is None:
             raise ValueError("Missing gripper_link")
@@ -197,6 +202,15 @@ def main():
         if wrist_cam_id < 0:
             raise ValueError("Wrist camera missing after MuJoCo compile")
         report["wrist_camera_id"]=wrist_cam_id
+        shelf_cam_id=int(mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_CAMERA,
+            wrist.SHELF_DIAGNOSTIC_CAMERA))
+        retract_cam_id=int(mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_CAMERA,
+            wrist.RETRACTED_DIAGNOSTIC_CAMERA))
+        if shelf_cam_id<0 or (args.wrist_retract_mm>0 and retract_cam_id<0):
+            raise ValueError("Required shelf/retracted wrist camera missing")
+        report["video_layout"]="previous bench: side A/B above wrist TCP/shelf/retracted, 1440x780"
         if args.exclude_base_shoulder_contact:
             report["collision_policy"] = pair_filter.apply_base_shoulder_pair_filter(
                 model, object_geoms=obj_geoms, table_geom=table_geom)
@@ -491,22 +505,24 @@ def main():
         mujoco.mj_forward(model,data)
         path = trajectory if len(trajectory)>1 else [home]
         snapshot_index = {0, len(path)//2, len(path)-1}
-        # Render into temporary PNGs for ffmpeg, then remove the temporary
-        # frames after encoding. Keep the three inspection snapshots.
-        # If ffmpeg/rendering fails, preserve numeric diagnostics in JSON.
+        # Same desktop comparison layout as physical_grasp_table_bench.py:
+        # 2 side views (top), 3 wrist views (bottom), 1440x780.
+        # Also emit each individual camera movie. Keep frame series synced.
         video_frame_count=0
         frame_dir=args.out/"_temporary_video_frames"
-        side_dir=frame_dir/"side"
-        wrist_dir=frame_dir/"wrist"
+        names=("combined","side","side_b","wrist","shelf","retracted")
+        dirs={name:frame_dir/name for name in names}
         if args.video:
-            side_dir.mkdir(parents=True,exist_ok=True)
-            wrist_dir.mkdir(parents=True,exist_ok=True)
+            for directory in dirs.values():
+                directory.mkdir(parents=True,exist_ok=True)
             report["video_status"]="PENDING"
             report["wrist_video_status"]="PENDING"
         renderer=None
         if args.render or args.video:
             try:
-                renderer=mujoco.Renderer(model,width=640,height=480)
+                model.vis.global_.offwidth=max(480,model.vis.global_.offwidth)
+                model.vis.global_.offheight=max(360,model.vis.global_.offheight)
+                renderer=mujoco.Renderer(model,width=480,height=360)
             except Exception as render_error:
                 report["video_status"]="RENDERER_UNAVAILABLE"
                 report["video_error"]=repr(render_error)
@@ -516,8 +532,6 @@ def main():
         side_camera.distance=.75
         side_camera.azimuth=70
         side_camera.elevation=-20
-        # Group 3 is the physical collision proxy of the installed wrist
-        # mount, not a viewable component. Visual parts remain group 0.
         scene_option=mujoco.MjvOption()
         scene_option.geomgroup[3]=0
         for k, q in enumerate(path):
@@ -527,8 +541,6 @@ def main():
                 data.qpos[jaw_q] = jaw_lim[1]
                 data.qvel[jaw_d] = 0
                 mujoco.mj_step(model,data)
-                # Keep prescribed robot qpos at command after integration;
-                # only the bottle is fully dynamic.
                 data.qpos[qs] = q
                 data.qvel[ds] = 0
                 data.qpos[jaw_q] = jaw_lim[1]
@@ -548,34 +560,71 @@ def main():
                     muhi_y_m=float(data.qpos[free_q+1]),
                     muhi_z_m=float(data.qpos[free_q+2])))
                 if gap < 0 or table_gap < 0:
-                    report["status"] = "REPLAY_COLLISION_DETECTED"
+                    report["status"]="REPLAY_COLLISION_DETECTED"
                     break
             if report["status"] == "REPLAY_COLLISION_DETECTED":
                 break
-            if renderer is not None and (
-                    (args.render and k in snapshot_index) or
-                    (args.video and (k % args.video_every_waypoints == 0
-                                     or k == len(path)-1))):
+            need_snapshot=args.render and k in snapshot_index
+            need_video=(args.video and
+                (k%args.video_every_waypoints==0 or k==len(path)-1))
+            if renderer is not None and (need_snapshot or need_video):
                 try:
-                    from PIL import Image
+                    from PIL import Image,ImageDraw
                     renderer.update_scene(
                         data,camera=side_camera,scene_option=scene_option)
-                    side=Image.fromarray(renderer.render().copy())
-                    if args.render and k in snapshot_index:
-                        side.save(args.out/f"reach_{k:04d}.png")
-                    if args.video and (k % args.video_every_waypoints == 0
-                                       or k == len(path)-1):
+                    side_a=Image.fromarray(renderer.render().copy())
+                    if need_snapshot:
+                        side_a.save(args.out/f"reach_{k:04d}.png")
+                    if need_video:
+                        side_camera.azimuth=-70
                         renderer.update_scene(
-                            data,camera=wrist.CAMERA,scene_option=scene_option)
-                        wrist_image=Image.fromarray(renderer.render().copy())
-                        side.save(side_dir/f"frame_{video_frame_count:04d}.png")
-                        wrist_image.save(
-                            wrist_dir/f"frame_{video_frame_count:04d}.png")
+                            data,camera=side_camera,scene_option=scene_option)
+                        side_b=Image.fromarray(renderer.render().copy())
+                        side_camera.azimuth=70
+                        renderer.update_scene(
+                            data,camera=wrist.CAMERA,
+                            scene_option=scene_option)
+                        w_tcp=Image.fromarray(renderer.render().copy())
+                        renderer.update_scene(
+                            data,camera=wrist.SHELF_DIAGNOSTIC_CAMERA,
+                            scene_option=scene_option)
+                        w_shelf=Image.fromarray(renderer.render().copy())
+                        if retract_cam_id>=0:
+                            renderer.update_scene(
+                                data,camera=wrist.RETRACTED_DIAGNOSTIC_CAMERA,
+                                scene_option=scene_option)
+                            w_retracted=Image.fromarray(renderer.render().copy())
+                        else:
+                            w_retracted=Image.new("RGB",(480,360),(20,24,30))
+                        # Preserve the prior output format, including labels.
+                        combined=Image.new("RGB",(1440,780),(20,24,30))
+                        combined.paste(side_a,(240,30))
+                        combined.paste(side_b,(720,30))
+                        combined.paste(w_tcp,(0,420))
+                        combined.paste(w_shelf,(480,420))
+                        combined.paste(w_retracted,(960,420))
+                        draw=ImageDraw.Draw(combined)
+                        stage=trajectory_stages[k]
+                        draw.text((248,8),
+                            f"SIDE A | {stage} | t={data.time:.2f}s",
+                            fill="white")
+                        draw.text((728,8),"SIDE B | SAME STEP",fill="white")
+                        draw.text((8,398),"WRIST | TCP AIM",fill="white")
+                        draw.text((488,398),"WRIST | SHELF AXIS",fill="white")
+                        draw.text((968,398),
+                            f"WRIST | RETRACTED {args.wrist_retract_mm:g}mm",
+                            fill="white")
+                        images={
+                            "combined":combined,"side":side_a,
+                            "side_b":side_b,"wrist":w_tcp,
+                            "shelf":w_shelf,"retracted":w_retracted}
+                        for name,img in images.items():
+                            img.save(dirs[name]/
+                                     f"frame_{video_frame_count:04d}.png")
                         video_frame_count+=1
                 except Exception as render_error:
                     report.setdefault("render_errors",[]).append(
                         f"waypoint {k}: {render_error}")
-                    # Avoid exporting misaligned side/wrist sequences.
                     if args.video:
                         report["video_status"]="FRAME_RENDER_FAILED"
                         break
@@ -589,28 +638,38 @@ def main():
             if ffmpeg is None:
                 report["video_status"]="FFMPEG_NOT_FOUND"
                 report["wrist_video_status"]="FFMPEG_NOT_FOUND"
-                report["video_error"]="Install ffmpeg (e.g. conda install -c conda-forge ffmpeg)"
+                report["video_error"]="Install ffmpeg in conda environment"
             else:
-                def encode(directory,filename):
-                    cmd=[ffmpeg,"-hide_banner","-loglevel","error","-y",
-                         "-framerate",str(args.fps),"-i",
-                         str(directory/"frame_%04d.png"),
-                         "-vf","pad=ceil(iw/2)*2:ceil(ih/2)*2",
-                         "-c:v","libx264","-pix_fmt","yuv420p",
-                         "-movflags","+faststart",str(args.out/filename)]
-                    subprocess.run(cmd,check=True,capture_output=True,text=True)
-                try:
-                    encode(side_dir,"reach_side.mp4")
+                outputs=(
+                    ("combined","reach_combined.mp4"),
+                    ("side","reach_side.mp4"),
+                    ("side_b","reach_side_b.mp4"),
+                    ("wrist","reach_wrist.mp4"),
+                    ("shelf","reach_wrist_shelf.mp4"),
+                    ("retracted","reach_wrist_retracted.mp4"))
+                report["video_files"]=[]
+                for source,filename in outputs:
+                    try:
+                        cmd=[ffmpeg,"-hide_banner","-loglevel","error","-y",
+                             "-framerate",str(args.fps),"-i",
+                             str(dirs[source]/"frame_%04d.png"),
+                             "-vf","pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                             "-c:v","libx264","-pix_fmt","yuv420p",
+                             "-movflags","+faststart",
+                             str(args.out/filename)]
+                        subprocess.run(
+                            cmd,check=True,capture_output=True,text=True)
+                        report["video_files"].append(filename)
+                    except Exception as error:
+                        report.setdefault("video_errors",[]).append(
+                            f"{filename}: {error}")
+                if len(report["video_files"])==len(outputs):
                     report["video_status"]="created"
-                    encode(wrist_dir,"reach_wrist.mp4")
                     report["wrist_video_status"]="created"
                     shutil.rmtree(frame_dir)
-                except Exception as err:
-                    report["video_status"]=report.get(
-                        "video_status","ENCODE_FAILED")
-                    report["wrist_video_status"]=report.get(
-                        "wrist_video_status","ENCODE_FAILED")
-                    report["video_error"]=str(err)
+                else:
+                    report["video_status"]="PARTIAL"
+                    report["wrist_video_status"]="PARTIAL"
         elif args.video and report.get("video_status")=="PENDING":
             report["video_status"]="NO_FRAMES"
             report["wrist_video_status"]="NO_FRAMES"
