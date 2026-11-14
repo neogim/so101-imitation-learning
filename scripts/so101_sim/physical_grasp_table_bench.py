@@ -1065,6 +1065,18 @@ def execute(args):
             # the actual impact / normal-force record. This previously made
             # the 1.414s Muhi impulse appear to happen with ZERO jaw contact.
             contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
+            # A real jaw-to-jaw force is different from mere convex
+            # geometry overlap. Capture force before mj_forward.
+            jaw_self_contact_force_n=0.
+            fs_ids=set(fixed)
+            ms_ids=set(moving)
+            for ci,con in enumerate(data.contact[:data.ncon]):
+                pair={int(con.geom1),int(con.geom2)}
+                if not(pair&fs_ids and pair&ms_ids):
+                    continue
+                f6=np.zeros(6,dtype=float)
+                mujoco.mj_contactForce(model,data,ci,f6)
+                jaw_self_contact_force_n+=max(0.,float(f6[0]))
             if args.simple_grasp and stage in ("close","hold","lift"):
                 # Record non-object contacts involving the finger(s),
                 # directly from the solver BEFORE any mj_forward call.
@@ -1242,6 +1254,8 @@ def execute(args):
                 "root_contact_normal_force_n":float(root_normal_n),
                 "jaw_self_gap_mm":float(1000.*bench.geometry_gaps(
                     model,data,fixed,moving)),
+                "jaw_self_contact_solver_force_n":float(
+                    jaw_self_contact_force_n),
                 "j6_rad":float(data.qpos[jawq]),
                 "j6_open_held_kinematically":bool(preclose),
                 "tcp_gripper_z_m":float(data.xpos[grip_body,2]),
@@ -1422,21 +1436,8 @@ def execute(args):
                     math.degrees(max(r["j6_rad"] for r in recent)-
                                  min(r["j6_rad"] for r in recent))<.25):
                     contact_abort_reason="J6_POSITION_SERVO_STALLED"
-            # The old jaw-to-jaw mj_geomDistance overlap guard was
-            # unreliable: overlapping convex shapes are not necessarily
-            # solver contacts. Abort only when the active solver reports
-            # a sufficiently strong *actual* fixed-vs-moving jaw contact.
-            # Keep object-jaw contacts separate: they are necessary to grip.
-            jaw_self_contact_force_n=0.
-            fs_ids=set(fixed)
-            ms_ids=set(moving)
-            for ci,con in enumerate(data.contact[:data.ncon]):
-                pair={int(con.geom1),int(con.geom2)}
-                if not(pair&fs_ids and pair&ms_ids):
-                    continue
-                f6=np.zeros(6,dtype=float)
-                mujoco.mj_contactForce(model,data,ci,f6)
-                jaw_self_contact_force_n+=max(0.,float(f6[0]))
+            # This was captured immediately after mj_step, BEFORE
+            # post-step mj_forward overwrote the contact-force snapshot.
             if jaw_self_contact_force_n>args.jaw_force_spike_abort_n:
                 contact_abort_reason="J6_ACTUAL_JAW_SELF_CONTACT_FORCE"
             if contact_abort_reason:
