@@ -520,11 +520,30 @@ def main():
 
         # This was missing in the old "Reach success" definition.
         # A TCP 75mm from bottle center is NOT a fixed-fingertip contact.
-        fixed_geoms=bench.owned_collision_geoms(model,bench.FINGER_BODY)
-        moving_geoms=bench.owned_collision_geoms(model,bench.MOVING_BODY)
+        # gripper_link contains the J6 motor as well as the actual fixed
+        # finger. Only wrist_roll_follower is the finger contact candidate.
+        # The motor, bracket and palm MUST remain collision obstacles.
         grip_body=int(mujoco.mj_name2id(
             model,mujoco.mjtObj.mjOBJ_BODY,bench.FINGER_BODY))
-        other_robot_geoms=tuple(g for g in robot_geoms if g not in fixed_geoms)
+        grip_all=bench.owned_collision_geoms(model,bench.FINGER_BODY)
+        def mesh_of(g):
+            if int(model.geom_type[g])!=int(mujoco.mjtGeom.mjGEOM_MESH):
+                return ""
+            return mujoco.mj_id2name(
+                model,mujoco.mjtObj.mjOBJ_MESH,
+                int(model.geom_dataid[g])) or ""
+        fixed_geoms=tuple(g for g in grip_all
+            if "wrist_roll_follower_so101_v1" in mesh_of(g))
+        moving_geoms=bench.owned_collision_geoms(model,bench.MOVING_BODY)
+        if args.approach_fixed_jaw and len(fixed_geoms)!=1:
+            raise ValueError("Expected exactly one fixed-finger follower mesh; "
+                             "refusing to mistake J6 motor/palm for finger")
+        other_robot_geoms=tuple(
+            g for g in robot_geoms
+            if g not in fixed_geoms and g not in moving_geoms)
+        report["fixed_grasp_face_mesh_geoms"]=list(fixed_geoms)
+        report["fixed_grasp_face_mesh_names"]=[mesh_of(g) for g in fixed_geoms]
+        report["other_arm_obstacle_geoms"]=len(other_robot_geoms)
         report["fixed_fingertip_contact_phase"]="NOT_REQUESTED"
         if args.approach_fixed_jaw:
             if report["status"]!="PREGRASP_POSITION_REACHED_NO_GRASP":
