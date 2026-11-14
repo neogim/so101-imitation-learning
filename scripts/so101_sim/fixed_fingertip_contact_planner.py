@@ -72,6 +72,9 @@ def plan_fixed_fingertip_approach(
         fixed,gid,oid,w=gap_between(fixed_geoms,object_geoms)
         moving,_,_,_=gap_between(moving_geoms,object_geoms)
         witness_tip=float(np.linalg.norm(w[:3]-tcp)*1000.)
+        # Require contact on the inside-depth zone, not the first
+        # millimeters of the fingertip.
+        witness_depth=float(np.dot(w[:3]-tcp,R[:,2])*1000.)
         other=gap_between(other_robot_geoms,object_geoms)[0]
         table=gap_between(
             tuple(sorted(set(fixed_geoms+other_robot_geoms))),
@@ -82,6 +85,7 @@ def plan_fixed_fingertip_approach(
             "muhi_geom_id":oid,
             "witness_world_m":w[:3].tolist(),
             "witness_tcp_distance_mm":witness_tip,
+            "fixed_contact_depth_mm":witness_depth,
             "grasp_depth_mm":depth,
             "grasp_side_mm":side,
             "moving_open_gap_mm":moving*1000.,
@@ -134,6 +138,7 @@ def plan_fixed_fingertip_approach(
                 current["fixed_gap_mm"]<=target_gap_mm and
                 current["fixed_gap_mm"]>=-.05 and
                 current["witness_tcp_distance_mm"]<=tip_zone_mm and
+                8.<=current["fixed_contact_depth_mm"]<=30. and
                 current["moving_open_gap_mm"]>=.5)
             if depth_ok and contact_ok:
                 minimum,crossing=swept_capture(pose)
@@ -163,7 +168,12 @@ def plan_fixed_fingertip_approach(
                         # Favor moving Muhi deeper into the open jaws,
                         # before the finger-to-object gap is reduced.
                         new_de,new_gap=errors(m)
+                        old_witness_penalty=max(
+                            0.,8.-current["fixed_contact_depth_mm"])
+                        new_witness_penalty=max(
+                            0.,8.-m["fixed_contact_depth_mm"])
                         score=(1.5*(depth_err-new_de)+.35*(gap_err-new_gap)
+                               +.5*(old_witness_penalty-new_witness_penalty)
                                -.03*abs(step)/.012)
                         if score>0.002 and (choice is None or score>choice[0]):
                             choice=(score,proposed,m)
@@ -192,6 +202,8 @@ def plan_fixed_fingertip_approach(
         "closest_muhi_geom_id":final["muhi_geom_id"],
         "contact_witness_world_m":final["witness_world_m"],
         "grasp_depth_mm":final["grasp_depth_mm"],
+        "fixed_contact_depth_mm":final["fixed_contact_depth_mm"],
+        "min_accepted_fixed_contact_depth_mm":8.,
         "grasp_side_mm":final["grasp_side_mm"],
         "target_grasp_depth_mm":target_depth_mm,
         "grasp_depth_tolerance_mm":depth_tolerance_mm,
