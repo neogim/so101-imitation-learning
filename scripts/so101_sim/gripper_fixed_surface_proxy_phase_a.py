@@ -252,6 +252,129 @@ def plot_proxy_3d(original,ref,fixed,moving,boxes,tcp,R,out):
     fig.savefig(out,dpi=135)
     plt.close(fig)
 
+
+def residual_zone(depth_mm):
+    """Classify box center in TCP-gripper +Z direction, not world height."""
+    if depth_mm<0.: return "TCPより先"
+    if depth_mm<8.: return "0〜8mm"
+    if depth_mm<20.: return "8〜20mm（把持候補）"
+    if depth_mm<30.: return "20〜30mm"
+    if depth_mm<45.: return "30〜45mm"
+    if depth_mm<70.: return "45〜70mm"
+    return "70mm以遠（根元）"
+
+
+def residual_witness_report(model,data,ids,boxes,moving_id,tcp,R,out):
+    """Measure every fixed proxy vs moving mesh at CLOSED J6, one pass.
+
+    Returns closest contact candidates; signed distance is from MuJoCo's
+    convex contact geometry and witnesses are approximate when penetrating.
+    """
+    rows=[]
+    witness=np.zeros(6)
+    for geom_id in ids:
+        name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,geom_id)
+        index=int(name.removeprefix(PROXY_PREFIX))
+        b=boxes[index]
+        distance=float(mujoco.mj_geomDistance(
+            model,data,geom_id,moving_id,.3,witness)*1000.)
+        fixed_pt=(np.asarray(witness[:3])-tcp)@R*1000.
+        moving_pt=(np.asarray(witness[3:])-tcp)@R*1000.
+        center=b["center_tcp_mm"]
+        rows.append({
+            "proxy_id":name,"box_index":index,"pitch_mm":b["pitch_mm"],
+            "zone":residual_zone(float(center[2])),
+            "box_center_x_mm":float(center[0]),
+            "box_center_y_mm":float(center[1]),
+            "box_center_depth_mm":float(center[2]),
+            "signed_gap_mm":distance,
+            "fixed_witness_x_mm":float(fixed_pt[0]),
+            "fixed_witness_y_mm":float(fixed_pt[1]),
+            "fixed_witness_depth_mm":float(fixed_pt[2]),
+            "moving_witness_depth_mm":float(moving_pt[2]),
+            "fixed_witness_inside_grasp_zone_8_20":
+                bool(8<=fixed_pt[2]<20),
+        })
+    with (out/"residual_contact_witnesses.csv").open(
+            "w",newline="",encoding="utf-8") as fp:
+        writer=csv.DictWriter(fp,fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    rows.sort(key=lambda x:x["signed_gap_mm"])
+    grouped={}
+    for r in rows:
+        zone=r["zone"]
+        if zone not in grouped or grouped[zone]["signed_gap_mm"]>r["signed_gap_mm"]:
+            grouped[zone]=r
+    closest=rows[0]
+    plot_residual_zone_svg(grouped,out/"residual_collision_by_depth.svg")
+    return {
+        "min_signed_gap_mm":closest["signed_gap_mm"],
+        "closest_proxy_box_index":closest["box_index"],
+        "closest_box_center_depth_mm":closest["box_center_depth_mm"],
+        "closest_witness_depth_mm":closest["fixed_witness_depth_mm"],
+        "closest_center_zone":closest["zone"],
+        "closest_fixed_witness_in_8_20mm":
+            closest["fixed_witness_inside_grasp_zone_8_20"],
+        "overlapping_box_count":sum(r["signed_gap_mm"]<0 for r in rows),
+        "negative_depth_zone_minima_mm":{
+            z:{"min_signed_gap_mm":v["signed_gap_mm"],
+               "box_index":v["box_index"],
+               "box_center_depth_mm":v["box_center_depth_mm"]}
+            for z,v in grouped.items()},
+        "top_10_closest":[
+            {"box_index":r["box_index"],"zone":r["zone"],
+             "signed_gap_mm":r["signed_gap_mm"],
+             "box_center_depth_mm":r["box_center_depth_mm"],
+             "fixed_witness_depth_mm":r["fixed_witness_depth_mm"]}
+            for r in rows[:10]
+        ],
+        "caution":"Witness depth can be unreliable under penetration; "
+                  "report both box-center depth and witness depth. "
+                  "One closed J6 pose; no time simulation, object or grip proof."
+    }
+
+
+def plot_residual_zone_svg(groups,path):
+    zones=["TCPより先","0〜8mm","8〜20mm（把持候補）",
+           "20〜30mm","30〜45mm","45〜70mm","70mm以遠（根元）"]
+    data=[(z,groups[z]["signed_gap_mm"]) for z in zones if z in groups]
+    if not data: raise RuntimeError("No signed distance data to plot")
+    W,H=1160,580
+    left,right,top,bottom=180,1090,165,455
+    maxabs=max(5.,max(abs(v) for _,v in data)*1.15)
+    y=lambda v:(top+bottom)/2-v/maxabs*(bottom-top)/2
+    zero=y(0.)
+    width=(right-left)/len(data)
+    xvals=[left+(i+.5)*width for i in range(len(data))]
+    parts=[
+      f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">',
+      '<rect width="100%" height="100%" fill="white"/>',
+      '<text x="34" y="39" font-size="25" font-weight="bold" fill="#233b50">Phase A：固定爪分割BOXの残存干渉はどの深さにあるか</text>',
+      '<text x="34" y="74" font-size="18" fill="#49657a">縦軸：各深さ帯にあるBOXと可動爪の最小符号付き距離［mm］</text>',
+      '<text x="34" y="104" font-size="16" fill="#61758a">0mm＝接触境界、負（赤）＝貫通、正（緑）＝離れている。J6＝−10°の静止姿勢</text>',
+      f'<line x1="{left}" y1="{zero:.2f}" x2="{right}" y2="{zero:.2f}" stroke="#253c4d" stroke-width="2"/>',
+    ]
+    for sign,val in ((-1,-maxabs*.8),(1,maxabs*.8)):
+        yy=y(val)
+        parts.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{right}" y2="{yy:.1f}" stroke="#e5ebef"/>')
+        parts.append(f'<text x="{left-17}" y="{yy+5:.1f}" font-size="16" text-anchor="end" fill="#435a6a">{val:.1f}</text>')
+    parts.append(f'<text x="{left-17}" y="{zero+5:.1f}" font-size="16" text-anchor="end" fill="#435a6a">0</text>')
+    for (zone,value),xx in zip(data,xvals):
+        yy=y(value)
+        height=abs(yy-zero)
+        parts.append(
+            f'<rect x="{xx-width*.31:.2f}" y="{min(yy,zero):.2f}" '
+            f'width="{width*.62:.2f}" height="{max(height,1.):.2f}" '
+            f'fill="{"#c94f4f" if value<0 else "#298875"}"/>')
+        label=zone.replace("（把持候補）","")
+        parts.append(f'<text x="{xx:.1f}" y="{bottom+33}" text-anchor="middle" font-size="16" fill="#314b60">{label}</text>')
+        parts.append(f'<text x="{xx:.1f}" y="{(yy-12 if value>=0 else yy+23):.1f}" text-anchor="middle" font-size="18" font-weight="bold" fill="#30485b">{value:+.2f}</text>')
+    parts.append(f'<text x="{(left+right)/2:.1f}" y="535" text-anchor="middle" font-size="18" fill="#304d63">横軸：固定爪のBOX中心のTCPから根元方向への深さ帯［mm］</text>')
+    parts.append('<text x="34" y="568" font-size="15" fill="#647789">各帯の最低値のみ表示。深さは床からの高さではない。CSVには全BOXの値と接触候補点を記録。</text></svg>')
+    path.write_text("\n".join(parts),encoding="utf-8")
+
+
 def get_pose(model,home,angle):
     data=mujoco.MjData(model)
     for name,value in zip(r2s.JOINTS,home):
@@ -406,8 +529,9 @@ def main():
         witness=np.zeros(6)
         sourcegap=float(mujoco.mj_geomDistance(
             original,ref,fixed,moving,.3,witness)*1000.)
-        distances=[float(mujoco.mj_geomDistance(
-            modified,mref,i,moving_new,.3,witness)*1000.) for i in proxy_ids]
+        residual=residual_witness_report(
+            modified,mref,proxy_ids,boxes,moving_new,tcp,R,args.out)
+        distances=[residual["min_signed_gap_mm"]]
         summary.update({
             "status":"COMPARISON_RECORDED",
             "proxy_boxes":len(proxy_ids),
@@ -415,6 +539,7 @@ def main():
             "proxy_fine_boxes":sum(b["pitch_mm"]==args.fine_mm for b in boxes),
             "original_signed_mesh_gap_mm":sourcegap,
             "proxy_min_signed_gap_mm":min(distances),
+            "residual_collision":residual,
             "rows":rows,
             "warning":
                 "Surface-box collision model is experimental, not a production "
