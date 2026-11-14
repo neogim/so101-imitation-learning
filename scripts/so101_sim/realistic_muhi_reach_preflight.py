@@ -173,6 +173,12 @@ def main():
                        friction=[.9,.01,.001])
         model = spec.compile()
         model.opt.timestep = .002
+        # Match the original tabletop bench's wrist near-plane setting:
+        # a large near plane can clip the close-up gripper/mount.
+        near_original=float(model.vis.map.znear)
+        model.vis.map.znear=min(near_original,.001)
+        report["wrist_near_ratio_original"]=near_original
+        report["wrist_near_ratio_applied"]=float(model.vis.map.znear)
         data = mujoco.MjData(model)
         qs, ds, lims = [], [], []
         for name in r2s.JOINTS:
