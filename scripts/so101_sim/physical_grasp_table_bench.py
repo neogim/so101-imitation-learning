@@ -537,7 +537,9 @@ def execute(args):
         "j1_precontact_direction":int(j1_precontact_direction),
         "j1_precontact_rotation_deg":float(
             math.degrees(armhome[0]-j1_precontact_start_rad)),
-        "j1_precontact_min_fixed_gap_mm":float(j1_precontact_min_fixed_gap_mm),
+        "j1_precontact_min_fixed_gap_mm":(
+            float(j1_precontact_min_fixed_gap_mm)
+            if math.isfinite(j1_precontact_min_fixed_gap_mm) else None),
         "j1_precontact_physical_contact_steps":int(j1_precontact_contact_steps),
         "j1_precontact_motion_steps":int(j1_precontact_motion_steps),
         "j1_precontact_tilt_abort":bool(j1_precontact_exceeded_tilt),
