@@ -289,7 +289,7 @@ def run(args):
             "stiffness_nm_rad": float(model.jnt_stiffness[
                 mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"gripper")]),
         },
-        "dynamic_j6_initial_deg": case_results[0]["final_actual_deg"],
+        "dynamic_j6_initial_deg": all_dynamic[0]["j6_actual_deg"],
         "dynamic_j6_last_deg": case_results[0]["final_actual_deg"],
         "dynamic_last_target_deg": case_results[0]["final_target_deg"],
         "dynamic_max_abs_tracking_error_deg":
