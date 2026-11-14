@@ -306,6 +306,7 @@ def execute(args):
     contact_abort_reason=None
     contact_abort_step=None
     jaw_self_gap_min_mm=float("inf")
+    max_j6_open_overshoot_deg=0.
     render=None
     cam=None
     if args.video:
@@ -607,6 +608,9 @@ def execute(args):
             # Stop on wrong (root) contact, bottle tip-over, physically
             # impossible J6 angle, or jaw mesh interpenetration. Never
             # continue a failed pre-contact until the Muhi falls 88 metres.
+            max_j6_open_overshoot_deg=max(
+                max_j6_open_overshoot_deg,
+                math.degrees(max(0.,float(data.qpos[jawq]-open_angle))))
             jaw_self_gap_mm=float(1000.*bench.geometry_gaps(
                 model,data,fixed,moving))
             jaw_self_gap_min_mm=min(jaw_self_gap_min_mm,jaw_self_gap_mm)
@@ -619,8 +623,11 @@ def execute(args):
                 contact_abort_reason="ROOT_CONTACT_NOT_FINGERTIP"
             elif (stage!="settle" and tilt>args.j1_max_tilt_deg):
                 contact_abort_reason="MUHI_TIP_OVER"
-            elif (data.qpos[jawq] < closed_angle-.035 or
-                  data.qpos[jawq] > open_angle+.035):
+            elif (data.qpos[jawq] < closed_angle-args.j6_limit_margin_deg*math.pi/180. or
+                  data.qpos[jawq] > open_angle+args.j6_limit_margin_deg*math.pi/180.):
+                # MuJoCo joint limits are soft solver constraints. A small
+                # 2deg overrun of an OPEN gripper is not a grasp-failure
+                # reason to abort before the J1 approach completes.
                 contact_abort_reason="J6_JOINT_LIMIT_EXCEEDED"
             elif (jaw_self_gap_mm<min(-1.,jaw_self_gap_initial_mm-1.)):
                 contact_abort_reason="J6_JAWS_INTERPENETRATION"
@@ -693,6 +700,8 @@ def execute(args):
         "contact_abort_reason":contact_abort_reason,
         "contact_abort_step":contact_abort_step,
         "jaw_self_gap_open_mm":float(jaw_self_gap_initial_mm),
+        "j6_limit_margin_deg":float(args.j6_limit_margin_deg),
+        "j6_max_open_overshoot_deg":float(max_j6_open_overshoot_deg),
         "jaw_self_gap_min_mm":float(jaw_self_gap_min_mm),
         "muhi_mass_g":float(args.muhi_mass_g),
         "muhi_mass_source":"user-supplied value" if args.muhi_mass_g!=50. else "provisional default 50g",
@@ -810,6 +819,8 @@ def main():
     p.add_argument("--max-initial-fixed-gap-mm",type=float,default=25.)
     p.add_argument("--j6-armature",type=float,default=.002)
     p.add_argument("--j6-joint-damping",type=float,default=.06)
+    p.add_argument("--j6-limit-margin-deg",type=float,default=6.,
+                   help="Soft MuJoCo joint-limit diagnostic margin; abort beyond 6 degrees")
     p.add_argument("--j234-s",type=float,default=.8)
     p.add_argument("--j234-reposition-mm",type=float,default=15.)
     p.add_argument("--j234-min-progress-mm",type=float,default=3.,
@@ -852,6 +863,7 @@ def main():
                 args.j234_s,args.j234_reposition_mm,
                 args.j234_min_progress_mm,
                 args.j234_tcp_object_clearance_mm,args.j234_object_clearance_mm,
+                args.j6_limit_margin_deg,
                 args.muhi_mass_g,args.fixed_contact_max_tip_distance_mm,
                 args.root_contact_abort_force_n)):
         p.error("parameters must be finite")
@@ -860,6 +872,7 @@ def main():
         not(10<=args.fixed_contact_max_tip_distance_mm<=100) or
         not(0<args.root_contact_abort_force_n<=5) or
         args.j6_armature<0 or args.j6_joint_damping<0 or
+        not(2<=args.j6_limit_margin_deg<=8) or
         not(0.5<=args.min_initial_fixed_gap_mm<args.max_initial_fixed_gap_mm<=35) or
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
         args.approach_s<=0 or args.approach_clearance_mm<0 or
