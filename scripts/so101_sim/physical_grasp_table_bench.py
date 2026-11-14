@@ -1411,13 +1411,7 @@ def execute(args):
                 # 2deg overrun of an OPEN gripper is not a grasp-failure
                 # reason to abort before the J1 approach completes.
                 contact_abort_reason="J6_JOINT_LIMIT_EXCEEDED"
-            elif (not args.simple_grasp and
-                  jaw_self_gap_mm<min(-1.,jaw_self_gap_initial_mm-1.)):
-                # Legacy guard only. mj_geomDistance sees convex-shape
-                # overlap even when MuJoCo's collision filter excludes the
-                # connected jaw bodies and the solver applies ZERO force.
-                # Do not abort study-mode grasp from this false positive.
-                contact_abort_reason="J6_JAWS_INTERPENETRATION"
+
             if args.simple_grasp and stage=="close":
                 # Stalling AFTER the first 10 degrees also matters. A moving
                 # 0.4-s sliding window is needed; total-closure-only checks
@@ -1428,6 +1422,23 @@ def execute(args):
                     math.degrees(max(r["j6_rad"] for r in recent)-
                                  min(r["j6_rad"] for r in recent))<.25):
                     contact_abort_reason="J6_POSITION_SERVO_STALLED"
+            # The old jaw-to-jaw mj_geomDistance overlap guard was
+            # unreliable: overlapping convex shapes are not necessarily
+            # solver contacts. Abort only when the active solver reports
+            # a sufficiently strong *actual* fixed-vs-moving jaw contact.
+            # Keep object-jaw contacts separate: they are necessary to grip.
+            jaw_self_contact_force_n=0.
+            fs_ids=set(fixed)
+            ms_ids=set(moving)
+            for ci,con in enumerate(data.contact[:data.ncon]):
+                pair={int(con.geom1),int(con.geom2)}
+                if not(pair&fs_ids and pair&ms_ids):
+                    continue
+                f6=np.zeros(6,dtype=float)
+                mujoco.mj_contactForce(model,data,ci,f6)
+                jaw_self_contact_force_n+=max(0.,float(f6[0]))
+            if jaw_self_contact_force_n>args.jaw_force_spike_abort_n:
+                contact_abort_reason="J6_ACTUAL_JAW_SELF_CONTACT_FORCE"
             if contact_abort_reason:
                 contact_abort_step=i
                 break
@@ -1537,7 +1548,7 @@ def execute(args):
             # See MuJoCo changelog: replace mj_fullM on qM with
             # mju_sym2dense on M and the model's CSR row/index arrays.
             mujoco.mju_sym2dense(
-                qM,data.M,model.nv,
+                qM,data.M,
                 model.M_rownnz,model.M_rowadr,model.M_colind)
             j6_force_balance["matrix_source"]="csr_data_M"
         j6_mass_row_accel=float(np.dot(qM[jawd,:],data.qacc))
@@ -1735,7 +1746,10 @@ def execute(args):
         "moving_jaw_proxy_requires_validation":bool(args.moving_jaw_surface_proxy),
         "j6_servo_max_force_nm":(
             args.max_torque if args.simple_grasp else None),
-        "geometric_jaw_overlap_abort_enabled":not args.simple_grasp,
+        "geometric_jaw_overlap_abort_enabled":False,
+        "jaw_self_collision_guard":"actual solver fixed-vs-moving "
+            "normal force greater than jaw-force-spike-abort-n; "
+            "geometric signed distance alone never aborts",
         "geometric_jaw_overlap_is_not_solver_contact":True,
         "jaw_to_jaw_collision_physics_preserved":True,
         "object_table_contact_physics_preserved":True,
