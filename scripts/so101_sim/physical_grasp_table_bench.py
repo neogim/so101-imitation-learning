@@ -437,6 +437,13 @@ def execute(args):
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader()
         w.writerows(contactrows)
     hold=[r for r in rows if r["stage"]=="hold"]
+    closing_rows=[r for r in rows if r["stage"] in ("close","hold","lift")]
+    j6_actual_closure_deg=math.degrees(
+        open_angle-min((r["j6_rad"] for r in closing_rows),default=open_angle))
+    j6_command_saturation_fraction=(
+        sum(abs(r["j6_commanded_torque_nm"])>=.99*args.max_torque
+            for r in closing_rows)/len(closing_rows) if closing_rows else 0.)
+    j6_not_closing=bool(closing_rows and j6_actual_closure_deg<10.)
     # This is a TABLE-CONTACT criterion only. NEVER classify this as
     # successful pickup: the object may still be resting on the table.
     simultaneous=sum(r["bilateral"] for r in hold)
@@ -464,6 +471,10 @@ def execute(args):
         "approach_blocked_steps":int(approach_blocked_steps),
         "approach_method":"DLS J1-J4, check full robot/table and robot/object clearance",
         "j6_trajectory":"cubic smoothstep with velocity-zero endpoints",
+        "j6_actual_closure_deg":float(j6_actual_closure_deg),
+        "j6_torque_saturation_fraction_during_close_hold":
+            float(j6_command_saturation_fraction),
+        "j6_not_closing":j6_not_closing,
         "short_lift_command_mm":args.lift_mm,
         "short_lift_attempted":lift_requested,
         "short_lift_success":lift_pass,
