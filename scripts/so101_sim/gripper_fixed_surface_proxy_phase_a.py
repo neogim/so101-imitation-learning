@@ -172,6 +172,86 @@ def diagram_svg(rows,out):
     out.write_text("\n".join(parts),encoding="utf-8")
 
 
+
+def plot_proxy_3d(original,ref,fixed,moving,boxes,tcp,R,out):
+    """Two-panel 3D schematic from actual STL and experimental box proxies."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib import font_manager
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
+    names={f.name for f in font_manager.fontManager.ttflist}
+    for name in ("Hiragino Sans","Yu Gothic","Noto Sans CJK JP",
+                 "IPAexGothic","Meiryo"):
+        if name in names:
+            plt.rcParams["font.family"]=name
+            break
+    fixed_v,fixed_faces=overlay.mesh_in_gripper(original,ref,fixed,tcp,R)
+    moving_v,moving_faces=overlay.mesh_in_gripper(original,ref,moving,tcp,R)
+    # Use the exact same 3D scale and camera for before vs after.
+    selected=[v[(v[:,2]>=0)&(v[:,2]<38)] for v in (fixed_v,moving_v)]
+    pool=np.concatenate([v for v in selected if len(v)],axis=0)
+    mn=pool.min(axis=0)-5
+    mx=pool.max(axis=0)+5
+    mn[2],mx[2]=0.,38.
+    fig=plt.figure(figsize=(15,7.6),facecolor="white")
+    edges=overlay.hull_edges_clipped(ConvexHull(fixed_v),fixed_v,0.,38.)
+    for col in range(2):
+        ax=fig.add_subplot(1,2,col+1,projection="3d")
+        for verts,faces,color in ((fixed_v,fixed_faces,"#448dc8"),
+                                  (moving_v,moving_faces,"#e3a16d")):
+            tri=verts[faces]
+            z=tri[:,:,2].mean(axis=1)
+            tri=tri[(z>=0)&(z<=38)]
+            if len(tri)>1300:
+                tri=tri[np.linspace(0,len(tri)-1,1300,dtype=int)]
+            ax.add_collection3d(Poly3DCollection(
+                tri,facecolor=color,alpha=.2,linewidths=0))
+        if col==0:
+            ax.add_collection3d(Line3DCollection(
+                edges,colors="#205d92",linewidths=.9,alpha=.86))
+        else:
+            # Only the 8-20mm high-resolution part is highlighted;
+            # all other boxes are still installed for collision.
+            import itertools
+            lines=[]
+            for b in boxes:
+                if b["pitch_mm"]!=min(x["pitch_mm"] for x in boxes):
+                    continue
+                c,h=b["center_tcp_mm"],b["half_mm"]
+                if not (7.<=c[2]<=21.):
+                    continue
+                corners=[c+np.array([sx,sy,sz])*h
+                     for sx,sy,sz in itertools.product((-1,1),repeat=3)]
+                for i in range(8):
+                    for j in range(i+1,8):
+                        if sum(abs(corners[i]-corners[j])>1e-8)==1:
+                            lines.append([corners[i],corners[j]])
+                if len(lines)>3500:
+                    break
+            if lines:
+                ax.add_collection3d(Line3DCollection(
+                    lines,colors="#158768",linewidths=.6,alpha=.65))
+        ax.set_xlim(mn[0],mx[0])
+        ax.set_ylim(mn[1],mx[1])
+        ax.set_zlim(mn[2],mx[2])
+        ax.set_box_aspect(np.maximum(mx-mn,1.))
+        ax.view_init(elev=24,azim=-65)
+        ax.set_xlabel("X位置［mm］")
+        ax.set_ylabel("Y位置［mm］")
+        ax.set_zlabel("TCPから根元方向の深さ［mm］")
+        ax.set_title("変更前：全メッシュ凸包" if col==0 else
+                     "変更後：8〜20mm局所細分化BOX",pad=15)
+    fig.suptitle("固定爪のSTL表示は同じ／衝突形状だけを比較（J6＝−10°）",
+                 fontsize=17,y=.99)
+    fig.text(.5,.03,
+        "青の薄い面＝固定爪STL／橙の薄い面＝可動爪STL／"
+        "濃青の線＝元の凸包／緑の線＝8〜20mmのBOX。実物の把持成功は未検証。",
+        ha="center",fontsize=11)
+    fig.subplots_adjust(top=.89,bottom=.12,wspace=.05)
+    fig.savefig(out,dpi=135)
+    plt.close(fig)
+
 def get_pose(model,home,angle):
     data=mujoco.MjData(model)
     for name,value in zip(r2s.JOINTS,home):
@@ -319,6 +399,8 @@ def main():
                 writer.writerow({k:json.dumps(v) if isinstance(v,list) else v
                                 for k,v in row.items()})
         diagram_svg(rows,args.out/"collision_proxy_before_after.svg")
+        plot_proxy_3d(original,ref,fixed,moving,boxes,tcp,R,
+                      args.out/"fixed_jaw_proxy_3d_before_after.png")
         # Signed distance across all proxy boxes to the moving mesh.
         # A minimum gap is a sanity signal, not proof of true aperture.
         witness=np.zeros(6)
@@ -329,6 +411,7 @@ def main():
         summary.update({
             "status":"COMPARISON_RECORDED",
             "proxy_boxes":len(proxy_ids),
+            "visualization":"fixed_jaw_proxy_3d_before_after.png",
             "proxy_fine_boxes":sum(b["pitch_mm"]==args.fine_mm for b in boxes),
             "original_signed_mesh_gap_mm":sourcegap,
             "proxy_min_signed_gap_mm":min(distances),
