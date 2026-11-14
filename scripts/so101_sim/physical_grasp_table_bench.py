@@ -438,6 +438,9 @@ def execute(args):
                 goal234=j234_tcp_initial+(
                     j234_tcp_target-j234_tcp_initial)*v234
                 reposition_j234(goal234)
+            elif j234_tcp_move_mm < args.j234_min_progress_mm:
+                stage="j234_prealign_failed"
+                demand=open_angle
             elif t < args.settle_s + args.j234_s + args.approach_s:
                 stage="j1_precontact"
                 demand=open_angle
@@ -607,7 +610,11 @@ def execute(args):
             jaw_self_gap_mm=float(1000.*bench.geometry_gaps(
                 model,data,fixed,moving))
             jaw_self_gap_min_mm=min(jaw_self_gap_min_mm,jaw_self_gap_mm)
-            if root_normal_n>=args.root_contact_abort_force_n and stage in (
+            if stage=="j234_prealign_failed":
+                contact_abort_reason="J234_PREALIGN_INSUFFICIENT"
+            elif stage=="j1_precontact_failed":
+                contact_abort_reason="J1_PRECONTACT_NOT_ESTABLISHED"
+            elif root_normal_n>=args.root_contact_abort_force_n and stage in (
                     "j234_prealign","j1_precontact"):
                 contact_abort_reason="ROOT_CONTACT_NOT_FINGERTIP"
             elif (stage!="settle" and tilt>args.j1_max_tilt_deg):
@@ -697,6 +704,7 @@ def execute(args):
         "j234_prealign_enabled":True,
         "j234_prealign_joints":"J2,J3,J4 only; J1/J5 fixed during prealignment",
         "j234_prealign_target_world_xyz_m":j234_tcp_target.tolist(),
+        "j234_min_progress_mm":float(args.j234_min_progress_mm),
         "j234_prealign_actual_tcp_move_mm":float(j234_tcp_move_mm),
         "j234_prealign_accepted_steps":int(j234_accepted_steps),
         "j234_prealign_rejected_steps":int(j234_rejected_steps),
@@ -804,6 +812,8 @@ def main():
     p.add_argument("--j6-joint-damping",type=float,default=.06)
     p.add_argument("--j234-s",type=float,default=.8)
     p.add_argument("--j234-reposition-mm",type=float,default=15.)
+    p.add_argument("--j234-min-progress-mm",type=float,default=3.,
+                   help="Fail closed if J2-J4 TCP cannot move at least this far")
     p.add_argument("--j234-tcp-object-clearance-mm",type=float,default=22.)
     p.add_argument("--j234-object-clearance-mm",type=float,default=.8)
     p.add_argument("--approach-s",type=float,default=1.0,
@@ -840,6 +850,7 @@ def main():
                 args.j1_max_tilt_deg,
                 args.j1_min_fixed_normal_force_n,
                 args.j234_s,args.j234_reposition_mm,
+                args.j234_min_progress_mm,
                 args.j234_tcp_object_clearance_mm,args.j234_object_clearance_mm,
                 args.muhi_mass_g,args.fixed_contact_max_tip_distance_mm,
                 args.root_contact_abort_force_n)):
@@ -863,6 +874,7 @@ def main():
         not(.5<=args.abort_jaw_penetration_mm<=3.) or
         args.j234_s<=0 or
         not(0<=args.j234_reposition_mm<=25) or
+        not(0<=args.j234_min_progress_mm<=args.j234_reposition_mm) or
         args.j234_tcp_object_clearance_mm<0 or
         args.j234_object_clearance_mm<0 or
         args.settle_s+args.j234_s+args.approach_s+args.close_s>=args.duration_s):
