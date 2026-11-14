@@ -14,6 +14,8 @@ import argparse
 import csv
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 
 import mujoco
@@ -87,7 +89,13 @@ def main():
                     help="Increase TCP Z by this amount above home AND pregrasp "
                          "TCP heights before the horizontal segment")
     ap.add_argument("--render", action="store_true",
-                    help="Save snapshots if MuJoCo offscreen renderer is available")
+                    help="Save start, middle and final snapshots")
+    ap.add_argument("--video", action="store_true",
+                    help="Render MP4 side + wrist camera videos; requires ffmpeg")
+    ap.add_argument("--fps", type=int, default=15,
+                    help="Playback fps for diagnostic Reach video")
+    ap.add_argument("--video-every-waypoints", type=int, default=2,
+                    help="Sample every N accepted waypoints for video")
     ap.add_argument("--exclude-base-shoulder-contact", action="store_true",
                     help="Simulation diagnostic only; do not modify URDF")
     args = ap.parse_args()
@@ -105,7 +113,9 @@ def main():
             1. <= args.tcp_tolerance_mm <= 30. and
             10 <= args.max_iterations <= 1500 and
             30 <= args.via_height_mm <= 250 and
-            1 <= args.j4_weight <= 1000):
+            1 <= args.j4_weight <= 1000 and
+            1 <= args.fps <= 60 and
+            1 <= args.video_every_waypoints <= 30):
         ap.error("Invalid guard thresholds")
 
     args.out.mkdir(parents=True, exist_ok=False)
@@ -127,6 +137,18 @@ def main():
         spec = mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
         spec.compiler.discardvisual = False
         physical.install_dynamic_muhi(spec)
+        # Reuse the same provisional camera, 15/35/35mm bent bracket and
+        # collision proxies as physical_grasp_table_bench.py. The body is
+        # mounted on gripper_link (J5 side) and follows the arm during Reach.
+        tcp_rig_local=tuple(
+            TCP_LOCAL[i]-wrist.DEFAULT_MOUNT_POS[i] for i in range(3))
+        wrist.install(spec,bracket_profile="ruler_15_35_35",
+                      camera_aim_at=tcp_rig_local)
+        report["wrist_camera_mount"]={
+            "installed":True,"camera_name":wrist.CAMERA,
+            "bracket_profile":"ruler_15_35_35",
+            "geometry":"visual and collision",
+            "mount_calibration":"photo/ruler estimate, not calibrated"}
         grip = spec.body("gripper_link")
         if grip is None:
             raise ValueError("Missing gripper_link")
@@ -170,6 +192,11 @@ def main():
         tcp_id = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, SITE))
         if tcp_id < 0:
             raise ValueError("Missing TCP site")
+        wrist_cam_id=int(mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA))
+        if wrist_cam_id < 0:
+            raise ValueError("Wrist camera missing after MuJoCo compile")
+        report["wrist_camera_id"]=wrist_cam_id
         if args.exclude_base_shoulder_contact:
             report["collision_policy"] = pair_filter.apply_base_shoulder_pair_filter(
                 model, object_geoms=obj_geoms, table_geom=table_geom)
@@ -464,6 +491,35 @@ def main():
         mujoco.mj_forward(model,data)
         path = trajectory if len(trajectory)>1 else [home]
         snapshot_index = {0, len(path)//2, len(path)-1}
+        # Render into temporary PNGs for ffmpeg, then remove the temporary
+        # frames after encoding. Keep the three inspection snapshots.
+        # If ffmpeg/rendering fails, preserve numeric diagnostics in JSON.
+        video_frame_count=0
+        frame_dir=args.out/"_temporary_video_frames"
+        side_dir=frame_dir/"side"
+        wrist_dir=frame_dir/"wrist"
+        if args.video:
+            side_dir.mkdir(parents=True,exist_ok=True)
+            wrist_dir.mkdir(parents=True,exist_ok=True)
+            report["video_status"]="PENDING"
+            report["wrist_video_status"]="PENDING"
+        renderer=None
+        if args.render or args.video:
+            try:
+                renderer=mujoco.Renderer(model,width=640,height=480)
+            except Exception as render_error:
+                report["video_status"]="RENDERER_UNAVAILABLE"
+                report["video_error"]=repr(render_error)
+        side_camera=mujoco.MjvCamera()
+        side_camera.type=mujoco.mjtCamera.mjCAMERA_FREE
+        side_camera.lookat[:]=center
+        side_camera.distance=.75
+        side_camera.azimuth=70
+        side_camera.elevation=-20
+        # Group 3 is the physical collision proxy of the installed wrist
+        # mount, not a viewable component. Visual parts remain group 0.
+        scene_option=mujoco.MjvOption()
+        scene_option.geomgroup[3]=0
         for k, q in enumerate(path):
             for _ in range(5):
                 data.qpos[qs] = q
@@ -496,22 +552,68 @@ def main():
                     break
             if report["status"] == "REPLAY_COLLISION_DETECTED":
                 break
-            if args.render and k in snapshot_index:
+            if renderer is not None and (
+                    (args.render and k in snapshot_index) or
+                    (args.video and (k % args.video_every_waypoints == 0
+                                     or k == len(path)-1))):
                 try:
                     from PIL import Image
-                    render = mujoco.Renderer(model,width=640,height=480)
-                    camera = mujoco.MjvCamera()
-                    camera.type=mujoco.mjtCamera.mjCAMERA_FREE
-                    camera.lookat[:]=center
-                    camera.distance=.75
-                    camera.azimuth=70
-                    camera.elevation=-20
-                    render.update_scene(data,camera=camera)
-                    Image.fromarray(render.render().copy()).save(
-                        args.out/f"reach_{k:04d}.png")
-                    render.close()
+                    renderer.update_scene(
+                        data,camera=side_camera,scene_option=scene_option)
+                    side=Image.fromarray(renderer.render().copy())
+                    if args.render and k in snapshot_index:
+                        side.save(args.out/f"reach_{k:04d}.png")
+                    if args.video and (k % args.video_every_waypoints == 0
+                                       or k == len(path)-1):
+                        renderer.update_scene(
+                            data,camera=wrist.CAMERA,scene_option=scene_option)
+                        wrist_image=Image.fromarray(renderer.render().copy())
+                        side.save(side_dir/f"frame_{video_frame_count:04d}.png")
+                        wrist_image.save(
+                            wrist_dir/f"frame_{video_frame_count:04d}.png")
+                        video_frame_count+=1
+                except Exception as render_error:
+                    report.setdefault("render_errors",[]).append(
+                        f"waypoint {k}: {render_error}")
+                    # Avoid exporting misaligned side/wrist sequences.
+                    if args.video:
+                        report["video_status"]="FRAME_RENDER_FAILED"
+                        break
+        if renderer is not None:
+            renderer.close()
+        report["wrist_video_rendered_frames"]=int(video_frame_count)
+        report["video_fps"]=int(args.fps)
+        report["video_stride_waypoints"]=int(args.video_every_waypoints)
+        if args.video and video_frame_count>0 and not report.get("render_errors"):
+            ffmpeg=shutil.which("ffmpeg")
+            if ffmpeg is None:
+                report["video_status"]="FFMPEG_NOT_FOUND"
+                report["wrist_video_status"]="FFMPEG_NOT_FOUND"
+                report["video_error"]="Install ffmpeg (e.g. conda install -c conda-forge ffmpeg)"
+            else:
+                def encode(directory,filename):
+                    cmd=[ffmpeg,"-hide_banner","-loglevel","error","-y",
+                         "-framerate",str(args.fps),"-i",
+                         str(directory/"frame_%04d.png"),
+                         "-vf","pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                         "-c:v","libx264","-pix_fmt","yuv420p",
+                         "-movflags","+faststart",str(args.out/filename)]
+                    subprocess.run(cmd,check=True,capture_output=True,text=True)
+                try:
+                    encode(side_dir,"reach_side.mp4")
+                    report["video_status"]="created"
+                    encode(wrist_dir,"reach_wrist.mp4")
+                    report["wrist_video_status"]="created"
+                    shutil.rmtree(frame_dir)
                 except Exception as err:
-                    report.setdefault("render_errors",[]).append(str(err))
+                    report["video_status"]=report.get(
+                        "video_status","ENCODE_FAILED")
+                    report["wrist_video_status"]=report.get(
+                        "wrist_video_status","ENCODE_FAILED")
+                    report["video_error"]=str(err)
+        elif args.video and report.get("video_status")=="PENDING":
+            report["video_status"]="NO_FRAMES"
+            report["wrist_video_status"]="NO_FRAMES"
         report["replay_frames"] = len(timeline)
         report["replay_min_robot_muhi_gap_mm"] = min(
             (r["robot_muhi_gap_mm"] for r in timeline),default=None)
