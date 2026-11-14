@@ -346,6 +346,16 @@ def execute(args):
     j234_tcp_move_mm=0.
     j1_precontact_reached=False
     j1_precontact_reason="not_started"
+    j1_safe_near_contact=False
+    j1_safe_near_contact_gap_mm=None
+    fixed_contact_witness_world_xyz_m=None
+    fixed_contact_witness_tcp_distance_mm=None
+    fixed_contact_witness_object_distance_mm=None
+    closing_low_force_stop=False
+    closing_low_force_reason=None
+    closing_hold_target=None
+    closing_peak_fixed_force_n=0.
+    closing_peak_moving_force_n=0.
     j1_precontact_start_rad=float(armhome[0])
     j1_precontact_direction=0
     j1_precontact_min_fixed_gap_mm=float("inf")
@@ -559,15 +569,41 @@ def execute(args):
                 demand=open_angle
                 mujoco.mj_forward(model,data)
                 fixed_gap=bench.geometry_gaps(model,data,obj,fixed)
+                # Use actual collision-mesh witness point, NOT gripper_link
+                # body origin. This is a geometric preview, not image ML.
+                best_fixed_witness=None
+                for fg in fixed:
+                    for og in obj:
+                        pair=np.zeros(6)
+                        g=bench.signed_pair_gap(model,data,fg,og)
+                        if best_fixed_witness is None or g<best_fixed_witness[0]:
+                            mujoco.mj_geomDistance(
+                                model,data,int(fg),int(og),.15,pair)
+                            best_fixed_witness=(g,pair.copy())
+                if best_fixed_witness is not None:
+                    xyz=best_fixed_witness[1][:3]
+                    fixed_contact_witness_world_xyz_m=xyz.tolist()
+                    fixed_contact_witness_tcp_distance_mm=float(
+                        np.linalg.norm(xyz-data.site_xpos[tip_site])*1000.)
+                    fixed_contact_witness_object_distance_mm=float(
+                        best_fixed_witness[0]*1000.)
                 tilt_now=math.degrees(math.acos(float(np.clip(
                     1.-2.*(data.qpos[freeq+4]**2+data.qpos[freeq+5]**2),
                     -1.,1.))))
                 if tilt_now > args.j1_max_tilt_deg:
                     j1_precontact_exceeded_tilt=True
                     j1_precontact_reason="object_tilt_exceeded"
+                elif (fixed_gap<=args.j1_stop_before_contact_mm/1000.
+                      and fixed_gap>=-0.00001):
+                    # Previous 0.057mm penetration generated a ~124N
+                    # instantaneous impulse. Do NOT push further by
+                    # prescribing J1 qpos. Leave a small gap so the J6
+                    # moving jaw can move the bottle gently toward it.
+                    j1_safe_near_contact=True
+                    j1_safe_near_contact_gap_mm=float(fixed_gap*1000.)
+                    j1_precontact_reached=True
+                    j1_precontact_reason="fixed_jaw_safe_geometric_precontact"
                 elif fixed_gap<=args.j1_contact_gap_mm/1000.:
-                    # A geometric intersection is NOT proof of a load-
-                    # bearing constraint. Wait for measured contact force.
                     j1_precontact_reason="geometric_target_reached_waiting_for_force"
                 elif not j1_precontact_reached and not j1_precontact_exceeded_tilt:
                     moved=safe_j1_contact_step()
@@ -595,7 +631,11 @@ def execute(args):
                 u=min(1.,max(0.,(t-args.settle_s-args.j234_s-args.approach_s)/args.close_s))
                 smooth=u*u*(3.-2.*u)
                 demand=open_angle+smooth*(closed_angle-open_angle)
-                stage="close" if u<1. else "hold"
+                if closing_low_force_stop and closing_hold_target is not None:
+                    demand=closing_hold_target
+                    stage="contact_hold"
+                else:
+                    stage="close" if u<1. else "hold"
                 # Only attempt a kinematically guided 5mm lift after
                 # sustained TWO-JAW contact in recent on-table samples.
                 # A table-supported contact alone never proves a pickup.
@@ -633,7 +673,9 @@ def execute(args):
                         data.qpos[list(qids)]=oldq
                         mujoco.mj_forward(model,data)
             torque=args.kp*(demand-data.qpos[jawq])-args.kd*data.qvel[jawd]
-            commanded_torque=float(np.clip(torque,-args.max_torque,args.max_torque))
+            torque_cap=(args.j6_precontact_max_torque
+                        if j1_safe_near_contact else args.max_torque)
+            commanded_torque=float(np.clip(torque,-torque_cap,torque_cap))
             data.qfrc_applied[jawd]=commanded_torque
             mujoco.mj_step(model,data)
             # CRITICAL: mj_step has solved contacts for the *pre-integration*
@@ -662,6 +704,11 @@ def execute(args):
                 if c["kind"] in ("fixed","moving"))
             max_jaw_impact_force_n=max(
                 max_jaw_impact_force_n,jaw_impact_force_n)
+            moving_normal_n=sum(
+                max(0.,float(c["normal_force_n"])) for c in contacts
+                if c["kind"]=="moving")
+            closing_peak_moving_force_n=max(
+                closing_peak_moving_force_n,moving_normal_n)
             fixed_normal_n=sum(
                 max(0.,float(c["normal_force_n"])) for c in contacts
                 if c["kind"]=="fixed" and
@@ -672,6 +719,14 @@ def execute(args):
                 c["tip_distance_mm"]>args.fixed_contact_max_tip_distance_mm)
             j1_precontact_max_fixed_normal_force_n=max(
                 j1_precontact_max_fixed_normal_force_n,fixed_normal_n)
+            closing_peak_fixed_force_n=max(
+                closing_peak_fixed_force_n,fixed_normal_n)
+            if stage=="close" and (
+                moving_normal_n>=args.j6_hold_force_n or
+                fixed_normal_n>=args.j6_hold_force_n):
+                closing_low_force_stop=True
+                closing_low_force_reason="first_jaw_force_threshold"
+                closing_hold_target=float(data.qpos[jawq])
             if stage=="j1_precontact":
                 if counts["fixed"]>0:
                     j1_precontact_contact_steps+=1
@@ -694,6 +749,10 @@ def execute(args):
                 "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
                 "j1_precontact_reached":bool(j1_precontact_reached),
                 "fixed_jaw_normal_force_n":float(fixed_normal_n),
+                "moving_jaw_normal_force_n":float(moving_normal_n),
+                "j6_closure_hold_on_contact":bool(closing_low_force_stop),
+                "fixed_contact_witness_tcp_distance_mm":
+                    fixed_contact_witness_tcp_distance_mm,
                 "total_jaw_normal_force_n":float(jaw_impact_force_n),
                 "root_contact_normal_force_n":float(root_normal_n),
                 "jaw_self_gap_mm":float(1000.*bench.geometry_gaps(
@@ -946,6 +1005,18 @@ def execute(args):
         "j1_nearest_unsafe_tip_distance_mm":
             j1_nearest_unsafe_tip_distance_mm,
         "j1_stop_reason":j1_stop_reason,
+        "j1_safe_near_contact":bool(j1_safe_near_contact),
+        "j1_safe_near_contact_gap_mm":j1_safe_near_contact_gap_mm,
+        "fixed_contact_witness_world_xyz_m":
+            fixed_contact_witness_world_xyz_m,
+        "fixed_contact_witness_tcp_distance_mm":
+            fixed_contact_witness_tcp_distance_mm,
+        "fixed_contact_witness_object_distance_mm":
+            fixed_contact_witness_object_distance_mm,
+        "j6_closure_hold_on_contact":bool(closing_low_force_stop),
+        "j6_closure_hold_reason":closing_low_force_reason,
+        "j6_peak_moving_normal_force_n":float(closing_peak_moving_force_n),
+        "j6_peak_fixed_normal_force_n":float(closing_peak_fixed_force_n),
         "j1_precontact_enabled":True,
         "j1_control_note":"J1 advances gently to -0.25mm max geometry; J6 runs only after sustained measured fixed-jaw normal force; no force -> no J6.",
         "j1_precontact_reached":bool(j1_precontact_reached),
@@ -1111,6 +1182,12 @@ def main():
     p.add_argument("--j1-root-clearance-mm",type=float,default=1.0)
     p.add_argument("--j1-fingertip-zone-mm",type=float,default=45.0)
     p.add_argument("--j1-max-deg",type=float,default=8.)
+    p.add_argument("--j1-stop-before-contact-mm",type=float,default=.65,
+                   help="Leave 0.65mm between fixed jaw and Muhi before J6 starts")
+    p.add_argument("--j6-precontact-max-torque",type=float,default=.015,
+                   help="Reduced Nm cap while gently closing around Muhi")
+    p.add_argument("--j6-hold-force-n",type=float,default=1.,
+                   help="Freeze advancing J6 target on first 1N measured contact")
     p.add_argument("--j1-contact-gap-mm",type=float,default=-.25,
                    help="Guarded J1 geometric limit (signed distance, -0.25mm); contact force required for J6")
     p.add_argument("--j1-min-fixed-normal-force-n",type=float,default=.02,
@@ -1136,6 +1213,8 @@ def main():
                (args.j5_deg,args.duration_s,args.settle_s,args.close_s,
                 args.kp,args.kd,args.max_torque,args.fps,
                 args.approach_mm,args.approach_s,args.approach_clearance_mm,
+                args.j1_stop_before_contact_mm,
+                args.j6_precontact_max_torque,args.j6_hold_force_n,
                 args.j1_step_deg,args.j1_root_clearance_mm,
                 args.j1_fingertip_zone_mm,
                 args.j1_max_deg,args.j1_contact_gap_mm,
@@ -1162,6 +1241,9 @@ def main():
         not(0.5<=args.min_initial_fixed_gap_mm<args.max_initial_fixed_gap_mm<=35) or
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
         args.approach_s<=0 or args.approach_clearance_mm<0 or
+        not(.1<=args.j1_stop_before_contact_mm<=2.) or
+        not(0<args.j6_precontact_max_torque<=args.max_torque) or
+        not(.1<=args.j6_hold_force_n<=5.) or
         not(0<args.j1_step_deg<=.05) or
         not(0.2<=args.j1_root_clearance_mm<=5.) or
         not(10<=args.j1_fingertip_zone_mm<=100) or not(0<args.j1_max_deg<=15) or
