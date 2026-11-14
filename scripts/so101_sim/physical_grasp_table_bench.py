@@ -204,6 +204,9 @@ def contact_observations(model,data,object_geoms,fixed,moving,table_id):
         if kind in counts: counts[kind]+=1
         records.append(dict(
            kind=kind,geom1=int(con.geom1),geom2=int(con.geom2),
+           geom1_name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(con.geom1)),
+           geom2_name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(con.geom2)),
+           efc_address=int(con.efc_address),
            point_xyz_m=[float(v) for v in con.pos],
            contact_normal_xyz=[float(v) for v in con.frame[:3]],
            penetration_mm=float(min(0.,con.dist)*1000.),
@@ -269,6 +272,8 @@ def execute(args):
     lift_rejected_steps=0
     rows=[];contactrows=[]
     no_table_support=False
+    contact_overpenetration_abort=False
+    contact_overpenetration_step=None
     frames=[]
     render=None
     cam=None
@@ -368,7 +373,7 @@ def execute(args):
                     j1_precontact_reason="object_tilt_exceeded"
                 elif fixed_gap<=args.j1_contact_gap_mm/1000.:
                     j1_precontact_reached=True
-                    j1_precontact_reason="fixed_jaw_contact_or_small_gap"
+                    j1_precontact_reason="fixed_jaw_geometry_shallow_contact"
                 elif not j1_precontact_reached and not j1_precontact_exceeded_tilt:
                     moved=safe_j1_contact_step()
                     if not moved:
@@ -482,6 +487,15 @@ def execute(args):
                    f"fixed={counts['fixed']} moving={counts['moving']} "
                    f"table={counts['table']} tilt={tilt:.1f}deg",fill="white")
                 frames.append(image)
+            # Hard diagnostic stop: object-to-jaw deep overlap is a geometry
+            # / contact solver failure, NOT progress toward grasp. Stop
+            # rather than allow another 26mm interpenetration.
+            jaw_depth=min((c["penetration_mm"] for c in contacts
+                           if c["kind"] in ("fixed","moving")),default=0.)
+            if jaw_depth < -args.abort_jaw_penetration_mm:
+                contact_overpenetration_abort=True
+                contact_overpenetration_step=i
+                break
             # The Muhi starts only 0.5mm above the table. If no contact
             # occurs by 0.15s and it has already dropped 5mm below the
             # nominal starting position, this is a broken table collision
@@ -496,7 +510,8 @@ def execute(args):
     with (args.out/"table_grasp_trace.csv").open("x",newline="",encoding="utf-8") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
     with (args.out/"contact_points.csv").open("x",newline="",encoding="utf-8") as f:
-        fields=["step","time_s","kind","geom1","geom2","point_xyz_m",
+        fields=["step","time_s","kind","geom1","geom2",
+                "geom1_name","geom2_name","efc_address","point_xyz_m",
                 "contact_normal_xyz","penetration_mm",
                 "normal_force_n","tangential_force_n"]
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader()
@@ -528,9 +543,14 @@ def execute(args):
                    "TABLE_BILATERAL_NOT_OBSERVED")
     if no_table_support:
         result_status="NO_TABLE_SUPPORT_CONTACT"
+    if contact_overpenetration_abort:
+        result_status="JAW_OVERPENETRATION_ABORT"
     info.update({
         "status":result_status,
         "table_support_preflight_failed":no_table_support,
+        "jaw_overpenetration_abort":bool(contact_overpenetration_abort),
+        "jaw_overpenetration_step":contact_overpenetration_step,
+        "jaw_overpenetration_threshold_mm":float(args.abort_jaw_penetration_mm),
         "j1_precontact_enabled":True,
         "j1_precontact_reached":bool(j1_precontact_reached),
         "j1_precontact_reason":j1_precontact_reason,
@@ -624,10 +644,12 @@ def main():
                    help="Time reserved for gentle J1 fixed-jaw contact")
     p.add_argument("--j1-step-deg",type=float,default=.012)
     p.add_argument("--j1-max-deg",type=float,default=8.)
-    p.add_argument("--j1-contact-gap-mm",type=float,default=.15)
+    p.add_argument("--j1-contact-gap-mm",type=float,default=-.03,
+                   help="Slight signed overlap to obtain actual fixed contact; -0.03mm")
     p.add_argument("--j1-max-penetration-mm",type=float,default=.15)
     p.add_argument("--j1-moving-clearance-mm",type=float,default=.5)
     p.add_argument("--j1-max-tilt-deg",type=float,default=8.)
+    p.add_argument("--abort-jaw-penetration-mm",type=float,default=1.5)
     p.add_argument("--approach-clearance-mm",type=float,default=.5)
     p.add_argument("--table-clearance-mm",type=float,default=2.0)
     p.add_argument("--lift-mm",type=float,default=5.0)
@@ -654,10 +676,11 @@ def main():
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
         args.approach_s<=0 or args.approach_clearance_mm<0 or
         not(0<args.j1_step_deg<=.05) or not(0<args.j1_max_deg<=15) or
-        not(0<=args.j1_contact_gap_mm<=.5) or
+        not(-.1<=args.j1_contact_gap_mm<=.5) or
         not(0<=args.j1_max_penetration_mm<=.5) or
         args.j1_moving_clearance_mm<0 or
         not(0<args.j1_max_tilt_deg<=15) or
+        not(.5<=args.abort_jaw_penetration_mm<=3.) or
         args.settle_s+args.approach_s+args.close_s>=args.duration_s):
         p.error("Invalid FPS, table clearance or lift mm")
     execute(args)
