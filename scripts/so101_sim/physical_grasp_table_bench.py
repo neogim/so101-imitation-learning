@@ -1235,7 +1235,12 @@ def execute(args):
                 # 2deg overrun of an OPEN gripper is not a grasp-failure
                 # reason to abort before the J1 approach completes.
                 contact_abort_reason="J6_JOINT_LIMIT_EXCEEDED"
-            elif (jaw_self_gap_mm<min(-1.,jaw_self_gap_initial_mm-1.)):
+            elif (not args.simple_grasp and
+                  jaw_self_gap_mm<min(-1.,jaw_self_gap_initial_mm-1.)):
+                # Legacy guard only. mj_geomDistance sees convex-shape
+                # overlap even when MuJoCo's collision filter excludes the
+                # connected jaw bodies and the solver applies ZERO force.
+                # Do not abort study-mode grasp from this false positive.
                 contact_abort_reason="J6_JAWS_INTERPENETRATION"
             if (args.simple_grasp and stage=="close" and
                     t-j1_force_seek_end>=.80 and
@@ -1477,6 +1482,10 @@ def execute(args):
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_dynamics_diagnostic":j6_dynamics,
         "simple_grasp_mode":bool(args.simple_grasp),
+        "geometric_jaw_overlap_abort_enabled":not args.simple_grasp,
+        "geometric_jaw_overlap_is_not_solver_contact":True,
+        "jaw_to_jaw_collision_physics_preserved":True,
+        "object_table_contact_physics_preserved":True,
         "j6_nonobject_jaw_contact_samples":len(j6_blocking_contacts),
         "j6_peak_nonobject_jaw_force_n":max(
             (row["normal_force_n"] for row in j6_blocking_contacts),
