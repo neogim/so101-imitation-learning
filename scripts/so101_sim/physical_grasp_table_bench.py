@@ -68,6 +68,14 @@ def build_model(args):
     model=spec.compile()
     preview.apply_white_follower_preview(model)
     model.opt.timestep=.002
+    # J6's CAD inertia is extremely small, making direct torque PD
+    # alternate violently between saturation limits at 2ms. Add explicit
+    # rotor/gear inertia and joint damping to this BENCH model only.
+    # These are numerical stabilization assumptions, not measured servos.
+    j6_pre=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"gripper")
+    j6_dof=int(model.jnt_dofadr[j6_pre])
+    model.dof_armature[j6_dof]=max(float(model.dof_armature[j6_dof]),args.j6_armature)
+    model.dof_damping[j6_dof]=max(float(model.dof_damping[j6_dof]),args.j6_joint_damping)
     data=mujoco.MjData(model)
     mujoco.mj_resetData(model,data)
     qids=[];dids=[];lows=[];highs=[]
@@ -115,6 +123,7 @@ def build_model(args):
         mujoco.mj_forward(model,data)
         gap=min((bench.signed_pair_gap(model,data,g,table)
                  for g in robot_geoms),default=float("inf"))
+        # Initial jaw/open clearance must be restored before trial.
         if gap < args.table_clearance_mm/1000.:
             rejected["rejected"]+=1
             if rejected["max_rejected_clearance_mm"] is None or (
@@ -124,7 +133,10 @@ def build_model(args):
         return True
     pose,search=bench.select_bench_pose(
         model,data,freeq,open_angle,closed_angle,jawq,
-        fixed,moving,obj,candidate_validator=table_for_candidate)
+        fixed,moving,obj,candidate_validator=table_for_candidate,
+        min_fixed_gap_m=args.min_initial_fixed_gap_mm/1000.,
+        max_fixed_gap_m=args.max_initial_fixed_gap_mm/1000.,
+        prefer_small_moving_gap=True)
     if pose is None:
         return None,{"status":"NO_TABLE_CLEAR_TWO_JAW_SETUP",
                      "search":search,"table_clearance_search":rejected,
@@ -213,6 +225,9 @@ def execute(args):
           "no_fixture_force":True,"no_object_pose_reset_during_steps":True,
           "table_is_mocap_fixed_during_simulation":True,
           "j5_deg":args.j5_deg,"scene":"standalone local table, not saved Episode4",
+          "pose_selection":"priority small moving jaw gap, fixed jaw initial >=2mm",
+          "j6_armature_kgm2_assumed":args.j6_armature,
+          "j6_damping_nmsrad_assumed":args.j6_joint_damping,
           "object_mass_provisional_kg":.05,
           "object_diameter_provisional_m":.035,
           "object_length_provisional_m":.097,
@@ -510,17 +525,22 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
-    p.add_argument("--duration-s",type=float,default=5.0)
-    p.add_argument("--approach-mm",type=float,default=15.)
+    p.add_argument("--duration-s",type=float,default=5.2)
+    p.add_argument("--approach-mm",type=float,default=0.,
+                   help="Do not move arm during baseline. The Muhi is placed closer by search.")
+    p.add_argument("--min-initial-fixed-gap-mm",type=float,default=2.)
+    p.add_argument("--max-initial-fixed-gap-mm",type=float,default=25.)
+    p.add_argument("--j6-armature",type=float,default=.002)
+    p.add_argument("--j6-joint-damping",type=float,default=.06)
     p.add_argument("--approach-s",type=float,default=1.0)
     p.add_argument("--approach-clearance-mm",type=float,default=.5)
     p.add_argument("--table-clearance-mm",type=float,default=2.0)
     p.add_argument("--lift-mm",type=float,default=5.0)
     p.add_argument("--settle-s",type=float,default=.35)
-    p.add_argument("--close-s",type=float,default=1.8)
-    p.add_argument("--kp",type=float,default=.6)
-    p.add_argument("--kd",type=float,default=.2)
-    p.add_argument("--max-torque",type=float,default=.15)
+    p.add_argument("--close-s",type=float,default=2.2)
+    p.add_argument("--kp",type=float,default=.15)
+    p.add_argument("--kd",type=float,default=.08)
+    p.add_argument("--max-torque",type=float,default=.06)
     p.add_argument("--video",action="store_true")
     p.add_argument("--fps",type=float,default=12.)
     p.add_argument("--render-every",type=int,default=20)
@@ -531,6 +551,8 @@ def main():
                 args.approach_mm,args.approach_s,args.approach_clearance_mm)):
         p.error("parameters must be finite")
     if (args.fps<=0 or args.table_clearance_mm<0 or
+        args.j6_armature<0 or args.j6_joint_damping<0 or
+        not(0.5<=args.min_initial_fixed_gap_mm<args.max_initial_fixed_gap_mm<=35) or
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
         args.approach_s<=0 or args.approach_clearance_mm<0 or
         args.settle_s+args.approach_s+args.close_s>=args.duration_s):
