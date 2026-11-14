@@ -1,0 +1,125 @@
+"""Focused tests for the SO-101 J5/J6 Wrist camera L-bracket.
+
+Never accesses real hardware. Uses a tiny synthetic MuJoCo scene.
+"""
+from __future__ import annotations
+
+import ast
+import inspect
+import math
+import sys
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import wrist_camera_sim as wrist
+
+
+class WristCameraTests(unittest.TestCase):
+    def test_mount_validation_and_defaults(self):
+        self.assertEqual(wrist.validate_mount(wrist.DEFAULT_MOUNT_POS,(0,0,0))[0],
+                         (0.0,0.022,-0.016))
+        for xyz,rpy in [((0,0,100),(0,0,0)),
+                        ((math.nan,0,0),(0,0,0)),
+                        ((0,0,0),(0,math.inf,0)),
+                        ((0,0),(0,0,0))]:
+            with self.subTest(xyz=xyz,rpy=rpy),self.assertRaises(ValueError):
+                wrist.validate_mount(xyz,rpy)
+
+    def test_bent_mount_has_connected_angled_riser_and_shelf(self):
+        foot=wrist.FOOT_POS
+        knee=wrist.KNEE_POS
+        elbow=wrist.ELBOW_POS
+        end=wrist.SHELF_END_POS
+        self.assertLess(abs(knee[1]-foot[1]),0.016)
+        self.assertLess(abs(knee[2]-foot[2]),0.009)
+        self.assertGreater(elbow[1],knee[1])
+        self.assertGreater(elbow[2],knee[2])
+        self.assertGreater(end[1],elbow[1])
+        # Photo: outer camera shelf is tilted, NOT parallel to J5 foot.
+        self.assertLess(end[2], elbow[2] - 0.012)
+        self.assertAlmostEqual(foot[2], knee[2])
+        self.assertLess(abs(wrist.BOARD_POS[1]-end[1]),0.01)
+        centre,size,quat=wrist.between_endpoints(knee,elbow,.014,.006)
+        self.assertGreater(size[1],.015)
+        self.assertAlmostEqual(sum(q*q for q in quat),1.,places=6)
+        # PCB lies on the tilted shelf rather than floating above its end.
+        slope=(end[2]-elbow[2])/(end[1]-elbow[1])
+        expected=elbow[2]+slope*(wrist.BOARD_POS[1]-elbow[1])
+        self.assertAlmostEqual(wrist.BOARD_POS[2],expected,delta=0.002)
+
+    def test_optical_camera_looks_at_target(self):
+        origin=wrist.BOARD_POS
+        target=wrist.DEFAULT_LOOK_AT
+        x,y,z=wrist.camera_axes(origin,target)
+        v=wrist.normalize(tuple(target[i]-origin[i] for i in range(3)))
+        self.assertAlmostEqual(sum(-z[i]*v[i] for i in range(3)),1.0,places=6)
+        self.assertAlmostEqual(sum(x[i]*y[i] for i in range(3)),0.0,places=6)
+        quat=wrist.quat_from_basis(x,y,z)
+        self.assertAlmostEqual(sum(a*a for a in quat),1.0,places=6)
+
+    def test_unique_collision_names(self):
+        self.assertEqual(len(wrist.COLLISION_NAMES),
+                         len(set(wrist.COLLISION_NAMES)))
+        self.assertEqual(len(wrist.COLLISION_NAMES),5)
+        source=inspect.getsource(wrist.install)
+        self.assertIn("COLLISION_NAMES[i]",source)
+        self.assertIn("COLLISION_NAMES[3]",source)
+        self.assertIn("COLLISION_NAMES[4]",source)
+
+    def test_mujoco_build_and_j5_follow(self):
+        import mujoco
+        spec=mujoco.MjSpec()
+        spec.compiler.discardvisual=False
+        gripper=spec.worldbody.add_body(name="gripper_link",pos=[0,0,.2])
+        gripper.add_joint(name="wrist_roll",type=mujoco.mjtJoint.mjJNT_HINGE,
+                          axis=[0,0,1])
+        gripper.add_geom(name="robot_mount",type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                         size=[.012],mass=.1,contype=0,conaffinity=0)
+        wrist.install(spec)
+        model=spec.compile()
+        data=mujoco.MjData(model)
+        cid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
+        self.assertGreaterEqual(cid,0)
+        self.assertGreaterEqual(mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.MOUNT_INSPECTION_CAMERA),0)
+        for name in wrist.COLLISION_NAMES:
+            gid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,name)
+            self.assertGreaterEqual(gid,0)
+            self.assertEqual(model.geom_contype[gid],1)
+            self.assertEqual(model.geom_group[gid],3)
+        for name in ("foot","diagonal","shelf","pcb","lens"):
+            gid=mujoco.mj_name2id(
+                model,mujoco.mjtObj.mjOBJ_GEOM,"r2s_wrist_visual_"+name)
+            self.assertGreaterEqual(gid,0)
+            self.assertEqual(model.geom_contype[gid],0)
+            self.assertEqual(model.geom_group[gid],0)
+        mujoco.mj_forward(model,data)
+        # Camera PCB and outer shelf must have matching rotation matrices.
+        pcbid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                "r2s_wrist_visual_pcb")
+        shelfid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                  "r2s_wrist_visual_shelf")
+        np.testing.assert_allclose(data.geom_xmat[pcbid],data.geom_xmat[shelfid],atol=1e-6)
+        np.testing.assert_allclose(data.cam_xmat[cid],data.geom_xmat[pcbid],atol=1e-6)
+        before=data.cam_xmat[cid].copy()
+        qid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"wrist_roll")
+        data.qpos[model.jnt_qposadr[qid]]=math.pi/2
+        mujoco.mj_forward(model,data)
+        self.assertGreater(np.linalg.norm(data.cam_xmat[cid]-before),1e-3)
+        np.testing.assert_allclose(data.cam_xmat[cid],data.geom_xmat[shelfid],atol=1e-6)
+
+    def test_install_twice_fails(self):
+        import mujoco
+        spec=mujoco.MjSpec()
+        g=spec.worldbody.add_body(name="gripper_link")
+        g.add_geom(type=mujoco.mjtGeom.mjGEOM_SPHERE,size=[.01])
+        wrist.install(spec)
+        with self.assertRaises(ValueError):
+            wrist.install(spec)
+
+
+if __name__=="__main__":
+    unittest.main()
