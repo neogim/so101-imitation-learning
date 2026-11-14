@@ -17,15 +17,16 @@ import numpy as np
 def plan_fixed_fingertip_approach(
     model, data, initial_pose, qpos_ids, object_geoms,
     fixed_geoms, other_robot_geoms, table_geom, tcp_site_id,
-    limits, *, target_gap_mm=0.03, tip_zone_mm=30.0,
+    limits, *, target_gap_mm=-0.02, tip_zone_mm=30.0,
     clearance_mm=4.0, max_steps=500,
 ):
     """Coordinate-descent motion on J1-J4; keep J5 and J6 fixed.
 
     Stop when fixed-jaw gap <= target AND witness belongs to the tip
     zone. Any other robot link stays >= clearance from bottle and table.
-    A small nonnegative final gap is deliberate: *true* contact requires
-    a separate physics/force confirmation.
+    A very small negative gap (default -0.02 mm) deliberately allows the
+    MuJoCo solver to develop contact force. This remains a kinematic
+    simulation-only diagnostic, not safe physical force control.
     """
     qs=np.asarray(qpos_ids,dtype=int)
     pose=np.asarray(initial_pose,dtype=float).copy()
@@ -71,7 +72,7 @@ def plan_fixed_fingertip_approach(
     def acceptable(m):
         return (m["other_robot_gap_mm"]>=clearance_mm and
                 m["robot_table_gap_mm"]>=clearance_mm and
-                m["fixed_gap_mm"]>=-0.01 and
+                m["fixed_gap_mm"]>=-0.05 and
                 m["witness_tcp_distance_mm"]<=tip_zone_mm)
 
     current=measure(pose)
@@ -104,7 +105,7 @@ def plan_fixed_fingertip_approach(
                         m=measure(proposed)
                         if (m["other_robot_gap_mm"]<clearance_mm or
                             m["robot_table_gap_mm"]<clearance_mm or
-                            m["fixed_gap_mm"]<-.01):
+                            m["fixed_gap_mm"]<-.05):
                             continue
                         # Reject root/palm contact, not merely bad TCP.
                         # Early approach may have root witness, but require
@@ -144,7 +145,7 @@ def plan_fixed_fingertip_approach(
             np.degrees(pose-qhome).tolist(),
         "accepted_waypoints":len(path)-1,
         "physical_contact_force_confirmed":False,
-        "meaning":"geometric approach only; physical contact not yet proved",
+        "meaning":"small bounded geometric overlap; physical force confirmation required",
     }
     data.qpos[qs]=pose
     mujoco.mj_forward(model,data)
