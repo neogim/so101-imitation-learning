@@ -60,13 +60,14 @@ def triangles_to_surface_boxes(vertices,triangles,pitch_fine,pitch_coarse,max_bo
         # Merge adjacent x voxels, preserving each y,z slice. This avoids
         # dozens of contacts along continuous sections of a finger.
         last=None
+        zone="fine" if pitch==pitch_fine else "coarse"
         for ix,iy,iz in sorted(map(tuple,voxels),key=lambda q:(q[1],q[2],q[0])):
             if last and last["pitch"]==pitch and last["iy"]==iy and \
                last["iz"]==iz and ix==last["ixmax"]+1:
                 last["ixmax"]=ix
             else:
-                last={"pitch":float(pitch),"ixmin":ix,"ixmax":ix,
-                      "iy":iy,"iz":iz}
+                last={"pitch":float(pitch),"zone":zone,
+                      "ixmin":ix,"ixmax":ix,"iy":iy,"iz":iz}
                 rows.append(last)
     if not rows or len(rows)>max_boxes:
         raise RuntimeError(
@@ -79,7 +80,23 @@ def triangles_to_surface_boxes(vertices,triangles,pitch_fine,pitch_coarse,max_bo
                          (r["iy"]+.5)*p,(r["iz"]+.5)*p])
         half=np.array([(.5*(r["ixmax"]-r["ixmin"]+1))*p,
                        p*.5,p*.5])
-        # Very slight expansion seals numeric gaps between adjacent cells.
+        # The coarse cells must not bridge across the finely modeled
+        # 8--20mm pocket. Cut boxes at the boundaries before applying
+        # the slight numerical overlap.
+        bottom,top=center[2]-half[2],center[2]+half[2]
+        if r["zone"]=="coarse":
+            if center[2]<8.:
+                top=min(top,8.)
+            elif center[2]>=20.:
+                bottom=max(bottom,20.)
+        else:
+            bottom=max(bottom,8.)
+            top=min(top,20.)
+        if top<=bottom:
+            continue
+        center[2]=(bottom+top)*.5
+        half[2]=(top-bottom)*.5
+        # Only 0.5 percent overlap to avoid gaps along box edges.
         half*=1.005
         boxes.append({"center_tcp_mm":center,
                       "half_mm":half,"pitch_mm":p})
@@ -173,9 +190,9 @@ def main():
     ap.add_argument("--out",type=Path,required=True)
     ap.add_argument("--home-deg",nargs=5,type=float,
                     default=[-30.,-30.,45.,-20.,-90.])
-    ap.add_argument("--fine-mm",type=float,default=2.)
-    ap.add_argument("--coarse-mm",type=float,default=5.)
-    ap.add_argument("--max-boxes",type=int,default=1600)
+    ap.add_argument("--fine-mm",type=float,default=3.)
+    ap.add_argument("--coarse-mm",type=float,default=6.)
+    ap.add_argument("--max-boxes",type=int,default=2400)
     args=ap.parse_args()
     if args.out.exists(): ap.error("--out already exists")
     if not (1.5<=args.fine_mm<=5. and 3.<=args.coarse_mm<=10.):
@@ -215,7 +232,8 @@ def main():
         # Disable the original whole-mesh collision (visual mesh stays).
         # Never disable the moving jaw or unrelated gripper geoms.
         matches=[g for g in source.geoms
-                 if getattr(g,"meshname","").startswith(base.FINGER_MESH)]
+                 if str(getattr(g,"meshname","") or "").startswith(
+                     base.FINGER_MESH)]
         if len(matches)!=1:
             raise RuntimeError(
                 f"Expected exactly one fixed finger mesh spec geom, got {len(matches)}")
