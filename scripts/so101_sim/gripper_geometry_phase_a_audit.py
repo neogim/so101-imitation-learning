@@ -82,7 +82,9 @@ def sample_distance_mm(a,b):
         a=a[np.linspace(0,len(a)-1,min(700,len(a)),dtype=int)]
         b=b[np.linspace(0,len(b)-1,min(700,len(b)),dtype=int)]
         minimum=float("inf")
-        for chunk in np.array_split(a,10):
+        for chunk in np.array_split(a,min(10,len(a))):
+            if not len(chunk):
+                continue
             delta=chunk[:,None,:]-b[None,:,:]
             minimum=min(minimum,float(np.min(np.sum(delta*delta,axis=2))))
         return math.sqrt(minimum)*1000
