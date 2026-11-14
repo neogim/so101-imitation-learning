@@ -157,6 +157,23 @@ def build_model(args):
         install_fixed_surface_proxy_bench(spec)
         if getattr(args,"fixed_jaw_surface_proxy",False) else
         {"enabled":False})
+    if args.simple_grasp:
+        # URDF declares PositionJointInterface for gripper but MuJoCo's
+        # URDF compiler does not create a servo automatically. Install one
+        # explicitly, leaving qpos integration and all contacts physical.
+        servo=spec.add_actuator(
+            name="j6_physical_position_servo",target="gripper")
+        servo.trntype=mujoco.mjtTrn.mjTRN_JOINT
+        servo.dyntype=mujoco.mjtDyn.mjDYN_NONE
+        servo.gaintype=mujoco.mjtGain.mjGAIN_FIXED
+        servo.biastype=mujoco.mjtBias.mjBIAS_AFFINE
+        servo.gainprm[0]=args.kp
+        servo.biasprm[1]=-args.kp
+        servo.biasprm[2]=-args.kd
+        servo.inheritrange=0.
+        servo.ctrllimited=False
+        servo.forcelimited=True
+        servo.forcerange[:]=[-args.max_torque,args.max_torque]
     model=spec.compile()
     # Reduce camera near clipping ONLY in this diagnostic benchmark.
     wrist_near_original=float(model.vis.map.znear)
@@ -187,6 +204,14 @@ def build_model(args):
     model.dof_damping[j6_dof]=max(float(model.dof_damping[j6_dof]),args.j6_joint_damping)
     data=mujoco.MjData(model)
     mujoco.mj_resetData(model,data)
+    if args.simple_grasp:
+        servo_id=mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_ACTUATOR,
+            "j6_physical_position_servo")
+        if servo_id<0:
+            raise RuntimeError("J6 position servo not compiled")
+        if abs(float(model.actuator_gainprm[servo_id,0])-args.kp)>1e-6:
+            raise RuntimeError("J6 position servo gains missing")
     qids=[];dids=[];lows=[];highs=[]
     for name in r2s.JOINTS:
         q,d,limits=bench.joint_addr(model,name)
@@ -419,6 +444,10 @@ def execute(args):
     if args.simple_grasp:
         data.qpos[jawq]=j6_open_hold_angle
         data.qvel[jawd]=0.
+        servo_id=mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_ACTUATOR,
+            "j6_physical_position_servo")
+        data.ctrl[servo_id]=j6_open_hold_angle
         mujoco.mj_forward(model,data)
     # Approach with a fingertip-area reference, not the gripper motor body.
     # The J1-J4 move is simulation-only prescribed IK, never a servo command.
@@ -907,6 +936,16 @@ def execute(args):
                 data.qvel[jawd]=0.
                 j6_open_hold_steps+=1
                 commanded_torque=0.
+            elif args.simple_grasp:
+                # A genuine MuJoCo joint-transmission position servo.
+                # The motor applies force through qfrc_actuator during
+                # mj_step. Do NOT directly edit J6 qpos or qvel here.
+                data.ctrl[servo_id]=float(np.clip(
+                    demand,closed_angle,j6_open_hold_angle))
+                commanded_torque=float(np.clip(
+                    args.kp*(data.ctrl[servo_id]-data.qpos[jawq])-
+                    args.kd*data.qvel[jawd],
+                    -args.max_torque,args.max_torque))
             else:
                 torque=args.kp*(demand-data.qpos[jawq])-args.kd*data.qvel[jawd]
                 torque_cap=(args.j6_precontact_max_torque
@@ -979,6 +1018,8 @@ def execute(args):
             if preclose:
                 data.qpos[jawq]=j6_open_hold_angle
                 data.qvel[jawd]=0.
+                if args.simple_grasp:
+                    data.ctrl[servo_id]=j6_open_hold_angle
             mujoco.mj_forward(model,data)
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
@@ -1482,6 +1523,12 @@ def execute(args):
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_dynamics_diagnostic":j6_dynamics,
         "simple_grasp_mode":bool(args.simple_grasp),
+        "j6_actuation_method":(
+            "MuJoCo compiled position actuator via data.ctrl"
+            if args.simple_grasp else "manual qfrc_applied torque PD"),
+        "j6_servo_actuator_exists":bool(args.simple_grasp),
+        "j6_servo_max_force_nm":(
+            args.max_torque if args.simple_grasp else None),
         "geometric_jaw_overlap_abort_enabled":not args.simple_grasp,
         "geometric_jaw_overlap_is_not_solver_contact":True,
         "jaw_to_jaw_collision_physics_preserved":True,
@@ -1728,10 +1775,10 @@ def main():
         args.close_s=max(args.close_s,3.5)
         args.duration_s=max(args.duration_s,
             args.settle_s+args.j234_s+args.approach_s+args.close_s+1.5)
-        args.kp=.8
-        args.kd=.08
-        args.j6_precontact_max_torque=.25
-        args.max_torque=.25
+        args.kp=1.5
+        args.kd=.12
+        args.j6_precontact_max_torque=.8
+        args.max_torque=.8
     if not (5<=args.j6_position_speed_deg_s<=60):
         p.error("J6 position setpoint speed must be 5--60 deg/s")
     if not (0 <= args.target_grasp_depth_min_mm <
