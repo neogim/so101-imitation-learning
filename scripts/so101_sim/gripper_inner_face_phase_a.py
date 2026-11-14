@@ -63,7 +63,11 @@ def face_pair(f,fn,m,mn):
         return dict(pair_distance_mm=None,face_angle_deg=None,
                     fixed_normal_toward_moving_cos=None,
                     moving_normal_toward_fixed_cos=None,
-                    pair_count=0)
+                    pair_count=0,
+                    fixed_face_center_world_m=None,
+                    moving_face_center_world_m=None,
+                    fixed_outward_normal_world=None,
+                    moving_outward_normal_world=None)
     diff=m[None,:,:]-f[:,None,:]
     distances=np.linalg.norm(diff,axis=-1)
     valid=distances>1e-7
@@ -76,7 +80,11 @@ def face_pair(f,fn,m,mn):
         return dict(pair_distance_mm=None,face_angle_deg=None,
                     fixed_normal_toward_moving_cos=None,
                     moving_normal_toward_fixed_cos=None,
-                    pair_count=0)
+                    pair_count=0,
+                    fixed_face_center_world_m=None,
+                    moving_face_center_world_m=None,
+                    fixed_outward_normal_world=None,
+                    moving_outward_normal_world=None)
     dist=np.where(facing,distances,np.inf)
     i,j=np.unravel_index(np.argmin(dist),dist.shape)
     # 0deg means parallel normals; 180deg means opposing normals.
