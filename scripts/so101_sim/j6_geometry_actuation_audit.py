@@ -151,51 +151,93 @@ def run(args):
                 min((c["penetration_mm"] for c in active), default=0.),
         })
 
-    # Dynamic J6 only, object-free. Identical provisional armature/damping
-    # and PD default as the existing grasp PoC, for direct comparison.
+    # Separate the three hypotheses with ONE run / one Mac command:
+    # (1) prior low-torque PD, (2) same torque with gravity/bias feedforward,
+    # (3) compensated torque with a larger diagnostic saturation bound.
+    # NO Muhi or table, same joint pose / same URDF per comparison.
     model.dof_armature[jawd] = max(float(model.dof_armature[jawd]), args.armature)
     model.dof_damping[jawd] = max(float(model.dof_damping[jawd]), args.damping)
-    mujoco.mj_resetData(model, data)
-    data.qpos[:] = initial_state
-    data.qvel[:] = 0.
-    mujoco.mj_forward(model, data)
-    dynamic, peak_j6_overrun_deg = [], 0.
-    for step in range(int(math.ceil(args.duration_s / args.dt))):
-        t = float(data.time)
-        progress = min(1., t / args.close_s)
-        smooth = progress * progress * (3.-2.*progress)
-        target = open_angle + smooth * (close_angle - open_angle)
-        # The no-object test holds J1-J5 at their reference pose.
-        data.qpos[qids] = q_hold
-        data.qvel[d_hold] = 0.
-        data.qfrc_applied[:] = 0.
-        desired_torque = (args.kp * (target - data.qpos[jawq])
-                          - args.kd * data.qvel[jawd])
-        applied = float(np.clip(desired_torque, -args.torque_nm, args.torque_nm))
-        data.qfrc_applied[jawd] = applied
-        mujoco.mj_step(model, data)
-        solver_contacts = current_jaw_contact_rows(model, data, fixed, moving)
-        # Snapshot before mj_forward: constraints are from the just-solved step.
-        data.qpos[qids] = q_hold
-        data.qvel[d_hold] = 0.
+    cases = (
+        ("baseline_pd_015", False, args.torque_nm),
+        ("bias_comp_pd_015", True, args.torque_nm),
+        ("bias_comp_pd_060", True, args.comparison_torque_nm),
+    )
+    all_dynamic = []
+    case_results = []
+    for case_name, bias_compensated, torque_limit in cases:
+        mujoco.mj_resetData(model, data)
+        data.qpos[:] = initial_state
+        data.qvel[:] = 0.
         mujoco.mj_forward(model, data)
-        if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
-            raise FloatingPointError(f"Nonfinite J6 simulation at step {step}")
-        angle_deg = float(math.degrees(data.qpos[jawq]))
-        peak_j6_overrun_deg = max(
-            peak_j6_overrun_deg,
-            max(0., angle_deg-math.degrees(open_angle),
-                math.degrees(close_angle)-angle_deg))
-        dynamic.append({
-            "step": step, "time_s": float(data.time),
-            "j6_target_deg": math.degrees(target),
-            "j6_actual_deg": angle_deg,
-            "j6_velocity_rad_s": float(data.qvel[jawd]),
-            "j6_commanded_torque_nm": applied,
-            "jaw_solver_contact_count": len(solver_contacts),
-            "jaw_contact_max_normal_force_n": max(
-                (c["normal_force_n"] for c in solver_contacts), default=0.),
+        case_rows, peak_j6_overrun_deg = [], 0.
+        start_bias = float(data.qfrc_bias[jawd])
+        for step in range(int(math.ceil(args.duration_s / args.dt))):
+            t = float(data.time)
+            progress = min(1., t / args.close_s)
+            smooth = progress * progress * (3.-2.*progress)
+            target = open_angle + smooth * (close_angle - open_angle)
+            data.qpos[qids] = q_hold
+            data.qvel[d_hold] = 0.
+            mujoco.mj_forward(model, data)
+            data.qfrc_applied[:] = 0.
+            bias = float(data.qfrc_bias[jawd])
+            feedback = (args.kp * (target - data.qpos[jawq])
+                        - args.kd * data.qvel[jawd])
+            # MuJoCo's qfrc_bias is the generalized force of gravity and
+            # Coriolis terms, NOT a motor command. It must be included as
+            # feedforward to compensate opposing gravity in this diagnosis.
+            desired_torque = feedback + (bias if bias_compensated else 0.)
+            applied = float(np.clip(desired_torque, -torque_limit, torque_limit))
+            data.qfrc_applied[jawd] = applied
+            mujoco.mj_step(model, data)
+            solver_contacts = current_jaw_contact_rows(model, data, fixed, moving)
+            data.qpos[qids] = q_hold
+            data.qvel[d_hold] = 0.
+            mujoco.mj_forward(model, data)
+            if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
+                raise FloatingPointError(
+                    f"Nonfinite J6 simulation: {case_name} step {step}")
+            angle_deg = float(math.degrees(data.qpos[jawq]))
+            peak_j6_overrun_deg = max(
+                peak_j6_overrun_deg,
+                max(0., angle_deg-math.degrees(open_angle),
+                    math.degrees(close_angle)-angle_deg))
+            case_rows.append({
+                "case": case_name, "step": step, "time_s": float(data.time),
+                "j6_target_deg": math.degrees(target),
+                "j6_actual_deg": angle_deg,
+                "j6_velocity_rad_s": float(data.qvel[jawd]),
+                "j6_bias_nm": bias,
+                "j6_pd_feedback_nm": float(feedback),
+                "j6_requested_torque_nm": float(desired_torque),
+                "j6_commanded_torque_nm": applied,
+                "torque_limit_nm": float(torque_limit),
+                "bias_compensated": bool(bias_compensated),
+                "jaw_solver_contact_count": len(solver_contacts),
+                "jaw_contact_max_normal_force_n": max(
+                    (c["normal_force_n"] for c in solver_contacts),
+                    default=0.),
+            })
+        all_dynamic.extend(case_rows)
+        last = case_rows[-1]
+        case_results.append({
+            "case": case_name,
+            "bias_compensated": bool(bias_compensated),
+            "torque_limit_nm": float(torque_limit),
+            "j6_initial_bias_nm": start_bias,
+            "final_target_deg": last["j6_target_deg"],
+            "final_actual_deg": last["j6_actual_deg"],
+            "max_abs_tracking_error_deg": max(abs(
+                row["j6_actual_deg"]-row["j6_target_deg"])
+                for row in case_rows),
+            "max_joint_limit_overrun_deg": peak_j6_overrun_deg,
+            "torque_saturation_fraction": (
+                sum(abs(row["j6_commanded_torque_nm"]) >=
+                    .99*torque_limit for row in case_rows)/len(case_rows)),
+            "steps_with_jaw_contact": sum(
+                row["jaw_solver_contact_count"]>0 for row in case_rows),
         })
+    dynamic = all_dynamic
     args.out.mkdir(parents=True, exist_ok=False)
 
     def write_csv(name, records):
@@ -212,6 +254,7 @@ def run(args):
     write_csv("all_jaw_geom_pairs.csv", pairs)
     write_csv("jaw_solver_contacts.csv", contacts)
     write_csv("j6_dynamic_no_object.csv", dynamic)
+    write_csv("j6_controller_comparison.csv", case_results)
     baseline = kinematic[0]
     self_overlap_at_open = baseline["min_jaw_mesh_gap_mm"]
     summary = {
@@ -238,14 +281,23 @@ def run(args):
         "sweep_steps": len(kinematic),
         "sweep_steps_with_active_jaw_contacts": sum(
             r["jaw_solver_contact_count"] > 0 for r in kinematic),
-        "dynamic_j6_initial_deg": dynamic[0]["j6_actual_deg"],
-        "dynamic_j6_last_deg": dynamic[-1]["j6_actual_deg"],
-        "dynamic_last_target_deg": dynamic[-1]["j6_target_deg"],
-        "dynamic_max_abs_tracking_error_deg": max(
-            abs(r["j6_actual_deg"]-r["j6_target_deg"]) for r in dynamic),
-        "dynamic_max_joint_limit_overrun_deg": peak_j6_overrun_deg,
-        "dynamic_steps_with_jaw_contact": sum(
-            r["jaw_solver_contact_count"] > 0 for r in dynamic),
+        "controller_comparison": case_results,
+        "j6_dof_properties": {
+            "armature_kg_m2": float(model.dof_armature[jawd]),
+            "damping_nm_s_rad": float(model.dof_damping[jawd]),
+            "frictionloss_nm": float(model.dof_frictionloss[jawd]),
+            "stiffness_nm_rad": float(model.jnt_stiffness[
+                mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"gripper")]),
+        },
+        "dynamic_j6_initial_deg": case_results[0]["final_actual_deg"],
+        "dynamic_j6_last_deg": case_results[0]["final_actual_deg"],
+        "dynamic_last_target_deg": case_results[0]["final_target_deg"],
+        "dynamic_max_abs_tracking_error_deg":
+            case_results[0]["max_abs_tracking_error_deg"],
+        "dynamic_max_joint_limit_overrun_deg":
+            case_results[0]["max_joint_limit_overrun_deg"],
+        "dynamic_steps_with_jaw_contact":
+            case_results[0]["steps_with_jaw_contact"],
         "interpretation": (
             "A negative pair distance may arise from overlapping root/collision "
             "hulls, not actual fingertip collision. Inspect witnesses, geom "
@@ -271,11 +323,13 @@ def main():
     p.add_argument("--kp", type=float, default=.15)
     p.add_argument("--kd", type=float, default=.08)
     p.add_argument("--torque-nm", type=float, default=.015)
+    p.add_argument("--comparison-torque-nm", type=float, default=.06)
     args = p.parse_args()
     if not (10 <= args.sweep_count <= 200 and .0001 <= args.dt <= .01
             and args.duration_s > args.close_s > 0
             and args.kp > 0 and args.kd >= 0 and args.torque_nm > 0
-            and args.armature >= 0 and args.damping >= 0):
+            and args.armature >= 0 and args.damping >= 0
+            and args.comparison_torque_nm >= args.torque_nm):
         p.error("invalid simulation or J6 sweep parameters")
     run(args)
 
