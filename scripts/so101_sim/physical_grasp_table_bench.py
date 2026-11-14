@@ -806,6 +806,27 @@ def execute(args):
                         data,camera=wrist.RETRACTED_DIAGNOSTIC_CAMERA,
                         scene_option=wrist_render_option)
                     retracted_image=Image.fromarray(render.render().copy())
+                    if fixed_contact_witness_world_xyz_m is not None:
+                        # Project the predicted fixed-jaw collision witness,
+                        # not a vision-inferred grasp point, onto the wrist
+                        # image. This aids user validation of target selection.
+                        cid=retracted_wrist_camera_id
+                        cp=np.asarray(data.cam_xpos[cid])
+                        cr=np.asarray(data.cam_xmat[cid]).reshape(3,3)
+                        local=cr.T@(np.asarray(
+                            fixed_contact_witness_world_xyz_m)-cp)
+                        dep=-float(local[2])
+                        if dep>1e-6:
+                            fy=math.tan(math.radians(
+                                float(model.cam_fovy[cid]))/2.)
+                            nx=float(local[0]/(dep*fy*(480/360)))
+                            ny=float(local[1]/(dep*fy))
+                            if abs(nx)<=1 and abs(ny)<=1:
+                                u=(nx+1)*240.
+                                v=(1-ny)*180.
+                                d=ImageDraw.Draw(retracted_image)
+                                d.ellipse((u-5,v-5,u+5,v+5),
+                                          outline=(255,90,90),width=2)
                     retracted_wrist_frames.append(retracted_image)
                 cam_pos=np.asarray(data.cam_xpos[wrist_camera_id])
                 cam_rot=np.asarray(
@@ -1016,6 +1037,7 @@ def execute(args):
         "j1_safe_near_contact_gap_mm":j1_safe_near_contact_gap_mm,
         "fixed_contact_witness_world_xyz_m":
             fixed_contact_witness_world_xyz_m,
+        "fixed_target_overlay":"red circle on retracted wrist = MuJoCo collision witness, not RGB object detection",
         "fixed_contact_witness_tcp_distance_mm":
             fixed_contact_witness_tcp_distance_mm,
         "fixed_contact_witness_object_distance_mm":
