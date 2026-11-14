@@ -24,6 +24,7 @@ import numpy as np
 
 import physical_grasp_j6_bench as bench
 import physical_workcell_sim as physical
+import base_shoulder_pair_filter as collision_filter
 import real_to_sim as r2s
 import compare_id1_eye_to_hand as preview
 import wrist_camera_sim as wrist
@@ -138,6 +139,14 @@ def build_model(args):
     moving=bench.owned_collision_geoms(model,bench.MOVING_BODY)
     obj=tuple(physical.geom_id(model,n) for n in physical.DYNAMIC_GEOMS)
     table=physical.geom_id(model,TABLE)
+    collision_policy_details = (
+        collision_filter.apply_base_shoulder_pair_filter(
+            model, object_geoms=obj, table_geom=table)
+        if args.exclude_base_shoulder_contact else {
+            "mode": "ORIGINAL_MODEL_CONTACTS",
+            "source_urdf_modified": False,
+            "production_setting": False,
+        })
     table_body_id=mujoco.mj_name2id(
         model,mujoco.mjtObj.mjOBJ_BODY,"j6_bench_table_mocap")
     table_mocap_id=int(model.body_mocapid[table_body_id])
@@ -218,7 +227,8 @@ def build_model(args):
           "table_top_world_z_m":table_top,
           "muhi_center_world_xyz_m":list(map(float,center)),
           "object_bottom_world_z_m":float(center[2])-OBJECT_HALF_LENGTH_M,
-          "table_support_gap_mm":.5}
+          "table_support_gap_mm":.5,
+          "collision_pair_policy":collision_policy_details}
     if min(gap_fixed,gap_moving)<.0005:
         return None,{"status":"INITIAL_JAW_INTERSECTION","diagnostic":diag}
     if robot_gap<args.table_clearance_mm/1000.:
@@ -1209,6 +1219,9 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
+    p.add_argument("--exclude-base-shoulder-contact",action="store_true",
+                   help="Experimental only: mask base-vs-shoulder contacts; "
+                        "preserve Muhi, table, finger collisions")
     p.add_argument("--wrist-near-ratio",type=float,default=.001,
                    help="MuJoCo model.vis.map.znear ratio for camera near clip")
     p.add_argument("--wrist-retract-mm",type=float,default=5.,
