@@ -262,6 +262,8 @@ def execute(args):
     j1_precontact_direction=0
     j1_precontact_min_fixed_gap_mm=float("inf")
     j1_precontact_contact_steps=0
+    j1_precontact_force_confirmed_steps=0
+    j1_precontact_max_fixed_normal_force_n=0.
     j1_precontact_motion_steps=0
     j1_precontact_exceeded_tilt=False
     grip_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,bench.FINGER_BODY)
@@ -372,8 +374,9 @@ def execute(args):
                     j1_precontact_exceeded_tilt=True
                     j1_precontact_reason="object_tilt_exceeded"
                 elif fixed_gap<=args.j1_contact_gap_mm/1000.:
-                    j1_precontact_reached=True
-                    j1_precontact_reason="fixed_jaw_geometry_shallow_contact"
+                    # A geometric intersection is NOT proof of a load-
+                    # bearing constraint. Wait for measured contact force.
+                    j1_precontact_reason="geometric_target_reached_waiting_for_force"
                 elif not j1_precontact_reached and not j1_precontact_exceeded_tilt:
                     moved=safe_j1_contact_step()
                     if not moved:
@@ -387,6 +390,12 @@ def execute(args):
             elif not j1_precontact_reached or j1_precontact_exceeded_tilt:
                 # Do not close J6 when the opposing jaw did not reach Muhi.
                 stage="j1_precontact_failed"
+                if (not j1_precontact_reached and
+                    not j1_precontact_exceeded_tilt and
+                    j1_precontact_reason in
+                    ("geometric_target_reached_waiting_for_force",
+                     "fixed_jaw_contact_without_force")):
+                    j1_precontact_reason="no_effective_fixed_jaw_force"
                 demand=open_angle
             else:
                 u=min(1.,max(0.,(t-args.settle_s-args.approach_s)/args.close_s))
@@ -439,10 +448,23 @@ def execute(args):
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
             contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
-            if stage=="j1_precontact" and counts["fixed"]>0:
-                j1_precontact_contact_steps+=1
-                j1_precontact_reached=True
-                j1_precontact_reason="fixed_jaw_physical_contact"
+            fixed_normal_n=sum(
+                max(0.,float(c["normal_force_n"])) for c in contacts
+                if c["kind"]=="fixed")
+            j1_precontact_max_fixed_normal_force_n=max(
+                j1_precontact_max_fixed_normal_force_n,fixed_normal_n)
+            if stage=="j1_precontact":
+                if counts["fixed"]>0:
+                    j1_precontact_contact_steps+=1
+                if fixed_normal_n>=args.j1_min_fixed_normal_force_n:
+                    j1_precontact_force_confirmed_steps+=1
+                else:
+                    j1_precontact_force_confirmed_steps=0
+                    if counts["fixed"]>0 and not j1_precontact_reached:
+                        j1_precontact_reason="fixed_jaw_contact_without_force"
+                if j1_precontact_force_confirmed_steps>=args.j1_force_hold_steps:
+                    j1_precontact_reached=True
+                    j1_precontact_reason="fixed_jaw_force_confirmed"
             for c in contacts:contactrows.append({"step":i,"time_s":float(data.time),**c})
             rotation=np.empty(9)
             mujoco.mju_quat2Mat(rotation,data.qpos[freeq+3:freeq+7])
@@ -452,6 +474,7 @@ def execute(args):
                 "j1_rad":float(data.qpos[qids[0]]),
                 "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
                 "j1_precontact_reached":bool(j1_precontact_reached),
+                "fixed_jaw_normal_force_n":float(fixed_normal_n),
                 "j6_rad":float(data.qpos[jawq]),
                 "tcp_gripper_z_m":float(data.xpos[grip_body,2]),
                 "gripper_lift_mm":float((data.xpos[grip_body,2]-mj_initial_gripper_z)*1000.),
@@ -552,6 +575,7 @@ def execute(args):
         "jaw_overpenetration_step":contact_overpenetration_step,
         "jaw_overpenetration_threshold_mm":float(args.abort_jaw_penetration_mm),
         "j1_precontact_enabled":True,
+        "j1_control_note":"J1 advances gently to -0.25mm max geometry; J6 runs only after sustained measured fixed-jaw normal force; no force -> no J6.",
         "j1_precontact_reached":bool(j1_precontact_reached),
         "j1_precontact_reason":j1_precontact_reason,
         "j1_precontact_direction":int(j1_precontact_direction),
@@ -561,6 +585,12 @@ def execute(args):
             float(j1_precontact_min_fixed_gap_mm)
             if math.isfinite(j1_precontact_min_fixed_gap_mm) else None),
         "j1_precontact_physical_contact_steps":int(j1_precontact_contact_steps),
+        "j1_precontact_max_fixed_normal_force_n":
+            float(j1_precontact_max_fixed_normal_force_n),
+        "j1_precontact_force_confirmed_consecutive_steps":
+            int(j1_precontact_force_confirmed_steps),
+        "j1_min_fixed_normal_force_n":float(args.j1_min_fixed_normal_force_n),
+        "j1_force_hold_steps":int(args.j1_force_hold_steps),
         "j1_precontact_motion_steps":int(j1_precontact_motion_steps),
         "j1_precontact_tilt_abort":bool(j1_precontact_exceeded_tilt),
         "approach_requested_mm":float(args.approach_mm),
@@ -644,9 +674,12 @@ def main():
                    help="Time reserved for gentle J1 fixed-jaw contact")
     p.add_argument("--j1-step-deg",type=float,default=.012)
     p.add_argument("--j1-max-deg",type=float,default=8.)
-    p.add_argument("--j1-contact-gap-mm",type=float,default=-.03,
-                   help="Slight signed overlap to obtain actual fixed contact; -0.03mm")
-    p.add_argument("--j1-max-penetration-mm",type=float,default=.15)
+    p.add_argument("--j1-contact-gap-mm",type=float,default=-.25,
+                   help="Guarded J1 geometric limit (signed distance, -0.25mm); contact force required for J6")
+    p.add_argument("--j1-min-fixed-normal-force-n",type=float,default=.02,
+                   help="Minimum actual fixed-jaw normal force to enable J6")
+    p.add_argument("--j1-force-hold-steps",type=int,default=5)
+    p.add_argument("--j1-max-penetration-mm",type=float,default=.4)
     p.add_argument("--j1-moving-clearance-mm",type=float,default=.5)
     p.add_argument("--j1-max-tilt-deg",type=float,default=8.)
     p.add_argument("--abort-jaw-penetration-mm",type=float,default=1.5)
@@ -668,7 +701,8 @@ def main():
                 args.approach_mm,args.approach_s,args.approach_clearance_mm,
                 args.j1_step_deg,args.j1_max_deg,args.j1_contact_gap_mm,
                 args.j1_max_penetration_mm,args.j1_moving_clearance_mm,
-                args.j1_max_tilt_deg)):
+                args.j1_max_tilt_deg,
+                args.j1_min_fixed_normal_force_n)):
         p.error("parameters must be finite")
     if (args.fps<=0 or args.table_clearance_mm<0 or
         args.j6_armature<0 or args.j6_joint_damping<0 or
@@ -676,8 +710,11 @@ def main():
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
         args.approach_s<=0 or args.approach_clearance_mm<0 or
         not(0<args.j1_step_deg<=.05) or not(0<args.j1_max_deg<=15) or
-        not(-.1<=args.j1_contact_gap_mm<=.5) or
+        not(-.35<=args.j1_contact_gap_mm<=.5) or
+        not(0<args.j1_min_fixed_normal_force_n<=1.) or
+        not(1<=args.j1_force_hold_steps<=30) or
         not(0<=args.j1_max_penetration_mm<=.5) or
+        args.j1_max_penetration_mm < -args.j1_contact_gap_mm or
         args.j1_moving_clearance_mm<0 or
         not(0<args.j1_max_tilt_deg<=15) or
         not(.5<=args.abort_jaw_penetration_mm<=3.) or
