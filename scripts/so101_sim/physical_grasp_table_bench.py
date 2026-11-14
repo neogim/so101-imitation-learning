@@ -94,8 +94,8 @@ def install_fixed_surface_proxy_bench(spec, fine_mm=3., coarse_mm=6.,
         g.contype=original_ct
         g.conaffinity=original_ca
         g.density=0
-        g.group=4
-        g.rgba=[.14,.82,.57,.15]
+        g.group=5
+        g.rgba=[.14,.82,.57,.23]
     return {"enabled":True,"boxes":len(boxes),
             "fine_boxes":sum(b["pitch_mm"]==fine_mm for b in boxes),
             "target_tcp_depth_mm":[8.,20.],
@@ -151,8 +151,8 @@ def install_moving_surface_proxy_bench(spec, pitch_mm=3., max_boxes=2400):
         geom.contype=original_ct
         geom.conaffinity=original_ca
         geom.density=0
-        geom.group=4
-        geom.rgba=[.91,.65,.16,.16]
+        geom.group=5
+        geom.rgba=[.91,.65,.16,.23]
     return {
         "enabled":True,"boxes":len(boxes),
         "pitch_mm":pitch_mm,
@@ -211,11 +211,18 @@ def build_model(args):
         rgba=[.47,.51,.56,1.],friction=[.9,.01,.001],
         contype=1,conaffinity=1)
     proxy_metadata=(
-        install_fixed_surface_proxy_bench(spec)
+        install_fixed_surface_proxy_bench(
+            spec,
+            fine_mm=(2. if args.precise_jaw_proxy else 3.),
+            coarse_mm=(4. if args.precise_jaw_proxy else 6.),
+            max_boxes=3500 if args.precise_jaw_proxy else 2400)
         if getattr(args,"fixed_jaw_surface_proxy",False) else
         {"enabled":False})
     moving_proxy_metadata=(
-        install_moving_surface_proxy_bench(spec)
+        install_moving_surface_proxy_bench(
+            spec,
+            pitch_mm=2. if args.precise_jaw_proxy else 3.,
+            max_boxes=3500 if args.precise_jaw_proxy else 2400)
         if args.moving_jaw_surface_proxy else {"enabled":False})
     if args.simple_grasp:
         # URDF declares PositionJointInterface for gripper but MuJoCo's
@@ -627,9 +634,13 @@ def execute(args):
         # Backdrop group 4 visible in wrist views but not side views,
         # so it cannot obscure the original side camera inspection.
         render_option.geomgroup[4]=0
+        # Jaw collision proxies are group 5, independent of the gigantic
+        # wrist backdrop in group 4. Show the true colliders in side view.
+        render_option.geomgroup[5]=int(args.show_jaw_collision_overlay)
         wrist_render_option=mujoco.MjvOption()
         wrist_render_option.geomgroup[3]=0
         wrist_render_option.geomgroup[4]=1
+        wrist_render_option.geomgroup[5]=int(args.show_jaw_collision_overlay)
     jaw_self_gap_initial_mm=float(1000.*bench.geometry_gaps(
         model,data,fixed,moving))
     n=math.ceil(args.duration_s/model.opt.timestep)
@@ -1718,6 +1729,9 @@ def execute(args):
             if args.simple_grasp else "manual qfrc_applied torque PD"),
         "j6_servo_actuator_exists":bool(args.simple_grasp),
         "moving_jaw_surface_proxy_enabled":bool(args.moving_jaw_surface_proxy),
+        "precise_jaw_collision_requested":bool(args.precise_jaw_proxy),
+        "jaw_collision_overlay_requested":bool(args.show_jaw_collision_overlay),
+        "collision_proxy_comparison_not_calibration":True,
         "moving_jaw_proxy_requires_validation":bool(args.moving_jaw_surface_proxy),
         "j6_servo_max_force_nm":(
             args.max_torque if args.simple_grasp else None),
@@ -1871,6 +1885,12 @@ def main():
     p.add_argument("--gentle-jaw-contact",action="store_true",
                    help="Study-only: reduce J6 setpoint lead and actuator "
                         "force near Muhi; never override contact physics")
+    p.add_argument("--precise-jaw-proxy",action="store_true",
+                   help="Use finer 2mm/4mm fixed and 2mm moving contact "
+                        "cells; opt-in, source STL unchanged")
+    p.add_argument("--show-jaw-collision-overlay",action="store_true",
+                   help="Render the actual fixed/moving collision BOXes "
+                        "translucently over visible STL in all cameras")
     p.add_argument("--moving-jaw-surface-proxy",action="store_true",
                    help="EXPERIMENTAL: moving jaw STL convex collider -> "
                         "3mm local surface boxes; original STL unchanged")
@@ -1961,6 +1981,9 @@ def main():
     p.add_argument("--fps",type=float,default=12.)
     p.add_argument("--render-every",type=int,default=20)
     args=p.parse_args()
+    if args.precise_jaw_proxy and not (
+        args.fixed_jaw_surface_proxy and args.moving_jaw_surface_proxy):
+        p.error("--precise-jaw-proxy requires fixed and moving surface proxy")
     if args.moving_jaw_surface_proxy and not args.fixed_jaw_surface_proxy:
         p.error("--moving-jaw-surface-proxy requires fixed jaw proxy")
     if args.gentle_jaw_contact and not (
