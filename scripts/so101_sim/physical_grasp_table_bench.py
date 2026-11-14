@@ -66,6 +66,16 @@ def build_model(args):
         rgba=[.47,.51,.56,1.],friction=[.9,.01,.001],
         contype=1,conaffinity=1)
     model=spec.compile()
+    # Scale all dynamic Muhi inertias with measured mass, if provided.
+    # The original physical_workcell_sim cylinder is 50g in total.
+    muhibid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,
+                               physical.DYNAMIC_BODY)
+    if muhibid<0:raise ValueError("Dynamic Muhi body missing")
+    original_mass=float(model.body_mass[muhibid])
+    if original_mass<=0:raise ValueError("Invalid Muhi inertial mass")
+    mass_ratio=(float(args.muhi_mass_g)/1000.)/original_mass
+    model.body_mass[muhibid]*=mass_ratio
+    model.body_inertia[muhibid]*=mass_ratio
     preview.apply_white_follower_preview(model)
     model.opt.timestep=.002
     # J6's CAD inertia is extremely small, making direct torque PD
@@ -293,6 +303,9 @@ def execute(args):
     contact_overpenetration_abort=False
     contact_overpenetration_step=None
     frames=[]
+    contact_abort_reason=None
+    contact_abort_step=None
+    jaw_self_gap_min_mm=float("inf")
     render=None
     cam=None
     if args.video:
@@ -305,6 +318,8 @@ def execute(args):
         cam.lookat[:]=np.array(center,dtype=float)
         cam.distance=.32
         cam.elevation=-20
+    jaw_self_gap_initial_mm=float(1000.*bench.geometry_gaps(
+        model,data,fixed,moving))
     n=math.ceil(args.duration_s/model.opt.timestep)
     def reposition_j234(goal):
         """Constrained TCP prealignment with ONLY J2,J3,J4, no object teleport."""
@@ -509,9 +524,21 @@ def execute(args):
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
             contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
+            for c in contacts:
+                if c["kind"]=="fixed":
+                    c["tip_distance_mm"]=1000.*float(np.linalg.norm(
+                        np.asarray(c["point_xyz_m"],dtype=float)
+                        -np.asarray(data.site_xpos[tip_site],dtype=float)))
+                else:
+                    c["tip_distance_mm"]=None
             fixed_normal_n=sum(
                 max(0.,float(c["normal_force_n"])) for c in contacts
-                if c["kind"]=="fixed")
+                if c["kind"]=="fixed" and
+                c["tip_distance_mm"]<=args.fixed_contact_max_tip_distance_mm)
+            root_normal_n=sum(
+                max(0.,float(c["normal_force_n"])) for c in contacts
+                if c["kind"]=="fixed" and
+                c["tip_distance_mm"]>args.fixed_contact_max_tip_distance_mm)
             j1_precontact_max_fixed_normal_force_n=max(
                 j1_precontact_max_fixed_normal_force_n,fixed_normal_n)
             if stage=="j1_precontact":
@@ -536,6 +563,9 @@ def execute(args):
                 "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
                 "j1_precontact_reached":bool(j1_precontact_reached),
                 "fixed_jaw_normal_force_n":float(fixed_normal_n),
+                "root_contact_normal_force_n":float(root_normal_n),
+                "jaw_self_gap_mm":float(1000.*bench.geometry_gaps(
+                    model,data,fixed,moving)),
                 "j6_rad":float(data.qpos[jawq]),
                 "tcp_gripper_z_m":float(data.xpos[grip_body,2]),
                 "gripper_lift_mm":float((data.xpos[grip_body,2]-mj_initial_gripper_z)*1000.),
@@ -571,6 +601,25 @@ def execute(args):
                    f"fixed={counts['fixed']} moving={counts['moving']} "
                    f"table={counts['table']} tilt={tilt:.1f}deg",fill="white")
                 frames.append(image)
+            # Stop on wrong (root) contact, bottle tip-over, physically
+            # impossible J6 angle, or jaw mesh interpenetration. Never
+            # continue a failed pre-contact until the Muhi falls 88 metres.
+            jaw_self_gap_mm=float(1000.*bench.geometry_gaps(
+                model,data,fixed,moving))
+            jaw_self_gap_min_mm=min(jaw_self_gap_min_mm,jaw_self_gap_mm)
+            if root_normal_n>=args.root_contact_abort_force_n and stage in (
+                    "j234_prealign","j1_precontact"):
+                contact_abort_reason="ROOT_CONTACT_NOT_FINGERTIP"
+            elif (stage!="settle" and tilt>args.j1_max_tilt_deg):
+                contact_abort_reason="MUHI_TIP_OVER"
+            elif (data.qpos[jawq] < closed_angle-.035 or
+                  data.qpos[jawq] > open_angle+.035):
+                contact_abort_reason="J6_JOINT_LIMIT_EXCEEDED"
+            elif (jaw_self_gap_mm<min(-1.,jaw_self_gap_initial_mm-1.)):
+                contact_abort_reason="J6_JAWS_INTERPENETRATION"
+            if contact_abort_reason:
+                contact_abort_step=i
+                break
             # Hard diagnostic stop: object-to-jaw deep overlap is a geometry
             # / contact solver failure, NOT progress toward grasp. Stop
             # rather than allow another 26mm interpenetration.
@@ -595,7 +644,8 @@ def execute(args):
         w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
     with (args.out/"contact_points.csv").open("x",newline="",encoding="utf-8") as f:
         fields=["step","time_s","kind","geom1","geom2",
-                "geom1_name","geom2_name","efc_address","point_xyz_m",
+                "geom1_name","geom2_name","efc_address","tip_distance_mm",
+                "point_xyz_m",
                 "contact_normal_xyz","penetration_mm",
                 "normal_force_n","tangential_force_n"]
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader()
@@ -629,8 +679,17 @@ def execute(args):
         result_status="NO_TABLE_SUPPORT_CONTACT"
     if contact_overpenetration_abort:
         result_status="JAW_OVERPENETRATION_ABORT"
+    if contact_abort_reason:
+        result_status=contact_abort_reason
     info.update({
         "status":result_status,
+        "contact_abort_reason":contact_abort_reason,
+        "contact_abort_step":contact_abort_step,
+        "jaw_self_gap_open_mm":float(jaw_self_gap_initial_mm),
+        "jaw_self_gap_min_mm":float(jaw_self_gap_min_mm),
+        "muhi_mass_g":float(args.muhi_mass_g),
+        "muhi_mass_source":"user-supplied value" if args.muhi_mass_g!=50. else "provisional default 50g",
+        "fixed_contact_tip_distance_limit_mm":float(args.fixed_contact_max_tip_distance_mm),
         "table_support_preflight_failed":no_table_support,
         "jaw_overpenetration_abort":bool(contact_overpenetration_abort),
         "jaw_overpenetration_step":contact_overpenetration_step,
@@ -732,6 +791,10 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
+    p.add_argument("--muhi-mass-g",type=float,default=50.,
+                   help="Measured total mass in grams, defaults to provisional 50g")
+    p.add_argument("--fixed-contact-max-tip-distance-mm",type=float,default=45.)
+    p.add_argument("--root-contact-abort-force-n",type=float,default=.02)
     p.add_argument("--duration-s",type=float,default=6.0)
     p.add_argument("--approach-mm",type=float,default=0.,
                    help="Do not move arm during baseline. The Muhi is placed closer by search.")
@@ -777,9 +840,14 @@ def main():
                 args.j1_max_tilt_deg,
                 args.j1_min_fixed_normal_force_n,
                 args.j234_s,args.j234_reposition_mm,
-                args.j234_tcp_object_clearance_mm,args.j234_object_clearance_mm)):
+                args.j234_tcp_object_clearance_mm,args.j234_object_clearance_mm,
+                args.muhi_mass_g,args.fixed_contact_max_tip_distance_mm,
+                args.root_contact_abort_force_n)):
         p.error("parameters must be finite")
     if (args.fps<=0 or args.table_clearance_mm<0 or
+        not(5<=args.muhi_mass_g<=500) or
+        not(10<=args.fixed_contact_max_tip_distance_mm<=100) or
+        not(0<args.root_contact_abort_force_n<=5) or
         args.j6_armature<0 or args.j6_joint_damping<0 or
         not(0.5<=args.min_initial_fixed_gap_mm<args.max_initial_fixed_gap_mm<=35) or
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
