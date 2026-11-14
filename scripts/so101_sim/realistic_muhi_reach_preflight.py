@@ -63,6 +63,9 @@ def main():
     ap.add_argument("--table-top-z-m", type=float, default=.16)
     ap.add_argument("--home-deg", type=float, nargs=5,
                     default=[0., -30., 45., -20., -90.])
+    ap.add_argument("--auto-safe-home", action="store_true",
+                    help="Search ONLY J1 home yaw candidates for a separated "
+                         "initial scene, never relocate Muhi/table")
     ap.add_argument("--pregrasp-offset-m", type=float, nargs=3,
                     default=[0., -.075, .015],
                     help="WORLD offset from Muhi center to TCP")
@@ -162,21 +165,67 @@ def main():
         if not robot_geoms:
             raise ValueError("No robot collidable geoms")
         mujoco.mj_resetData(model, data)
-        data.qpos[qs] = home
         data.qpos[jaw_q] = jaw_lim[1]
         data.qpos[free_q:free_q+3] = center
         data.qpos[free_q+3:free_q+7] = [1., 0., 0., 0.]
         data.qvel[:] = 0
-        mujoco.mj_forward(model, data)
-
         target = center + np.asarray(args.pregrasp_offset_m)
-        start_tcp = np.asarray(data.site_xpos[tcp_id]).copy()
         robot_obj = lambda: min(
             dist(model, data, g, og)
             for g in robot_geoms for og in obj_geoms)
         robot_table = lambda: min(
             dist(model, data, g, table_geom)
             for g in robot_geoms)
+
+        # The previously chosen fixed home [0,-30,45,-20,-90] placed an
+        # arm *mesh* only 27.97 mm from Muhi, despite TCP-center distance
+        # 101.56 mm. Select a separated HOME by rotating J1 ONLY.
+        # The object's world pose and tabletop must never be moved.
+        original_home_deg = list(map(float, args.home_deg))
+        offsets_deg = [0.]
+        if args.auto_safe_home:
+            for magnitude in (15., 30., 45., 60., 75., 90., 105.):
+                offsets_deg += [magnitude, -magnitude]
+        safe_candidates = []
+        chosen = None
+        for offset in offsets_deg:
+            candidate = home.copy()
+            candidate[0] = home[0] + math.radians(offset)
+            if not (lims[0][0] <= candidate[0] <= lims[0][1]):
+                continue
+            data.qpos[qs] = candidate
+            mujoco.mj_forward(model, data)
+            cg = float(robot_obj())
+            tg = float(robot_table())
+            tc = np.asarray(data.site_xpos[tcp_id]).copy()
+            to_target = float(np.linalg.norm(tc - target)*1000.)
+            eligible = (cg >= args.min_initial_clearance_mm/1000. and
+                        tg >= args.min_path_clearance_mm/1000. and
+                        to_target >= args.min_initial_clearance_mm)
+            safe_candidates.append({
+                "j1_deg": float(math.degrees(candidate[0])),
+                "robot_object_gap_mm": cg*1000.,
+                "robot_table_gap_mm": tg*1000.,
+                "tcp_to_pregrasp_mm": to_target,
+                "eligible": bool(eligible)})
+            if eligible and chosen is None:
+                chosen = candidate.copy()
+                if args.auto_safe_home:
+                    break
+        report["requested_home_deg"] = original_home_deg
+        report["auto_safe_home_enabled"] = bool(args.auto_safe_home)
+        report["home_candidate_scan"] = safe_candidates
+        if chosen is None:
+            best_gap = max((c["robot_object_gap_mm"] for c in safe_candidates),
+                           default=None)
+            report["largest_candidate_robot_object_gap_mm"] = best_gap
+            raise ValueError(
+                "INITIAL_HOME_NOT_SEPARATED: no safe J1-only home candidate; "
+                "see home_candidate_scan; no object/table relocation")
+        home = chosen
+        data.qpos[qs] = home
+        mujoco.mj_forward(model, data)
+        start_tcp = np.asarray(data.site_xpos[tcp_id]).copy()
         initial_object_gap = robot_obj()
         initial_table_gap = robot_table()
         report.update({
