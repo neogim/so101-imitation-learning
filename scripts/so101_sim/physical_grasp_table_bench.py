@@ -230,9 +230,19 @@ def build_model(args):
         if int(model.geom_bodyid[g]) not in
             (0,table_body_id,int(model.geom_bodyid[obj[0]]))
         and (model.geom_contype[g] or model.geom_conaffinity[g]))
-    rejected={"tested":0,"rejected":0,"max_rejected_clearance_mm":None}
+    rejected={"tested":0,"rejected":0,"max_rejected_clearance_mm":None,
+              "rejected_target_depth":0}
     def table_for_candidate(center,quat,xyz):
         rejected["tested"]+=1
+        if args.fixed_jaw_surface_proxy:
+            # This is a pose-search TARGET, not proof that a subsequent
+            # dynamic force-contact will actually occur in that band.
+            object_center_depth_mm=1000.*(
+                float(xyz[2])-GRIPPER_FRAME_LOCAL_POS[2])
+            if not (args.target_grasp_depth_min_mm <= object_center_depth_mm
+                    < args.target_grasp_depth_max_mm):
+                rejected["rejected_target_depth"]+=1
+                return False
         table_top=float(center[2])-OBJECT_HALF_LENGTH_M-.0005
         data.mocap_pos[table_mocap_id]=[
             float(center[0]),float(center[1]),
@@ -289,6 +299,10 @@ def build_model(args):
                      "expected_table_center":expected_table_center.tolist(),
                      "actual_table_center":actual_table_center.tolist()}
     diag={"fixed_jaw_surface_proxy":proxy_metadata,
+          "target_grasp_depth_band_mm":[args.target_grasp_depth_min_mm,
+                                         args.target_grasp_depth_max_mm],
+          "selected_muhi_center_gripper_depth_mm":1000.*(
+              float(pose[4][2])-GRIPPER_FRAME_LOCAL_POS[2]),
           "search":search,"table_clearance_search":rejected,
           "wrist_near_ratio_original":wrist_near_original,
           "table_actual_world_center_xyz_m":actual_table_center.tolist(),
