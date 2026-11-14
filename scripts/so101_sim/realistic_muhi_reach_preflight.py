@@ -827,14 +827,13 @@ def main():
                 report["status"] not in (
                     "REPLAY_COLLISION_DETECTED",
                     "REPLAY_COLLISION_OR_FORCE_LIMIT") and
-                not verified):
-            report["status"]="FIXED_JAW_CONTACT_NOT_CONFIRMED"
-        elif (args.approach_fixed_jaw and
-              verified and
-              report["status"] not in (
-                  "REPLAY_COLLISION_DETECTED",
-                  "REPLAY_COLLISION_OR_FORCE_LIMIT")):
-            report["status"]="FIXED_JAW_CONTACT_CONFIRMED_NO_J6"
+                approach_result.get("success",False)):
+            # Preserve the geometry-planning failure as the primary status.
+            # Only a geometrically feasible grasp-face candidate proceeds
+            # to the independent solver-force confirmation.
+            report["status"]=(
+                "FIXED_JAW_CONTACT_CONFIRMED_NO_J6" if verified else
+                "FIXED_JAW_CONTACT_NOT_CONFIRMED")
         # If the target TCP is still >tolerance, never report Reach success.
         if report["status"] == "PREGRASP_POSITION_REACHED_NO_GRASP" and (
                 len(trajectory) < 2):
