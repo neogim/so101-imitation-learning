@@ -270,8 +270,10 @@ def execute(args):
     # render-loop diagnostics actually use it.
     wrist_camera_id=mujoco.mj_name2id(
         model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
-    if wrist_camera_id<0:
-        raise ValueError(f"Wrist RGB camera missing: {wrist.CAMERA}")
+    shelf_wrist_camera_id=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.SHELF_DIAGNOSTIC_CAMERA)
+    if wrist_camera_id<0 or shelf_wrist_camera_id<0:
+        raise ValueError("Wrist TCP-aim or shelf-view camera missing")
     armhome=data.qpos[list(qids)].copy()
     # Approach with a fingertip-area reference, not the gripper motor body.
     # The J1-J4 move is simulation-only prescribed IK, never a servo command.
@@ -330,6 +332,7 @@ def execute(args):
     contact_overpenetration_step=None
     frames=[]
     wrist_frames=[]
+    shelf_wrist_frames=[]
     wrist_camera_frames_with_object_center=0
     wrist_camera_frames_with_tcp_center=0
     wrist_camera_object_center_uv_last=None
@@ -686,6 +689,10 @@ def execute(args):
                                     scene_option=render_option)
                 wrist_image=Image.fromarray(render.render().copy())
                 wrist_frames.append(wrist_image)
+                render.update_scene(data,camera=wrist.SHELF_DIAGNOSTIC_CAMERA,
+                                    scene_option=render_option)
+                shelf_image=Image.fromarray(render.render().copy())
+                shelf_wrist_frames.append(shelf_image)
                 cam_pos=np.asarray(data.cam_xpos[wrist_camera_id])
                 cam_rot=np.asarray(
                     data.cam_xmat[wrist_camera_id]).reshape(3,3)
@@ -723,8 +730,8 @@ def execute(args):
                         d=ImageDraw.Draw(wrist_image)
                         d.line((x-5,y,x+5,y),fill=(20,225,225),width=2)
                         d.line((x,y-5,x,y+5),fill=(20,225,225),width=2)
-                image=Image.new("RGB",(1440,396),(20,24,30))
-                for idx,p in enumerate((*pics,wrist_image)):
+                image=Image.new("RGB",(1920,396),(20,24,30))
+                for idx,p in enumerate((*pics,wrist_image,shelf_image)):
                     image.paste(p,(idx*480,36))
                 draw=ImageDraw.Draw(image)
                 draw.text((8,8),
@@ -732,7 +739,8 @@ def execute(args):
                     f"fixed={counts['fixed']} moving={counts['moving']} "
                     f"tilt={tilt:.1f}deg",fill="white")
                 draw.text((488,8),"SIDE B | same step",fill="white")
-                draw.text((968,8),"WRIST | provisional mount",fill="white")
+                draw.text((968,8),"WRIST TCP AIM | provisional",fill="white")
+                draw.text((1448,8),"WRIST SHELF AXIS | same lens",fill="white")
                 frames.append(image)
             # Stop on wrong (root) contact, bottle tip-over, physically
             # impossible J6 angle, or jaw mesh interpenetration. Never
@@ -847,6 +855,9 @@ def execute(args):
         "wrist_camera_installed":True,
         "wrist_camera_name":wrist.CAMERA,
         "wrist_camera_frame_count":len(wrist_frames),
+        "wrist_shelf_camera_name":wrist.SHELF_DIAGNOSTIC_CAMERA,
+        "wrist_shelf_camera_frame_count":len(shelf_wrist_frames),
+        "wrist_comparison_note":"Same MuJoCo pose/lens/mount/FOV; only optical orientation differs",
         "wrist_object_center_projected_in_fov_frames":
             int(wrist_camera_frames_with_object_center),
         "wrist_tcp_projected_in_fov_frames":
@@ -931,8 +942,12 @@ def execute(args):
         for i,p in enumerate(frames):p.save(frame_dir/f"frame_{i:04d}.png")
         wrist_dir=args.out/"wrist_frames"
         wrist_dir.mkdir()
+        shelf_dir=args.out/"wrist_shelf_frames"
+        shelf_dir.mkdir()
         for i,p in enumerate(wrist_frames):
             p.save(wrist_dir/f"wrist_{i:04d}.png")
+        for i,p in enumerate(shelf_wrist_frames):
+            p.save(shelf_dir/f"shelf_{i:04d}.png")
         ffmpeg=shutil.which("ffmpeg")
         if ffmpeg:
             try:
@@ -954,6 +969,15 @@ def execute(args):
                         "-movflags","+faststart",
                         str(args.out/"wrist_camera.mp4")],check=True)
                     info["wrist_video_status"]="created"
+                    subprocess.run([
+                        ffmpeg,"-hide_banner","-loglevel","error","-y",
+                        "-framerate",str(args.fps),
+                        "-i",str(shelf_dir/"shelf_%04d.png"),
+                        "-vf","pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                        "-c:v","libx264","-pix_fmt","yuv420p",
+                        "-movflags","+faststart",
+                        str(args.out/"wrist_shelf_camera.mp4")],check=True)
+                    info["wrist_shelf_video_status"]="created"
                 except subprocess.CalledProcessError:
                     info["wrist_video_status"]="ffmpeg_failed_pngs_saved"
             except subprocess.CalledProcessError as exc:
