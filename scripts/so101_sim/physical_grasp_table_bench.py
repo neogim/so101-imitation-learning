@@ -593,6 +593,7 @@ def execute(args):
     lift_rejected_steps=0
     rows=[];contactrows=[]
     j6_blocking_contacts=[]
+    jaw_contact_phase_records=[]
     no_table_support=False
     contact_overpenetration_abort=False
     contact_overpenetration_step=None
@@ -1016,6 +1017,15 @@ def execute(args):
                 commanded_torque=float(np.clip(
                     torque,-torque_cap,torque_cap))
                 data.qfrc_applied[jawd]=commanded_torque
+            # This pose is the configuration where MuJoCo computes forces.
+            # A later mj_forward is the NEXT pose, not the same snapshot.
+            # Reuse the prior post-step geometric gaps, except first step.
+            fixed_gap_at_solver_mm=(
+                rows[-1]["fixed_jaw_gap_mm"] if rows else
+                1000.*bench.geometry_gaps(model,data,obj,fixed))
+            moving_gap_at_solver_mm=(
+                rows[-1]["moving_jaw_gap_poststep_mm"] if rows else
+                1000.*bench.geometry_gaps(model,data,obj,moving))
             mujoco.mj_step(model,data)
             # CRITICAL: mj_step has solved contacts for the *pre-integration*
             # configuration and stores their constraint impulses in efc_force.
@@ -1084,6 +1094,19 @@ def execute(args):
                 if args.simple_grasp:
                     data.ctrl[servo_id]=j6_open_hold_angle
             mujoco.mj_forward(model,data)
+            # These are GEOMETRIC candidates at the post-step pose.
+            # No solver forces exist for these candidates until next mj_step.
+            post_fixed_contact_candidates=0
+            post_moving_contact_candidates=0
+            object_ids=set(obj)
+            for con in data.contact[:data.ncon]:
+                pair={int(con.geom1),int(con.geom2)}
+                if not pair&object_ids:
+                    continue
+                if pair&set(fixed):
+                    post_fixed_contact_candidates+=1
+                if pair&set(moving):
+                    post_moving_contact_candidates+=1
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
             jaw_impact_force_n=sum(
@@ -1164,6 +1187,16 @@ def execute(args):
                 "step":i,"time_s":float(data.time),"stage":stage,
                 "j1_rad":float(data.qpos[qids[0]]),
                 "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
+                "moving_jaw_gap_poststep_mm":float(
+                    1000.*bench.geometry_gaps(model,data,obj,moving)),
+                "fixed_gap_at_solver_pose_mm":float(fixed_gap_at_solver_mm),
+                "moving_gap_at_solver_pose_mm":float(moving_gap_at_solver_mm),
+                "fixed_contact_solver_count":int(counts["fixed"]),
+                "moving_contact_solver_count":int(counts["moving"]),
+                "fixed_contact_poststep_candidates":int(
+                    post_fixed_contact_candidates),
+                "moving_contact_poststep_candidates":int(
+                    post_moving_contact_candidates),
                 "j1_precontact_reached":bool(j1_precontact_reached),
                 "fixed_jaw_normal_force_n":float(fixed_normal_n),
                 "moving_jaw_normal_force_n":float(moving_normal_n),
@@ -1643,6 +1676,12 @@ def execute(args):
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_dynamics_diagnostic":j6_dynamics,
         "j6_final_force_balance":j6_force_balance,
+        "jaw_gap_force_timebase_warning":(
+            "post-step mj_forward geometric gaps describe next pose; "
+            "mj_step solver forces describe pre-integration pose. "
+            "Compare fixed_gap_at_solver_pose_mm and "
+            "moving_gap_at_solver_pose_mm with force; "
+            "poststep candidates do NOT imply solver force."),
         "simple_grasp_mode":bool(args.simple_grasp),
         "j6_actuation_method":(
             "MuJoCo compiled position actuator via data.ctrl"
