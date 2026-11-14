@@ -356,6 +356,8 @@ def execute(args):
     closing_hold_target=None
     closing_peak_fixed_force_n=0.
     closing_peak_moving_force_n=0.
+    j6_preclose_drift_max_deg=0.
+    j6_open_hold_steps=0
     j1_precontact_start_rad=float(armhome[0])
     j1_precontact_direction=0
     j1_precontact_min_fixed_gap_mm=float("inf")
@@ -672,11 +674,26 @@ def execute(args):
                         lift_rejected_steps+=1
                         data.qpos[list(qids)]=oldq
                         mujoco.mj_forward(model,data)
-            torque=args.kp*(demand-data.qpos[jawq])-args.kd*data.qvel[jawd]
-            torque_cap=(args.j6_precontact_max_torque
-                        if j1_safe_near_contact else args.max_torque)
-            commanded_torque=float(np.clip(torque,-torque_cap,torque_cap))
-            data.qfrc_applied[jawd]=commanded_torque
+            # Hold J6 OPEN during prealignment as J1..J5 are also
+            # kinematically prescribed. Old weak PD permitted ~50deg
+            # closing drift before the closure phase even began.
+            # Switch back to dynamic torque control during J6 closure.
+            preclose=stage in ("settle","j234_prealign","j1_precontact")
+            if preclose:
+                j6_preclose_drift_max_deg=max(
+                    j6_preclose_drift_max_deg,
+                    abs(math.degrees(float(data.qpos[jawq]-open_angle))))
+                data.qpos[jawq]=open_angle
+                data.qvel[jawd]=0.
+                j6_open_hold_steps+=1
+                commanded_torque=0.
+            else:
+                torque=args.kp*(demand-data.qpos[jawq])-args.kd*data.qvel[jawd]
+                torque_cap=(args.j6_precontact_max_torque
+                            if j1_safe_near_contact else args.max_torque)
+                commanded_torque=float(np.clip(
+                    torque,-torque_cap,torque_cap))
+                data.qfrc_applied[jawd]=commanded_torque
             mujoco.mj_step(model,data)
             # CRITICAL: mj_step has solved contacts for the *pre-integration*
             # configuration and stores their constraint impulses in efc_force.
@@ -696,6 +713,9 @@ def execute(args):
                 c["solver_time_s"]=float(data.time-model.opt.timestep)
             data.qpos[list(qids)]=armhome
             data.qvel[list(dids)]=0.
+            if preclose:
+                data.qpos[jawq]=open_angle
+                data.qvel[jawd]=0.
             mujoco.mj_forward(model,data)
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
@@ -765,6 +785,7 @@ def execute(args):
                 "jaw_self_gap_mm":float(1000.*bench.geometry_gaps(
                     model,data,fixed,moving)),
                 "j6_rad":float(data.qpos[jawq]),
+                "j6_open_held_kinematically":bool(preclose),
                 "tcp_gripper_z_m":float(data.xpos[grip_body,2]),
                 "gripper_lift_mm":float((data.xpos[grip_body,2]-mj_initial_gripper_z)*1000.),
                 "j6_target_rad":float(demand),
@@ -1070,6 +1091,10 @@ def execute(args):
         "approach_blocked_steps":int(approach_blocked_steps),
         "approach_method":"DLS J1-J4, check full robot/table and robot/object clearance",
         "j6_trajectory":"cubic smoothstep with velocity-zero endpoints",
+        "j6_preclose_open_hold":"kinematic until closure; dynamic torque PD afterward (sim-only)",
+        "j6_preclose_open_hold_steps":int(j6_open_hold_steps),
+        "j6_preclose_drift_max_deg_before_correction":
+            float(j6_preclose_drift_max_deg),
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_torque_saturation_fraction_during_close_hold":
             float(j6_command_saturation_fraction),
