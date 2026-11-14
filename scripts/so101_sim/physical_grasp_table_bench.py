@@ -26,6 +26,7 @@ import physical_grasp_j6_bench as bench
 import physical_workcell_sim as physical
 import real_to_sim as r2s
 import compare_id1_eye_to_hand as preview
+import wrist_camera_sim as wrist
 
 TABLE = "j6_bench_table"
 TIP_SITE = "j6_bench_gripper_tip_site"
@@ -46,6 +47,9 @@ def build_model(args):
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
+    # Restore the same photographed, provisional wrist camera and bracket
+    # from the previous real-to-sim/kinematic experiment.
+    wrist.install(spec)
     gripper_spec = spec.body("gripper_link")
     if gripper_spec is None:
         raise ValueError("URDF gripper_link missing: cannot install TCP site")
@@ -66,6 +70,10 @@ def build_model(args):
         rgba=[.47,.51,.56,1.],friction=[.9,.01,.001],
         contype=1,conaffinity=1)
     model=spec.compile()
+    wrist_camera_id=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
+    if wrist_camera_id<0:
+        raise ValueError("Previous wrist RGB camera missing after compile")
     # Scale all dynamic Muhi inertias with measured mass, if provided.
     # The original physical_workcell_sim cylinder is 50g in total.
     muhibid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,
@@ -308,6 +316,9 @@ def execute(args):
     contact_overpenetration_abort=False
     contact_overpenetration_step=None
     frames=[]
+    wrist_frames=[]
+    wrist_camera_frames_with_object_center=0
+    wrist_camera_object_center_uv_last=None
     contact_abort_reason=None
     contact_abort_step=None
     jaw_self_gap_min_mm=float("inf")
@@ -324,6 +335,8 @@ def execute(args):
         cam.lookat[:]=np.array(center,dtype=float)
         cam.distance=.32
         cam.elevation=-20
+        render_option=mujoco.MjvOption()
+        render_option.geomgroup[3]=0
     jaw_self_gap_initial_mm=float(1000.*bench.geometry_gaps(
         model,data,fixed,moving))
     n=math.ceil(args.duration_s/model.opt.timestep)
@@ -644,15 +657,43 @@ def execute(args):
                 pics=[]
                 for az in (55,150):
                     cam.azimuth=az
-                    render.update_scene(data,camera=cam)
+                    render.update_scene(data,camera=cam,
+                                        scene_option=render_option)
                     pics.append(Image.fromarray(render.render().copy()))
-                # Even height required for libx264/yuv420p.
-                image=Image.new("RGB",(960,396),(20,24,30))
-                image.paste(pics[0],(0,36));image.paste(pics[1],(480,36))
-                ImageDraw.Draw(image).text(
-                   (8,8),f"{stage.upper()} t={data.time:.2f}s | "
-                   f"fixed={counts['fixed']} moving={counts['moving']} "
-                   f"table={counts['table']} tilt={tilt:.1f}deg",fill="white")
+                render.update_scene(data,camera=wrist.CAMERA,
+                                    scene_option=render_option)
+                wrist_image=Image.fromarray(render.render().copy())
+                wrist_frames.append(wrist_image)
+                cam_pos=np.asarray(data.cam_xpos[wrist_camera_id])
+                cam_rot=np.asarray(
+                    data.cam_xmat[wrist_camera_id]).reshape(3,3)
+                rel=cam_rot.T@(np.asarray(data.qpos[freeq:freeq+3])-cam_pos)
+                depth=float(-rel[2])
+                focal=math.tan(math.radians(
+                    float(model.cam_fovy[wrist_camera_id]))/2.)
+                if depth>1e-6:
+                    nx=float(rel[0]/(depth*focal*(480./360.)))
+                    ny=float(rel[1]/(depth*focal))
+                    if abs(nx)<=1. and abs(ny)<=1.:
+                        wrist_camera_frames_with_object_center+=1
+                        wrist_camera_object_center_uv_last=[
+                            float((nx+1.)*.5*480.),
+                            float((1.-ny)*.5*360.)]
+                        # Projection of 3D centre, NOT image segmentation.
+                        x,y=wrist_camera_object_center_uv_last
+                        ImageDraw.Draw(wrist_image).ellipse(
+                            (x-3,y-3,x+3,y+3),
+                            outline=(240,220,20),width=2)
+                image=Image.new("RGB",(1440,396),(20,24,30))
+                for idx,p in enumerate((*pics,wrist_image)):
+                    image.paste(p,(idx*480,36))
+                draw=ImageDraw.Draw(image)
+                draw.text((8,8),
+                    f"SIDE A | {stage.upper()} t={data.time:.2f}s "
+                    f"fixed={counts['fixed']} moving={counts['moving']} "
+                    f"tilt={tilt:.1f}deg",fill="white")
+                draw.text((488,8),"SIDE B | same step",fill="white")
+                draw.text((968,8),"WRIST | provisional mount",fill="white")
                 frames.append(image)
             # Stop on wrong (root) contact, bottle tip-over, physically
             # impossible J6 angle, or jaw mesh interpenetration. Never
@@ -760,6 +801,15 @@ def execute(args):
         "jaw_overpenetration_abort":bool(contact_overpenetration_abort),
         "jaw_overpenetration_step":contact_overpenetration_step,
         "jaw_overpenetration_threshold_mm":float(args.abort_jaw_penetration_mm),
+        "wrist_camera_installed":True,
+        "wrist_camera_name":wrist.CAMERA,
+        "wrist_camera_frame_count":len(wrist_frames),
+        "wrist_object_center_projected_in_fov_frames":
+            int(wrist_camera_frames_with_object_center),
+        "wrist_object_center_projected_uv_last_px":
+            wrist_camera_object_center_uv_last,
+        "wrist_camera_mount_source":"prior wrist_camera_sim photographic estimate; NOT calibrated",
+        "wrist_camera_control_mode":"diagnostic rendering only; grasp remains geometric/force based",
         "j234_prealign_enabled":True,
         "j234_prealign_joints":"J2,J3,J4 only; J1/J5 fixed during prealignment",
         "j234_prealign_target_world_xyz_m":j234_tcp_target.tolist(),
@@ -831,6 +881,10 @@ def execute(args):
     if frames:
         frame_dir=args.out/"frames";frame_dir.mkdir()
         for i,p in enumerate(frames):p.save(frame_dir/f"frame_{i:04d}.png")
+        wrist_dir=args.out/"wrist_frames"
+        wrist_dir.mkdir()
+        for i,p in enumerate(wrist_frames):
+            p.save(wrist_dir/f"wrist_{i:04d}.png")
         ffmpeg=shutil.which("ffmpeg")
         if ffmpeg:
             try:
@@ -842,6 +896,18 @@ def execute(args):
                     "-movflags","+faststart",
                     str(args.out/"table_contact_views.mp4")],check=True)
                 info["video_status"]="created"
+                try:
+                    subprocess.run([
+                        ffmpeg,"-hide_banner","-loglevel","error","-y",
+                        "-framerate",str(args.fps),
+                        "-i",str(wrist_dir/"wrist_%04d.png"),
+                        "-vf","pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                        "-c:v","libx264","-pix_fmt","yuv420p",
+                        "-movflags","+faststart",
+                        str(args.out/"wrist_camera.mp4")],check=True)
+                    info["wrist_video_status"]="created"
+                except subprocess.CalledProcessError:
+                    info["wrist_video_status"]="ffmpeg_failed_pngs_saved"
             except subprocess.CalledProcessError as exc:
                 info["video_status"]="ffmpeg_failed_frames_saved"
                 info["ffmpeg_exit_code"]=int(exc.returncode)
