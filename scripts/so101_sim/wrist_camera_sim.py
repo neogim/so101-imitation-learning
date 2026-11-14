@@ -11,6 +11,7 @@ import math
 
 RIG_BODY = "r2s_wrist_camera_rig"
 CAMERA = "r2s_wrist_rgb"
+SHELF_DIAGNOSTIC_CAMERA = "r2s_wrist_rgb_shelf"
 MOUNT_INSPECTION_CAMERA = "r2s_wrist_mount_inspection"
 
 # The J5 wrist_roll child and J6 finger parent is gripper_link. The common
@@ -220,6 +221,11 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
         camera_right,camera_up,_=camera_axes(optical_center,camera_aim_at)
     rig.add_camera(name=CAMERA, pos=optical_center,
                    xyaxes=list(camera_right+camera_up), fovy=fovy)
+    # Second optical orientation with SAME lens position and bracket:
+    # isolates the effect of forcing the camera to look at the TCP.
+    if camera_aim_at is not None:
+        rig.add_camera(name=SHELF_DIAGNOSTIC_CAMERA,
+                       pos=optical_center,xyaxes=list(right+up),fovy=fovy)
 
     # The inspection camera is not an ACT input. It stays on the rig so it
     # follows J5 and shows the L from the side for mechanical verification.
