@@ -96,8 +96,8 @@ def main():
                          "precontact. Report physical force separately.")
     ap.add_argument("--fingertip-zone-mm", type=float, default=30.,
                     help="Max distance between Muhi/fixed-jaw witness and TCP")
-    ap.add_argument("--fixed-jaw-target-gap-mm", type=float, default=.03,
-                    help="Positive geometric stopping gap before force check")
+    ap.add_argument("--fixed-jaw-target-gap-mm", type=float, default=-.02,
+                    help="Simulation only: bounded -0.02mm fixed-tip overlap to test solver force")
     ap.add_argument("--video", action="store_true",
                     help="Render original 2-side + 3-wrist combined MP4 and separate camera MP4s")
     ap.add_argument("--wrist-retract-mm", type=float, default=5.,
@@ -126,7 +126,7 @@ def main():
             30 <= args.via_height_mm <= 250 and
             1 <= args.j4_weight <= 1000 and
             15 <= args.fingertip_zone_mm <= 60 and
-            0 <= args.fixed_jaw_target_gap_mm <= .5 and
+            -.04 <= args.fixed_jaw_target_gap_mm <= .5 and
             0 <= args.wrist_retract_mm <= 15 and
             1 <= args.fps <= 60 and
             1 <= args.video_every_waypoints <= 30):
@@ -631,10 +631,25 @@ def main():
                     muhi_x_m=float(data.qpos[free_q]),
                     muhi_y_m=float(data.qpos[free_q+1]),
                     muhi_z_m=float(data.qpos[free_q+2])))
-                if gap < 0 or table_gap < 0:
-                    report["status"]="REPLAY_COLLISION_DETECTED"
+                # A sub-0.05mm fixed-jaw overlap is permitted ONLY in the
+                # final contact attempt, with other robot geometries clear.
+                # Anything more severe remains a hard failure.
+                fixed_gap=bench.geometry_gaps(model,data,obj_geoms,fixed_geoms)
+                other_gap=min((dist(model,data,g,og)
+                    for g in other_robot_geoms for og in obj_geoms),
+                    default=float("inf"))
+                if (other_gap<-.00001 or table_gap<0 or
+                    fixed_gap<-.00005 or force>2.):
+                    report["status"]="REPLAY_COLLISION_OR_FORCE_LIMIT"
+                    report["replay_abort_details"]={
+                        "other_robot_gap_mm":other_gap*1000,
+                        "fixed_jaw_gap_mm":fixed_gap*1000,
+                        "robot_table_gap_mm":table_gap*1000,
+                        "fixed_jaw_normal_force_n":force}
                     break
-            if report["status"] == "REPLAY_COLLISION_DETECTED":
+            if report["status"] in (
+                    "REPLAY_COLLISION_DETECTED",
+                    "REPLAY_COLLISION_OR_FORCE_LIMIT"):
                 break
             need_snapshot=args.render and k in snapshot_index
             need_video=(args.video and
@@ -762,9 +777,18 @@ def main():
             "FIXED_JAW_FORCE_CONFIRMED" if
             fixed_contact_max_consecutive>=5 else
             "FIXED_JAW_FORCE_NOT_CONFIRMED")
-        if args.approach_fixed_jaw and not (
-                fixed_contact_max_consecutive>=5):
+        if (args.approach_fixed_jaw and
+                report["status"] not in (
+                    "REPLAY_COLLISION_DETECTED",
+                    "REPLAY_COLLISION_OR_FORCE_LIMIT") and
+                fixed_contact_max_consecutive<5):
             report["status"]="FIXED_JAW_CONTACT_NOT_CONFIRMED"
+        elif (args.approach_fixed_jaw and
+              fixed_contact_max_consecutive>=5 and
+              report["status"] not in (
+                  "REPLAY_COLLISION_DETECTED",
+                  "REPLAY_COLLISION_OR_FORCE_LIMIT")):
+            report["status"]="FIXED_JAW_CONTACT_CONFIRMED_NO_J6"
         # If the target TCP is still >tolerance, never report Reach success.
         if report["status"] == "PREGRASP_POSITION_REACHED_NO_GRASP" and (
                 len(trajectory) < 2):
