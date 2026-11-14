@@ -379,6 +379,18 @@ def execute(args):
     j1_precontact_max_fixed_normal_force_n=0.
     j1_precontact_motion_steps=0
     j1_precontact_exceeded_tilt=False
+    j1_contact_first_enabled=bool(args.j1_contact_first_diagnostic)
+    j1_contact_force_confirmed=False
+    j1_force_seek_start=(
+        args.settle_s+args.j234_s+args.approach_s)
+    j1_force_seek_end=(
+        j1_force_seek_start+args.j1_contact_seek_s if j1_contact_first_enabled
+        else j1_force_seek_start)
+    j1_force_pd_target_rad=None
+    j1_force_seek_max_abs_deviation_deg=0.
+    j1_force_seek_contact_steps=0
+    j1_force_seek_contact_loss_steps=0
+    j1_force_seek_contact_at_start=False
     j1_follow_initial_rad=None
     j1_follow_accepted_steps=0
     j1_follow_rejected_steps=0
@@ -617,8 +629,18 @@ def execute(args):
             t=float(data.time)
             # J1-J5 are a rigid kinematic fixture ONLY. The object and J6
             # are fully dynamic; table is fixed and supports gravity.
-            data.qpos[list(qids)]=armhome
-            data.qvel[list(dids)]=0.
+            # After the guarded kinematic J1 approach, make J1 DYNAMIC in
+            # contact-first diagnosis. Never teleport its angle across steps.
+            dynamic_j1=(j1_contact_first_enabled and
+                        t>=j1_force_seek_start and
+                        j1_precontact_reached and
+                        not j1_precontact_exceeded_tilt)
+            if dynamic_j1:
+                data.qpos[list(qids[1:])]=armhome[1:]
+                data.qvel[list(dids[1:])]=0.
+            else:
+                data.qpos[list(qids)]=armhome
+                data.qvel[list(dids)]=0.
             data.xfrc_applied[:]=0.
             data.qfrc_applied[:]=0.
             if t<args.settle_s:
@@ -688,8 +710,15 @@ def execute(args):
                 j1_precontact_min_fixed_gap_mm=min(
                     j1_precontact_min_fixed_gap_mm,
                     1000.*bench.geometry_gaps(model,data,obj,fixed))
-            elif not j1_precontact_reached or j1_precontact_exceeded_tilt:
-                # Do not close J6 when the opposing jaw did not reach Muhi.
+            elif j1_contact_first_enabled and t<j1_force_seek_end:
+                stage="j1_force_seek" if dynamic_j1 else "j1_precontact_failed"
+                demand=open_angle
+            elif (not j1_precontact_reached or j1_precontact_exceeded_tilt or
+                  (j1_contact_first_enabled and
+                   not j1_contact_force_confirmed)):
+                # In contact-first mode, geometry-only near contact is
+                # explicitly insufficient to activate J6. Require sustained
+                # solver-measured fixed-jaw contact *before* closing.
                 stage="j1_precontact_failed"
                 if (not j1_precontact_reached and
                     not j1_precontact_exceeded_tilt and
@@ -699,7 +728,7 @@ def execute(args):
                     j1_precontact_reason="no_effective_fixed_jaw_force"
                 demand=open_angle
             else:
-                u=min(1.,max(0.,(t-args.settle_s-args.j234_s-args.approach_s)/args.close_s))
+                u=min(1.,max(0.,(t-j1_force_seek_end)/args.close_s))
                 smooth=u*u*(3.-2.*u)
                 demand=open_angle+smooth*(closed_angle-open_angle)
                 if closing_low_force_stop and closing_hold_target is not None:
@@ -747,7 +776,21 @@ def execute(args):
             # kinematically prescribed. Old weak PD permitted ~50deg
             # closing drift before the closure phase even began.
             # Switch back to dynamic torque control during J6 closure.
-            preclose=stage in ("settle","j234_prealign","j1_precontact")
+            preclose=stage in ("settle","j234_prealign","j1_precontact",
+                                "j1_force_seek","j1_precontact_failed")
+            if dynamic_j1:
+                if j1_force_pd_target_rad is None:
+                    j1_force_pd_target_rad=float(armhome[0]+
+                        j1_precontact_direction*math.radians(
+                            args.j1_contact_seek_deg))
+                # Contact seeking uses dynamic torque, not prescribed qpos.
+                # The upper bound is exploratory and is not an STS3215 rating.
+                j1_error=j1_force_pd_target_rad-float(data.qpos[qids[0]])
+                data.qfrc_applied[dids[0]]=float(np.clip(
+                    args.j1_contact_seek_kp*j1_error -
+                    args.j1_contact_seek_kd*float(data.qvel[dids[0]]),
+                    -args.j1_contact_seek_max_torque,
+                     args.j1_contact_seek_max_torque))
             if preclose:
                 j6_preclose_drift_max_deg=max(
                     j6_preclose_drift_max_deg,
@@ -780,8 +823,12 @@ def execute(args):
                 else:
                     c["tip_distance_mm"]=None
                 c["solver_time_s"]=float(data.time-model.opt.timestep)
-            data.qpos[list(qids)]=armhome
-            data.qvel[list(dids)]=0.
+            if dynamic_j1:
+                data.qpos[list(qids[1:])]=armhome[1:]
+                data.qvel[list(dids[1:])]=0.
+            else:
+                data.qpos[list(qids)]=armhome
+                data.qvel[list(dids)]=0.
             if preclose:
                 data.qpos[jawq]=open_angle
                 data.qvel[jawd]=0.
@@ -831,7 +878,7 @@ def execute(args):
                 moving_normal_n >= args.j6_bilateral_min_force_n and
                 fixed_normal_n < args.j6_bilateral_min_force_n):
                 bounded_j1_follow_after_moving_contact()
-            if stage=="j1_precontact":
+            if stage in ("j1_precontact","j1_force_seek"):
                 if counts["fixed"]>0:
                     j1_precontact_contact_steps+=1
                 if fixed_normal_n>=args.j1_min_fixed_normal_force_n:
@@ -842,7 +889,20 @@ def execute(args):
                         j1_precontact_reason="fixed_jaw_contact_without_force"
                 if j1_precontact_force_confirmed_steps>=args.j1_force_hold_steps:
                     j1_precontact_reached=True
+                    if stage=="j1_force_seek":
+                        j1_contact_force_confirmed=True
                     j1_precontact_reason="fixed_jaw_force_confirmed"
+            if stage=="j1_force_seek" and fixed_normal_n>=args.j1_min_fixed_normal_force_n:
+                j1_force_seek_contact_steps+=1
+            if dynamic_j1:
+                j1_force_seek_max_abs_deviation_deg=max(
+                    j1_force_seek_max_abs_deviation_deg,
+                    abs(math.degrees(float(data.qpos[qids[0]]-armhome[0]))))
+                if (j1_contact_force_confirmed and
+                    fixed_normal_n<args.j1_min_fixed_normal_force_n):
+                    j1_force_seek_contact_loss_steps+=1
+                else:
+                    j1_force_seek_contact_loss_steps=0
             for c in contacts:contactrows.append({"step":i,"time_s":float(data.time),**c})
             rotation=np.empty(9)
             mujoco.mju_quat2Mat(rotation,data.qpos[freeq+3:freeq+7])
@@ -994,7 +1054,15 @@ def execute(args):
             jaw_self_gap_mm=float(1000.*bench.geometry_gaps(
                 model,data,fixed,moving))
             jaw_self_gap_min_mm=min(jaw_self_gap_min_mm,jaw_self_gap_mm)
-            if jaw_impact_force_n>args.jaw_force_spike_abort_n:
+            if (dynamic_j1 and
+                (j1_force_seek_max_abs_deviation_deg>args.j1_contact_seek_deg+.05
+                 or abs(float(data.qvel[dids[0]]))>.5)):
+                contact_abort_reason="J1_DYNAMIC_SEEK_MOTION_LIMIT"
+            elif (dynamic_j1 and j1_contact_force_confirmed and
+                  j1_force_seek_contact_loss_steps>=50 and
+                  stage in ("close","hold","contact_hold")):
+                contact_abort_reason="J1_FIXED_CONTACT_LOST"
+            elif jaw_impact_force_n>args.jaw_force_spike_abort_n:
                 contact_abort_reason="JAW_CONTACT_FORCE_SPIKE"
             elif stage=="j234_prealign_failed":
                 contact_abort_reason="J234_PREALIGN_INSUFFICIENT"
@@ -1166,6 +1234,17 @@ def execute(args):
         "j1_min_fixed_normal_force_n":float(args.j1_min_fixed_normal_force_n),
         "j1_force_hold_steps":int(args.j1_force_hold_steps),
         "j1_precontact_motion_steps":int(j1_precontact_motion_steps),
+        "j1_contact_first_enabled":bool(j1_contact_first_enabled),
+        "j1_contact_force_confirmed_before_j6":bool(
+            j1_contact_force_confirmed),
+        "j1_force_seek_contact_steps":int(j1_force_seek_contact_steps),
+        "j1_force_seek_max_abs_deviation_deg":float(
+            j1_force_seek_max_abs_deviation_deg),
+        "j1_force_seek_contact_loss_steps":int(
+            j1_force_seek_contact_loss_steps),
+        "j1_force_seek_torque_max_nm":float(
+            args.j1_contact_seek_max_torque),
+        "j1_force_seek_duration_s":float(args.j1_contact_seek_s),
         "j1_follow_fixed_jaw_diagnostic":bool(args.j1_follow_fixed_jaw_diagnostic),
         "j1_follow_accepted_steps":int(j1_follow_accepted_steps),
         "j1_follow_rejected_steps":int(j1_follow_rejected_steps),
@@ -1328,6 +1407,18 @@ def main():
     p.add_argument("--j1-root-clearance-mm",type=float,default=1.0)
     p.add_argument("--j1-fingertip-zone-mm",type=float,default=45.0)
     p.add_argument("--j1-max-deg",type=float,default=8.)
+    p.add_argument("--j1-contact-first-diagnostic",action="store_true",
+                   help="Simulation-only: dynamic torque-limited J1 seek; "
+                        "require 5 consecutive fixed-jaw force samples "
+                        "BEFORE J6 may close")
+    p.add_argument("--j1-contact-seek-s",type=float,default=2.,
+                   help="Time reserved for force-first J1 contact confirmation")
+    p.add_argument("--j1-contact-seek-deg",type=float,default=.20,
+                   help="Target delta from safe J1 approach angle in degrees")
+    p.add_argument("--j1-contact-seek-kp",type=float,default=.35)
+    p.add_argument("--j1-contact-seek-kd",type=float,default=.05)
+    p.add_argument("--j1-contact-seek-max-torque",type=float,default=.006,
+                   help="Exploratory J1 simulation torque cap, NOT hardware rating")
     p.add_argument("--j1-follow-fixed-jaw-diagnostic",action="store_true",
                    help="Sim-only: bounded J1 follow after moving-jaw contact; "
                         "preserve gap >=0.05mm and total J1 delta <=0.20deg")
@@ -1413,7 +1504,16 @@ def main():
         not(0<=args.j234_min_progress_mm<=args.j234_reposition_mm) or
         args.j234_tcp_object_clearance_mm<0 or
         args.j234_object_clearance_mm<0 or
-        args.settle_s+args.j234_s+args.approach_s+args.close_s>=args.duration_s):
+        (args.settle_s+args.j234_s+args.approach_s+args.close_s+
+         (args.j1_contact_seek_s if args.j1_contact_first_diagnostic else 0)
+         >=args.duration_s) or
+        not(0<args.j1_contact_seek_s<=3 and
+            0<args.j1_contact_seek_deg<=.3 and
+            0<args.j1_contact_seek_kp<=2 and
+            0<=args.j1_contact_seek_kd<=1 and
+            0<args.j1_contact_seek_max_torque<=.02) or
+        (args.j1_contact_first_diagnostic and
+         args.j1_follow_fixed_jaw_diagnostic)):
         p.error("Invalid FPS, table clearance or lift mm")
     execute(args)
 
