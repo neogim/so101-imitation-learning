@@ -379,6 +379,10 @@ def execute(args):
     j1_precontact_max_fixed_normal_force_n=0.
     j1_precontact_motion_steps=0
     j1_precontact_exceeded_tilt=False
+    j1_follow_initial_rad=None
+    j1_follow_accepted_steps=0
+    j1_follow_rejected_steps=0
+    j1_follow_min_gap_mm=float("inf")
     grip_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,bench.FINGER_BODY)
     mj_initial_gripper_z=float(data.xpos[grip_body,2])
     mj_initial_object_z=float(data.qpos[freeq+2])
@@ -552,6 +556,58 @@ def execute(args):
         armhome=best[1]
         j1_precontact_direction=best[2]
         j1_precontact_motion_steps+=1
+        data.qpos[list(qids)]=armhome
+        mujoco.mj_forward(model,data)
+        return True
+
+    def bounded_j1_follow_after_moving_contact():
+        """Experimental: keep the fixed jaw near a moving bottle, no forced overlap.
+
+        Called ONLY after the moving jaw has contacted the bottle.
+        Move J1 by <=0.003 degrees/step, and at most 0.20 degrees total.
+        Reject predicted fixed-jaw overlap, table/root collision and bad tilt.
+        Does not prove a real force-controlled contact-first grasp.
+        """
+        nonlocal armhome,j1_follow_initial_rad,j1_follow_accepted_steps
+        nonlocal j1_follow_rejected_steps,j1_follow_min_gap_mm
+        if j1_follow_initial_rad is None:
+            j1_follow_initial_rad=float(armhome[0])
+        current_gap=float(bench.geometry_gaps(model,data,obj,fixed))
+        j1_follow_min_gap_mm=min(j1_follow_min_gap_mm,current_gap*1000.)
+        # Small positive clearance avoids kinematically forcing the jaws
+        # through the object, which previously created >=100N impulses.
+        if current_gap<=.00008 or current_gap>.001:
+            return False
+        if abs(math.degrees(armhome[0]-j1_follow_initial_rad))>=.20:
+            j1_follow_rejected_steps+=1
+            return False
+        saved=data.qpos[list(qids)].copy()
+        selected=None
+        for sign in (-1,1):
+            candidate=armhome.copy()
+            candidate[0]=float(np.clip(candidate[0]+sign*math.radians(.003),
+                                       lows[0],highs[0]))
+            if abs(math.degrees(candidate[0]-j1_follow_initial_rad))>.20:
+                continue
+            data.qpos[list(qids)]=candidate
+            mujoco.mj_forward(model,data)
+            gap=float(bench.geometry_gaps(model,data,obj,fixed))
+            table_gap=min((bench.signed_pair_gap(model,data,g,table)
+                           for g in robot_geoms),default=float("inf"))
+            unsafe=near_root_obstacle()
+            root_safe=(unsafe is None or
+                       unsafe[0]>=args.j1_root_clearance_mm/1000.)
+            if (.00005<=gap<current_gap-1.e-8 and root_safe and
+                table_gap>=args.table_clearance_mm/1000.):
+                if selected is None or gap<selected[0]:
+                    selected=(gap,candidate.copy())
+        data.qpos[list(qids)]=saved
+        mujoco.mj_forward(model,data)
+        if selected is None:
+            j1_follow_rejected_steps+=1
+            return False
+        armhome=selected[1]
+        j1_follow_accepted_steps+=1
         data.qpos[list(qids)]=armhome
         mujoco.mj_forward(model,data)
         return True
@@ -767,6 +823,14 @@ def execute(args):
                     fixed_normal_n>=args.j6_bilateral_min_force_n else
                     "excessive_one_sided_force")
                 closing_hold_target=float(data.qpos[jawq])
+            # Optional contact-follow diagnosis. This is NOT rigid forcing
+            # of a guaranteed grasp: move J1 minutely only when J6 has
+            # actually contacted Muhi, and reject any projected overlap.
+            if (args.j1_follow_fixed_jaw_diagnostic and
+                stage in ("close","hold","contact_hold") and
+                moving_normal_n >= args.j6_bilateral_min_force_n and
+                fixed_normal_n < args.j6_bilateral_min_force_n):
+                bounded_j1_follow_after_moving_contact()
             if stage=="j1_precontact":
                 if counts["fixed"]>0:
                     j1_precontact_contact_steps+=1
@@ -1102,6 +1166,14 @@ def execute(args):
         "j1_min_fixed_normal_force_n":float(args.j1_min_fixed_normal_force_n),
         "j1_force_hold_steps":int(args.j1_force_hold_steps),
         "j1_precontact_motion_steps":int(j1_precontact_motion_steps),
+        "j1_follow_fixed_jaw_diagnostic":bool(args.j1_follow_fixed_jaw_diagnostic),
+        "j1_follow_accepted_steps":int(j1_follow_accepted_steps),
+        "j1_follow_rejected_steps":int(j1_follow_rejected_steps),
+        "j1_follow_min_gap_mm":float(j1_follow_min_gap_mm) if
+            math.isfinite(j1_follow_min_gap_mm) else None,
+        "j1_follow_total_deg":math.degrees(float(armhome[0]-
+            (j1_follow_initial_rad if j1_follow_initial_rad is not None
+             else armhome[0]))),
         "j1_precontact_tilt_abort":bool(j1_precontact_exceeded_tilt),
         "approach_requested_mm":float(args.approach_mm),
         "approach_executed_max_horizontal_mm":float(approach_max_mm),
@@ -1256,6 +1328,9 @@ def main():
     p.add_argument("--j1-root-clearance-mm",type=float,default=1.0)
     p.add_argument("--j1-fingertip-zone-mm",type=float,default=45.0)
     p.add_argument("--j1-max-deg",type=float,default=8.)
+    p.add_argument("--j1-follow-fixed-jaw-diagnostic",action="store_true",
+                   help="Sim-only: bounded J1 follow after moving-jaw contact; "
+                        "preserve gap >=0.05mm and total J1 delta <=0.20deg")
     p.add_argument("--j1-stop-before-contact-mm",type=float,default=.65,
                    help="Leave 0.65mm between fixed jaw and Muhi before J6 starts")
     p.add_argument("--j6-precontact-max-torque",type=float,default=.015,
