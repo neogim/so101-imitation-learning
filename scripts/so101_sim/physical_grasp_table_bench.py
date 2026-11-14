@@ -259,6 +259,12 @@ def execute(args):
         print(json.dumps({"status":info["status"],"diagnostic":diag},ensure_ascii=False,indent=2))
         return
     model,data,qids,dids,lows,highs,jawq,jawd,freeq,fixed,moving,obj,table,center,open_angle,closed_angle,robot_geoms=built
+    # build_model() has its own scope. Resolve the camera ID locally where
+    # render-loop diagnostics actually use it.
+    wrist_camera_id=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
+    if wrist_camera_id<0:
+        raise ValueError(f"Wrist RGB camera missing: {wrist.CAMERA}")
     armhome=data.qpos[list(qids)].copy()
     # Approach with a fingertip-area reference, not the gripper motor body.
     # The J1-J4 move is simulation-only prescribed IK, never a servo command.
