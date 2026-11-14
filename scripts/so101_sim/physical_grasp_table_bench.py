@@ -411,6 +411,15 @@ def execute(args):
     data.mocap_quat[backdrop_mid]=wrist_quat
     mujoco.mj_forward(model,data)
     armhome=data.qpos[list(qids)].copy()
+    # Avoid starting exactly at a soft upper limit. One degree is inside
+    # the URDF range; this is INITIALIZATION before the physics run,
+    # never a qpos overwrite during dynamic closure.
+    j6_open_hold_angle=(
+        open_angle-math.radians(1.) if args.simple_grasp else open_angle)
+    if args.simple_grasp:
+        data.qpos[jawq]=j6_open_hold_angle
+        data.qvel[jawd]=0.
+        mujoco.mj_forward(model,data)
     # Approach with a fingertip-area reference, not the gripper motor body.
     # The J1-J4 move is simulation-only prescribed IK, never a servo command.
     tip_site=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_SITE,TIP_SITE)
@@ -818,8 +827,17 @@ def execute(args):
                 demand=open_angle
             else:
                 u=min(1.,max(0.,(t-j1_force_seek_end)/args.close_s))
-                smooth=(u if args.simple_grasp else u*u*(3.-2.*u))
-                demand=open_angle+smooth*(closed_angle-open_angle)
+                if args.simple_grasp:
+                    # Real-robot style position trajectory: no velocity
+                    # discontinuity in the POSITION SETPOINT, force and
+                    # speed remain explicitly bounded in the simulation.
+                    speed=math.radians(args.j6_position_speed_deg_s)
+                    demand=max(
+                        closed_angle,j6_open_hold_angle-
+                        max(0.,t-j1_force_seek_end)*speed)
+                else:
+                    smooth=u*u*(3.-2.*u)
+                    demand=open_angle+smooth*(closed_angle-open_angle)
                 if closing_low_force_stop and closing_hold_target is not None:
                     demand=closing_hold_target
                     stage="contact_hold"
@@ -884,7 +902,7 @@ def execute(args):
                 j6_preclose_drift_max_deg=max(
                     j6_preclose_drift_max_deg,
                     abs(math.degrees(float(data.qpos[jawq]-open_angle))))
-                data.qpos[jawq]=open_angle
+                data.qpos[jawq]=j6_open_hold_angle
                 data.qvel[jawd]=0.
                 j6_open_hold_steps+=1
                 commanded_torque=0.
@@ -929,7 +947,7 @@ def execute(args):
                 data.qpos[list(qids)]=armhome
                 data.qvel[list(dids)]=0.
             if preclose:
-                data.qpos[jawq]=open_angle
+                data.qpos[jawq]=j6_open_hold_angle
                 data.qvel[jawd]=0.
             mujoco.mj_forward(model,data)
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
@@ -1417,6 +1435,14 @@ def execute(args):
         "simple_grasp_mode":bool(args.simple_grasp),
         "simple_grasp_fixed_jaw_stop_gap_mm":(
             args.j1_stop_before_contact_mm if args.simple_grasp else None),
+        "j6_position_speed_deg_s":(
+            args.j6_position_speed_deg_s if args.simple_grasp else None),
+        "j6_simple_position_pd_kp_nm_rad":(
+            args.kp if args.simple_grasp else None),
+        "j6_simple_position_pd_kd_nm_s_rad":(
+            args.kd if args.simple_grasp else None),
+        "j6_simple_max_torque_nm":(
+            args.max_torque if args.simple_grasp else None),
         "simple_grasp_note":(
             "Study mode only: target initial fixed-jaw geometric proximity, "
             "then bounded J6 PD close; actual fixed+moving contacts and 5mm "
@@ -1536,6 +1562,8 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
+    p.add_argument("--j6-position-speed-deg-s",type=float,default=35.,
+                   help="Simple-grasp maximum command trajectory speed, deg/s")
     p.add_argument("--simple-grasp",action="store_true",
                    help="Study-mode: near-contact fixed jaw then purposeful "
                         "bounded J6 closure; original bench unchanged by default")
@@ -1632,8 +1660,17 @@ def main():
         if args.j1_contact_first_diagnostic:
             p.error("--simple-grasp cannot combine with J1 force-seek")
         args.j1_stop_before_contact_mm=.10
-        args.j6_precontact_max_torque=.06
-        args.max_torque=.06
+        # Explicit, speed-limited position target with torque-limited
+        # dynamic PD tracking (never teleport J6 during closure).
+        args.close_s=max(args.close_s,3.5)
+        args.duration_s=max(args.duration_s,
+            args.settle_s+args.j234_s+args.approach_s+args.close_s+1.5)
+        args.kp=.8
+        args.kd=.08
+        args.j6_precontact_max_torque=.25
+        args.max_torque=.25
+    if not (5<=args.j6_position_speed_deg_s<=60):
+        p.error("J6 position setpoint speed must be 5--60 deg/s")
     if not (0 <= args.target_grasp_depth_min_mm <
             args.target_grasp_depth_max_mm <= 70):
         p.error("target grasp depth must satisfy 0 <= min < max <= 70mm")
