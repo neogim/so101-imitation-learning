@@ -73,6 +73,12 @@ def main():
     ap.add_argument("--min-path-clearance-mm", type=float, default=4.)
     ap.add_argument("--tcp-tolerance-mm", type=float, default=12.)
     ap.add_argument("--max-iterations", type=int, default=400)
+    ap.add_argument("--j4-policy", choices=("prefer-fixed","locked","free"),
+                    default="prefer-fixed",
+                    help="Weighted DLS penalizes J4 motion; locked excludes J4 "
+                         "entirely; free reproduces the original DLS")
+    ap.add_argument("--j4-weight", type=float, default=80.,
+                    help="Penalty on J4 joint velocity when prefer-fixed")
     ap.add_argument("--reach-mode", choices=("staged", "direct"),
                     default="staged",
                     help="Staged: lift TCP, move over target, descend; "
@@ -89,6 +95,7 @@ def main():
         ap.error("Output folder exists; choose a fresh path")
     if not finite([*args.muhi_xy_m, args.table_top_z_m, *args.home_deg,
                    *args.pregrasp_offset_m, args.via_height_mm,
+                   args.j4_weight,
                    args.min_initial_clearance_mm,
                    args.min_path_clearance_mm, args.tcp_tolerance_mm]):
         ap.error("Non-finite pose or tolerance")
@@ -97,7 +104,8 @@ def main():
             1. <= args.min_path_clearance_mm <= 20. and
             1. <= args.tcp_tolerance_mm <= 30. and
             10 <= args.max_iterations <= 1500 and
-            30 <= args.via_height_mm <= 250):
+            30 <= args.via_height_mm <= 250 and
+            1 <= args.j4_weight <= 1000):
         ap.error("Invalid guard thresholds")
 
     args.out.mkdir(parents=True, exist_ok=False)
@@ -270,6 +278,9 @@ def main():
         min_gap = initial_object_gap
         min_table_gap = initial_table_gap
         report["planned_tcp_position_only"] = True
+        report["j4_policy"] = args.j4_policy
+        report["j4_weight"] = float(args.j4_weight)
+        report["j4_home_deg"] = float(math.degrees(home[3]))
         raised_z = max(float(start_tcp[2]), float(target[2])) + (
             args.via_height_mm / 1000.)
         if args.reach_mode == "staged":
@@ -307,13 +318,29 @@ def main():
                 jacp = np.zeros((3,model.nv))
                 jacr = np.zeros((3,model.nv))
                 mujoco.mj_jacSite(model,data,jacp,jacr,tcp_id)
-                J = jacp[:,ds[:4]]
-                step = J.T @ np.linalg.solve(
-                    J@J.T + .04**2*np.eye(3),e)
+                # Weighted DLS: J1 rotates the base; J2/J3 provide most
+                # reach. Penalize J4 wrist-flex unless it is really needed.
+                # A user may lock J4 or reproduce the old unconstrained DLS.
+                if args.j4_policy == "locked":
+                    indices = (0,1,2)
+                    weights = np.ones(3)
+                else:
+                    indices = (0,1,2,3)
+                    weights = np.array([1.,1.,1.,
+                        args.j4_weight if args.j4_policy == "prefer-fixed" else 1.])
+                J = jacp[:,[ds[j] for j in indices]]
+                weighted_jac = J / weights[np.newaxis,:]
+                step_active = (J.T @ np.linalg.solve(
+                    weighted_jac @ J.T + .04**2*np.eye(3),e))/weights
+                step = np.zeros(4)
+                for j,delta in zip(indices,step_active):
+                    step[j]=delta
                 if not finite(step):
                     stage_failure = "NONFINITE_DLS_UPDATE"
                     break
-                step = np.clip(step,-.012,.012)
+                step=np.clip(step,-.012,.012)
+                if args.j4_policy == "prefer-fixed":
+                    step[3]=np.clip(step[3],-.002,.002)
                 best = None
                 for scale in (1., .5, .25, .125, .0625):
                     proposed = pose.copy()
@@ -388,11 +415,35 @@ def main():
         mujoco.mj_forward(model, data)
         reached_error_mm = float(
             np.linalg.norm(target-data.site_xpos[tcp_id])*1000.)
+        # Identify the actual closest robot-vs-object witness when a stage
+        # stalls. This is more actionable than a single global clearance.
+        data.qpos[qs]=pose
+        mujoco.mj_forward(model,data)
+        closest=(float("inf"),None,None)
+        for g in robot_geoms:
+            for og in obj_geoms:
+                gap=dist(model,data,g,og)
+                if gap<closest[0]:
+                    closest=(gap,int(g),int(og))
+        def geom_name(g):
+            return (mujoco.mj_id2name(
+                model,mujoco.mjtObj.mjOBJ_GEOM,g) or f"geom_{g}")
+        report["closest_robot_object_pair_at_end"]={
+            "clearance_mm":closest[0]*1000.,
+            "robot_geom_id":closest[1],
+            "robot_geom_name":geom_name(closest[1]),
+            "robot_body_name":(
+                mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,
+                                  int(model.geom_bodyid[closest[1]]))
+                if closest[1] is not None else None),
+            "muhi_geom_name":geom_name(closest[2]),
+        }
         report.update({
             "reach_accepted_steps": len(trajectory)-1,
             "reach_stage_results": stage_summaries,
             "reach_final_tcp_error_mm": reached_error_mm,
             "reach_final_joint_deg": np.degrees(pose).tolist(),
+            "j4_total_motion_deg":float(math.degrees(pose[3]-home[3])),
             "reach_min_robot_object_clearance_mm": min_gap*1000.,
             "reach_min_robot_table_clearance_mm": min_table_gap*1000.,
             "reach_failure_reason": overall_failure,
