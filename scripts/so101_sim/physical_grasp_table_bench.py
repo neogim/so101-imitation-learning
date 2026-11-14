@@ -1029,6 +1029,13 @@ def execute(args):
                 "j6_target_rad":float(demand),
                 "j6_torque_nm":float(data.qfrc_applied[jawd]),
                 "j6_commanded_torque_nm":commanded_torque,
+                "j6_velocity_deg_s":float(math.degrees(data.qvel[jawd])),
+                "j6_acceleration_rad_s2":float(data.qacc[jawd]),
+                "j6_constraint_torque_nm":float(data.qfrc_constraint[jawd]),
+                "j6_bias_torque_nm":float(data.qfrc_bias[jawd]),
+                "j6_passive_torque_nm":float(data.qfrc_passive[jawd]),
+                "j6_actuator_torque_nm":float(data.qfrc_actuator[jawd]),
+                "j6_open_limit_deg":float(math.degrees(open_angle)),
                 "approach_tip_horizontal_mm":float(
                     np.linalg.norm(data.site_xpos[tip_site,:2]-tip_xyz[:2])*1000.),
                 "object_x_m":float(data.qpos[freeq]),
@@ -1224,6 +1231,34 @@ def execute(args):
         sum(abs(r["j6_commanded_torque_nm"])>=.99*args.max_torque
             for r in closing_rows)/len(closing_rows) if closing_rows else 0.)
     j6_not_closing=bool(closing_rows and j6_actual_closure_deg<10.)
+    j6_dynamics_close=[r for r in rows
+                       if r["stage"] in ("close","hold")]
+    def extremum(key):
+        if not j6_dynamics_close:
+            return None
+        return {
+            "min":min(r[key] for r in j6_dynamics_close),
+            "max":max(r[key] for r in j6_dynamics_close),
+        }
+    # Report dynamics alongside existing geometric gap; do not infer contact
+    # forces from mj_geomDistance. Snapshot quantities are from MuJoCo.
+    j6_dynamics={
+        "commanded_torque_nm":extremum("j6_commanded_torque_nm"),
+        "constraint_torque_nm":extremum("j6_constraint_torque_nm"),
+        "bias_torque_nm":extremum("j6_bias_torque_nm"),
+        "passive_torque_nm":extremum("j6_passive_torque_nm"),
+        "actuator_torque_nm":extremum("j6_actuator_torque_nm"),
+        "velocity_deg_s":extremum("j6_velocity_deg_s"),
+        "angle_deg":{
+            "min":min(math.degrees(r["j6_rad"]) for r in j6_dynamics_close)
+                   if j6_dynamics_close else None,
+            "max":max(math.degrees(r["j6_rad"]) for r in j6_dynamics_close)
+                   if j6_dynamics_close else None},
+        "open_limit_deg":math.degrees(open_angle),
+        "close_limit_deg":math.degrees(closed_angle),
+        "caution":"MuJoCo joint constraint/forces are simulation solver terms; "
+                  "not measured motor torques or actual contact proof."
+    }
     # This is a TABLE-CONTACT criterion only. NEVER classify this as
     # successful pickup: the object may still be resting on the table.
     simultaneous=sum(r["bilateral"] for r in hold)
@@ -1378,6 +1413,7 @@ def execute(args):
         "j6_preclose_drift_max_deg_before_correction":
             float(j6_preclose_drift_max_deg),
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
+        "j6_dynamics_diagnostic":j6_dynamics,
         "j6_torque_saturation_fraction_during_close_hold":
             float(j6_command_saturation_fraction),
         "j6_not_closing":j6_not_closing,
