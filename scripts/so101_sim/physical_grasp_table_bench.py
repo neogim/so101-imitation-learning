@@ -107,6 +107,63 @@ def install_fixed_surface_proxy_bench(spec, fine_mm=3., coarse_mm=6.,
             "experimental_surface_approximation":True}
 
 
+def install_moving_surface_proxy_bench(spec, pitch_mm=3., max_boxes=2400):
+    """Reversible STL surface collision boxes in moving-jaw BODY axes.
+
+    The source visual mesh remains unchanged, and this is an intentionally
+    opt-in approximation to compare against MuJoCo's convex mesh collider.
+    Pose-invariant: boxes are defined in the moving link's local frame.
+    """
+    import gripper_fixed_surface_proxy_phase_a as proxy
+    import gripper_stl_convex_overlay_phase_a as overlay
+    import gripper_geometry_phase_a_audit as audit
+    source=spec.compile()
+    ref=proxy.get_pose(source,[-30.,-30.,45.,-20.,-90.],40.)
+    jaw_body="moving_jaw_so101_v1_link"
+    source_id,_=audit.owned_mesh_geom(source,jaw_body,audit.MOVING_MESH)
+    bid=mujoco.mj_name2id(source,mujoco.mjtObj.mjOBJ_BODY,jaw_body)
+    body_pos=np.asarray(ref.xpos[bid]).copy()
+    body_rot=np.asarray(ref.xmat[bid]).reshape(3,3)
+    vertices,faces=overlay.mesh_in_gripper(
+        source,ref,source_id,body_pos,body_rot)
+    # The mesh triangles are in moving-jaw local XYZ, not in gripper TCP
+    # coordinates. Use a single grid pitch to avoid false depth assumptions.
+    boxes=proxy.triangles_to_surface_boxes(
+        vertices,faces,pitch_mm,pitch_mm,max_boxes)
+    targets=[g for g in spec.geoms if
+        str(getattr(g,"meshname","") or "").startswith(audit.MOVING_MESH)]
+    if len(targets)!=1:
+        raise RuntimeError(
+            f"Expected one moving jaw collision STL, found {len(targets)}")
+    original_ct=int(source.geom_contype[source_id])
+    original_ca=int(source.geom_conaffinity[source_id])
+    if not original_ct or not original_ca:
+        raise RuntimeError("Moving jaw collision disabled in original model")
+    targets[0].contype=0
+    targets[0].conaffinity=0
+    moving=spec.body(jaw_body)
+    for i,box in enumerate(boxes):
+        geom=moving.add_geom()
+        geom.name=f"phase_b_moving_surface_box_{i:04d}"
+        geom.type=mujoco.mjtGeom.mjGEOM_BOX
+        geom.pos=(box["center_tcp_mm"]/1000.).tolist()
+        geom.size=(box["half_mm"]/1000.).tolist()
+        geom.contype=original_ct
+        geom.conaffinity=original_ca
+        geom.density=0
+        geom.group=4
+        geom.rgba=[.91,.65,.16,.16]
+    return {
+        "enabled":True,"boxes":len(boxes),
+        "pitch_mm":pitch_mm,
+        "source_visual_stl_unchanged":True,
+        "source_urdf_modified":False,
+        "experimental_surface_proxy":True,
+        "note":"Collision proxy in moving link local axes; not validated "
+               "against real jaw or contact-force calibration",
+    }
+
+
 def build_model(args):
     """Select Muhi pose ONLY if its supporting table also clears the arm."""
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
@@ -157,6 +214,9 @@ def build_model(args):
         install_fixed_surface_proxy_bench(spec)
         if getattr(args,"fixed_jaw_surface_proxy",False) else
         {"enabled":False})
+    moving_proxy_metadata=(
+        install_moving_surface_proxy_bench(spec)
+        if args.moving_jaw_surface_proxy else {"enabled":False})
     if args.simple_grasp:
         # URDF declares PositionJointInterface for gripper but MuJoCo's
         # URDF compiler does not create a servo automatically. Install one
@@ -175,6 +235,8 @@ def build_model(args):
         servo.forcelimited=True
         servo.forcerange[:]=[-args.max_torque,args.max_torque]
     model=spec.compile()
+    # This is an opt-in temporary collision representation only.
+    # Geometry source STL is still compiled for visual display.
     # Reduce camera near clipping ONLY in this diagnostic benchmark.
     wrist_near_original=float(model.vis.map.znear)
     model.vis.map.znear=min(wrist_near_original,args.wrist_near_ratio)
@@ -1531,6 +1593,8 @@ def execute(args):
             "MuJoCo compiled position actuator via data.ctrl"
             if args.simple_grasp else "manual qfrc_applied torque PD"),
         "j6_servo_actuator_exists":bool(args.simple_grasp),
+        "moving_jaw_surface_proxy_enabled":bool(args.moving_jaw_surface_proxy),
+        "moving_jaw_proxy_requires_validation":bool(args.moving_jaw_surface_proxy),
         "j6_servo_max_force_nm":(
             args.max_torque if args.simple_grasp else None),
         "geometric_jaw_overlap_abort_enabled":not args.simple_grasp,
@@ -1680,6 +1744,9 @@ def main():
     p.add_argument("--j5-deg",type=float,default=-90.)
     p.add_argument("--j6-position-speed-deg-s",type=float,default=35.,
                    help="Simple-grasp maximum command trajectory speed, deg/s")
+    p.add_argument("--moving-jaw-surface-proxy",action="store_true",
+                   help="EXPERIMENTAL: moving jaw STL convex collider -> "
+                        "3mm local surface boxes; original STL unchanged")
     p.add_argument("--simple-grasp",action="store_true",
                    help="Study-mode: near-contact fixed jaw then purposeful "
                         "bounded J6 closure; original bench unchanged by default")
@@ -1767,6 +1834,8 @@ def main():
     p.add_argument("--fps",type=float,default=12.)
     p.add_argument("--render-every",type=int,default=20)
     args=p.parse_args()
+    if args.moving_jaw_surface_proxy and not args.fixed_jaw_surface_proxy:
+        p.error("--moving-jaw-surface-proxy requires fixed jaw proxy")
     if args.simple_grasp:
         # Deliberately minimal sequence: fixed jaw approaches ~0.1 mm,
         # J6 closes with a bounded PD torque, then bilateral-contact
