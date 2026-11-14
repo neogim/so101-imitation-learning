@@ -266,6 +266,11 @@ def execute(args):
         approach_target[:2]+=delta_xy/distance_xy*approach_distance
     approach_blocked_steps=0
     approach_max_mm=0.
+    j1_near_root_rejections=0
+    j1_nearest_unsafe_geom=None
+    j1_nearest_unsafe_gap_mm=None
+    j1_nearest_unsafe_tip_distance_mm=None
+    j1_stop_reason=None
     # J2/J3/J4 first align the TCP with the bottle. J1 must never be
     # tasked with both approaching the bottle and correcting wrist geometry.
     j234_start_q=armhome[1:4].copy()
@@ -382,6 +387,28 @@ def execute(args):
         mujoco.mj_forward(model,data)
         return trial,(table_gap>=args.table_clearance_mm/1000. and
                       object_gap>=args.approach_clearance_mm/1000.)
+    def near_root_obstacle():
+        """Find first sub-mm robot/object approach away from the TCP.
+
+        MuJoCo's gripper_link owns both servo/palm and fixed jaw mesh
+        geometry. Body ownership alone cannot classify fingertip contacts.
+        Witness points from mj_geomDistance locate where the geometry
+        approaches the object. Return the closest non-tip pair.
+        """
+        nearest=None
+        tip=np.asarray(data.site_xpos[tip_site],dtype=float)
+        for g in robot_geoms:
+            for o in obj:
+                witness=np.zeros(6,dtype=float)
+                gap=float(mujoco.mj_geomDistance(
+                    model,data,int(g),int(o),.15,witness))
+                from_tip=float(np.linalg.norm(witness[:3]-tip))
+                if from_tip<=args.j1_fingertip_zone_mm/1000.:
+                    continue
+                if nearest is None or gap<nearest[0]:
+                    nearest=(gap,int(g),int(o),from_tip)
+        return nearest
+
     def safe_j1_contact_step():
         """Try only J1, choose sign that reduces fixed-jaw distance.
 
@@ -389,6 +416,8 @@ def execute(args):
         that penetrate the object or table; no fake contact or pose reset.
         """
         nonlocal armhome,j1_precontact_direction,j1_precontact_motion_steps
+        nonlocal j1_near_root_rejections,j1_nearest_unsafe_geom
+        nonlocal j1_nearest_unsafe_gap_mm,j1_nearest_unsafe_tip_distance_mm
         gap0=bench.geometry_gaps(model,data,obj,fixed)
         best=None
         for sign in (-1,1):
@@ -402,7 +431,17 @@ def execute(args):
             moving_gap=bench.geometry_gaps(model,data,obj,moving)
             table_gap=min((bench.signed_pair_gap(model,data,g,table)
                          for g in robot_geoms),default=float("inf"))
-            if (fixed_gap >= -args.j1_max_penetration_mm/1000. and
+            unsafe=near_root_obstacle()
+            root_blocked=(unsafe is not None and
+                          unsafe[0]<args.j1_root_clearance_mm/1000.)
+            if root_blocked:
+                j1_near_root_rejections+=1
+                j1_nearest_unsafe_geom=mujoco.mj_id2name(
+                    model,mujoco.mjtObj.mjOBJ_GEOM,unsafe[1])
+                j1_nearest_unsafe_gap_mm=float(unsafe[0]*1000.)
+                j1_nearest_unsafe_tip_distance_mm=float(unsafe[3]*1000.)
+            if (not root_blocked and
+                fixed_gap >= -args.j1_max_penetration_mm/1000. and
                 moving_gap >= args.j1_moving_clearance_mm/1000. and
                 table_gap >= args.table_clearance_mm/1000. and
                 fixed_gap < gap0-1e-7 and
@@ -462,6 +501,8 @@ def execute(args):
                     if not moved:
                         approach_blocked_steps+=1
                         j1_precontact_reason="no_safe_j1_direction"
+                        if j1_near_root_rejections:
+                            j1_stop_reason="root_collision_candidate_rejected"
                     else:
                         j1_precontact_reason="j1_approaching"
                 j1_precontact_min_fixed_gap_mm=min(
@@ -719,6 +760,12 @@ def execute(args):
         "j234_prealign_rejected_steps":int(j234_rejected_steps),
         "j234_total_joint_change_deg":np.degrees(
             armhome[1:4]-j234_start_q).tolist(),
+        "j1_near_root_rejections":int(j1_near_root_rejections),
+        "j1_nearest_unsafe_geom":j1_nearest_unsafe_geom,
+        "j1_nearest_unsafe_gap_mm":j1_nearest_unsafe_gap_mm,
+        "j1_nearest_unsafe_tip_distance_mm":
+            j1_nearest_unsafe_tip_distance_mm,
+        "j1_stop_reason":j1_stop_reason,
         "j1_precontact_enabled":True,
         "j1_control_note":"J1 advances gently to -0.25mm max geometry; J6 runs only after sustained measured fixed-jaw normal force; no force -> no J6.",
         "j1_precontact_reached":bool(j1_precontact_reached),
@@ -830,6 +877,8 @@ def main():
     p.add_argument("--approach-s",type=float,default=1.0,
                    help="Time reserved for gentle J1 fixed-jaw contact")
     p.add_argument("--j1-step-deg",type=float,default=.012)
+    p.add_argument("--j1-root-clearance-mm",type=float,default=1.0)
+    p.add_argument("--j1-fingertip-zone-mm",type=float,default=45.0)
     p.add_argument("--j1-max-deg",type=float,default=8.)
     p.add_argument("--j1-contact-gap-mm",type=float,default=-.25,
                    help="Guarded J1 geometric limit (signed distance, -0.25mm); contact force required for J6")
@@ -856,7 +905,9 @@ def main():
                (args.j5_deg,args.duration_s,args.settle_s,args.close_s,
                 args.kp,args.kd,args.max_torque,args.fps,
                 args.approach_mm,args.approach_s,args.approach_clearance_mm,
-                args.j1_step_deg,args.j1_max_deg,args.j1_contact_gap_mm,
+                args.j1_step_deg,args.j1_root_clearance_mm,
+                args.j1_fingertip_zone_mm,
+                args.j1_max_deg,args.j1_contact_gap_mm,
                 args.j1_max_penetration_mm,args.j1_moving_clearance_mm,
                 args.j1_max_tilt_deg,
                 args.j1_min_fixed_normal_force_n,
@@ -876,7 +927,9 @@ def main():
         not(0.5<=args.min_initial_fixed_gap_mm<args.max_initial_fixed_gap_mm<=35) or
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
         args.approach_s<=0 or args.approach_clearance_mm<0 or
-        not(0<args.j1_step_deg<=.05) or not(0<args.j1_max_deg<=15) or
+        not(0<args.j1_step_deg<=.05) or
+        not(0.2<=args.j1_root_clearance_mm<=5.) or
+        not(10<=args.j1_fingertip_zone_mm<=100) or not(0<args.j1_max_deg<=15) or
         not(-.35<=args.j1_contact_gap_mm<=.5) or
         not(0<args.j1_min_fixed_normal_force_n<=1.) or
         not(1<=args.j1_force_hold_steps<=30) or
