@@ -323,6 +323,7 @@ def execute(args):
     contact_abort_step=None
     jaw_self_gap_min_mm=float("inf")
     max_j6_open_overshoot_deg=0.
+    max_jaw_impact_force_n=0.
     render=None
     cam=None
     if args.video:
@@ -597,6 +598,11 @@ def execute(args):
             mujoco.mj_forward(model,data)
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
+            jaw_impact_force_n=sum(
+                max(0.,float(c["normal_force_n"])) for c in contacts
+                if c["kind"] in ("fixed","moving"))
+            max_jaw_impact_force_n=max(
+                max_jaw_impact_force_n,jaw_impact_force_n)
             fixed_normal_n=sum(
                 max(0.,float(c["normal_force_n"])) for c in contacts
                 if c["kind"]=="fixed" and
@@ -629,6 +635,7 @@ def execute(args):
                 "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
                 "j1_precontact_reached":bool(j1_precontact_reached),
                 "fixed_jaw_normal_force_n":float(fixed_normal_n),
+                "total_jaw_normal_force_n":float(jaw_impact_force_n),
                 "root_contact_normal_force_n":float(root_normal_n),
                 "jaw_self_gap_mm":float(1000.*bench.geometry_gaps(
                     model,data,fixed,moving)),
@@ -704,7 +711,9 @@ def execute(args):
             jaw_self_gap_mm=float(1000.*bench.geometry_gaps(
                 model,data,fixed,moving))
             jaw_self_gap_min_mm=min(jaw_self_gap_min_mm,jaw_self_gap_mm)
-            if stage=="j234_prealign_failed":
+            if jaw_impact_force_n>args.jaw_force_spike_abort_n:
+                contact_abort_reason="JAW_CONTACT_FORCE_SPIKE"
+            elif stage=="j234_prealign_failed":
                 contact_abort_reason="J234_PREALIGN_INSUFFICIENT"
             elif stage=="j1_precontact_failed":
                 contact_abort_reason="J1_PRECONTACT_NOT_ESTABLISHED"
@@ -790,6 +799,8 @@ def execute(args):
         "contact_logging":"snapshot immediately after mj_step before mj_forward; solver_time_s marks pre-integration contacts",
         "contact_abort_reason":contact_abort_reason,
         "contact_abort_step":contact_abort_step,
+        "max_jaw_impact_force_n":float(max_jaw_impact_force_n),
+        "jaw_force_spike_abort_n":float(args.jaw_force_spike_abort_n),
         "jaw_self_gap_open_mm":float(jaw_self_gap_initial_mm),
         "j6_limit_margin_deg":float(args.j6_limit_margin_deg),
         "j6_max_open_overshoot_deg":float(max_j6_open_overshoot_deg),
@@ -934,6 +945,8 @@ def main():
                    help="Measured total mass in grams, defaults to provisional 50g")
     p.add_argument("--fixed-contact-max-tip-distance-mm",type=float,default=45.)
     p.add_argument("--root-contact-abort-force-n",type=float,default=.02)
+    p.add_argument("--jaw-force-spike-abort-n",type=float,default=10.,
+                   help="Stop after impact above 10N; diagnostics only, not preventive contact control")
     p.add_argument("--duration-s",type=float,default=6.0)
     p.add_argument("--approach-mm",type=float,default=0.,
                    help="Do not move arm during baseline. The Muhi is placed closer by search.")
@@ -991,12 +1004,13 @@ def main():
                 args.j234_tcp_object_clearance_mm,args.j234_object_clearance_mm,
                 args.j6_limit_margin_deg,
                 args.muhi_mass_g,args.fixed_contact_max_tip_distance_mm,
-                args.root_contact_abort_force_n)):
+                args.root_contact_abort_force_n,args.jaw_force_spike_abort_n)):
         p.error("parameters must be finite")
     if (args.fps<=0 or args.table_clearance_mm<0 or
         not(5<=args.muhi_mass_g<=500) or
         not(10<=args.fixed_contact_max_tip_distance_mm<=100) or
         not(0<args.root_contact_abort_force_n<=5) or
+        not(1<=args.jaw_force_spike_abort_n<=100) or
         args.j6_armature<0 or args.j6_joint_damping<0 or
         not(2<=args.j6_limit_margin_deg<=8) or
         not(0.5<=args.min_initial_fixed_gap_mm<args.max_initial_fixed_gap_mm<=35) or
