@@ -253,6 +253,14 @@ def execute(args):
         approach_target[:2]+=delta_xy/distance_xy*approach_distance
     approach_blocked_steps=0
     approach_max_mm=0.
+    j1_precontact_reached=False
+    j1_precontact_reason="not_started"
+    j1_precontact_start_rad=float(armhome[0])
+    j1_precontact_direction=0
+    j1_precontact_min_fixed_gap_mm=float("inf")
+    j1_precontact_contact_steps=0
+    j1_precontact_motion_steps=0
+    j1_precontact_exceeded_tilt=False
     grip_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,bench.FINGER_BODY)
     mj_initial_gripper_z=float(data.xpos[grip_body,2])
     mj_initial_object_z=float(data.qpos[freeq+2])
@@ -298,6 +306,43 @@ def execute(args):
         mujoco.mj_forward(model,data)
         return trial,(table_gap>=args.table_clearance_mm/1000. and
                       object_gap>=args.approach_clearance_mm/1000.)
+    def safe_j1_contact_step():
+        """Try only J1, choose sign that reduces fixed-jaw distance.
+
+        The bottle stays fully dynamic and table-supported. Reject changes
+        that penetrate the object or table; no fake contact or pose reset.
+        """
+        nonlocal armhome,j1_precontact_direction,j1_precontact_motion_steps
+        gap0=bench.geometry_gaps(model,data,obj,fixed)
+        best=None
+        for sign in (-1,1):
+            candidate=armhome.copy()
+            candidate[0]=float(np.clip(candidate[0]+sign*args.j1_step_deg*math.pi/180.,
+                                       lows[0],highs[0]))
+            if abs(candidate[0]-armhome[0])<1e-12:continue
+            data.qpos[list(qids)]=candidate
+            mujoco.mj_forward(model,data)
+            fixed_gap=bench.geometry_gaps(model,data,obj,fixed)
+            moving_gap=bench.geometry_gaps(model,data,obj,moving)
+            table_gap=min((bench.signed_pair_gap(model,data,g,table)
+                         for g in robot_geoms),default=float("inf"))
+            if (fixed_gap >= -args.j1_max_penetration_mm/1000. and
+                moving_gap >= args.j1_moving_clearance_mm/1000. and
+                table_gap >= args.table_clearance_mm/1000. and
+                fixed_gap < gap0-1e-7 and
+                abs(math.degrees(candidate[0]-j1_precontact_start_rad)) <= args.j1_max_deg):
+                if best is None or fixed_gap<best[0]:
+                    best=(float(fixed_gap),candidate.copy(),sign)
+        data.qpos[list(qids)]=armhome
+        mujoco.mj_forward(model,data)
+        if best is None:return False
+        armhome=best[1]
+        j1_precontact_direction=best[2]
+        j1_precontact_motion_steps+=1
+        data.qpos[list(qids)]=armhome
+        mujoco.mj_forward(model,data)
+        return True
+
     try:
         for i in range(n):
             t=float(data.time)
@@ -311,20 +356,33 @@ def execute(args):
                 stage="settle"
                 demand=open_angle
             elif t < args.settle_s + args.approach_s:
-                stage="approach"
+                stage="j1_precontact"
                 demand=open_angle
-                v=min(1.,max(0.,(t-args.settle_s)/args.approach_s))
-                smooth=v*v*(3.-2.*v)
-                goal=tip_xyz+(approach_target-tip_xyz)*smooth
-                trial,clear=try_approach_step(goal)
-                if clear:
-                    armhome=trial
-                    data.qpos[list(qids)]=armhome
-                    mujoco.mj_forward(model,data)
-                    approach_max_mm=max(approach_max_mm,1000.*float(
-                      np.linalg.norm(data.site_xpos[tip_site,:2]-tip_xyz[:2])))
-                else:
-                    approach_blocked_steps+=1
+                mujoco.mj_forward(model,data)
+                fixed_gap=bench.geometry_gaps(model,data,obj,fixed)
+                tilt_now=math.degrees(math.acos(float(np.clip(
+                    1.-2.*(data.qpos[freeq+4]**2+data.qpos[freeq+5]**2),
+                    -1.,1.))))
+                if tilt_now > args.j1_max_tilt_deg:
+                    j1_precontact_exceeded_tilt=True
+                    j1_precontact_reason="object_tilt_exceeded"
+                elif fixed_gap<=args.j1_contact_gap_mm/1000.:
+                    j1_precontact_reached=True
+                    j1_precontact_reason="fixed_jaw_contact_or_small_gap"
+                elif not j1_precontact_reached and not j1_precontact_exceeded_tilt:
+                    moved=safe_j1_contact_step()
+                    if not moved:
+                        approach_blocked_steps+=1
+                        j1_precontact_reason="no_safe_j1_direction"
+                    else:
+                        j1_precontact_reason="j1_approaching"
+                j1_precontact_min_fixed_gap_mm=min(
+                    j1_precontact_min_fixed_gap_mm,
+                    1000.*bench.geometry_gaps(model,data,obj,fixed))
+            elif not j1_precontact_reached or j1_precontact_exceeded_tilt:
+                # Do not close J6 when the opposing jaw did not reach Muhi.
+                stage="j1_precontact_failed"
+                demand=open_angle
             else:
                 u=min(1.,max(0.,(t-args.settle_s-args.approach_s)/args.close_s))
                 smooth=u*u*(3.-2.*u)
@@ -376,12 +434,19 @@ def execute(args):
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
             contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
+            if stage=="j1_precontact" and counts["fixed"]>0:
+                j1_precontact_contact_steps+=1
+                j1_precontact_reached=True
+                j1_precontact_reason="fixed_jaw_physical_contact"
             for c in contacts:contactrows.append({"step":i,"time_s":float(data.time),**c})
             rotation=np.empty(9)
             mujoco.mju_quat2Mat(rotation,data.qpos[freeq+3:freeq+7])
             tilt=math.degrees(math.acos(float(np.clip(rotation[8],-1.,1.))))
             rows.append({
                 "step":i,"time_s":float(data.time),"stage":stage,
+                "j1_rad":float(data.qpos[qids[0]]),
+                "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
+                "j1_precontact_reached":bool(j1_precontact_reached),
                 "j6_rad":float(data.qpos[jawq]),
                 "tcp_gripper_z_m":float(data.xpos[grip_body,2]),
                 "gripper_lift_mm":float((data.xpos[grip_body,2]-mj_initial_gripper_z)*1000.),
@@ -466,6 +531,16 @@ def execute(args):
     info.update({
         "status":result_status,
         "table_support_preflight_failed":no_table_support,
+        "j1_precontact_enabled":True,
+        "j1_precontact_reached":bool(j1_precontact_reached),
+        "j1_precontact_reason":j1_precontact_reason,
+        "j1_precontact_direction":int(j1_precontact_direction),
+        "j1_precontact_rotation_deg":float(
+            math.degrees(armhome[0]-j1_precontact_start_rad)),
+        "j1_precontact_min_fixed_gap_mm":float(j1_precontact_min_fixed_gap_mm),
+        "j1_precontact_physical_contact_steps":int(j1_precontact_contact_steps),
+        "j1_precontact_motion_steps":int(j1_precontact_motion_steps),
+        "j1_precontact_tilt_abort":bool(j1_precontact_exceeded_tilt),
         "approach_requested_mm":float(args.approach_mm),
         "approach_executed_max_horizontal_mm":float(approach_max_mm),
         "approach_blocked_steps":int(approach_blocked_steps),
@@ -543,7 +618,14 @@ def main():
     p.add_argument("--max-initial-fixed-gap-mm",type=float,default=25.)
     p.add_argument("--j6-armature",type=float,default=.002)
     p.add_argument("--j6-joint-damping",type=float,default=.06)
-    p.add_argument("--approach-s",type=float,default=1.0)
+    p.add_argument("--approach-s",type=float,default=1.0,
+                   help="Time reserved for gentle J1 fixed-jaw contact")
+    p.add_argument("--j1-step-deg",type=float,default=.012)
+    p.add_argument("--j1-max-deg",type=float,default=8.)
+    p.add_argument("--j1-contact-gap-mm",type=float,default=.15)
+    p.add_argument("--j1-max-penetration-mm",type=float,default=.15)
+    p.add_argument("--j1-moving-clearance-mm",type=float,default=.5)
+    p.add_argument("--j1-max-tilt-deg",type=float,default=8.)
     p.add_argument("--approach-clearance-mm",type=float,default=.5)
     p.add_argument("--table-clearance-mm",type=float,default=2.0)
     p.add_argument("--lift-mm",type=float,default=5.0)
@@ -559,13 +641,21 @@ def main():
     if not all(math.isfinite(v) for v in
                (args.j5_deg,args.duration_s,args.settle_s,args.close_s,
                 args.kp,args.kd,args.max_torque,args.fps,
-                args.approach_mm,args.approach_s,args.approach_clearance_mm)):
+                args.approach_mm,args.approach_s,args.approach_clearance_mm,
+                args.j1_step_deg,args.j1_max_deg,args.j1_contact_gap_mm,
+                args.j1_max_penetration_mm,args.j1_moving_clearance_mm,
+                args.j1_max_tilt_deg)):
         p.error("parameters must be finite")
     if (args.fps<=0 or args.table_clearance_mm<0 or
         args.j6_armature<0 or args.j6_joint_damping<0 or
         not(0.5<=args.min_initial_fixed_gap_mm<args.max_initial_fixed_gap_mm<=35) or
         not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
         args.approach_s<=0 or args.approach_clearance_mm<0 or
+        not(0<args.j1_step_deg<=.05) or not(0<args.j1_max_deg<=15) or
+        not(0<=args.j1_contact_gap_mm<=.5) or
+        not(0<=args.j1_max_penetration_mm<=.5) or
+        args.j1_moving_clearance_mm<0 or
+        not(0<args.j1_max_tilt_deg<=15) or
         args.settle_s+args.approach_s+args.close_s>=args.duration_s):
         p.error("Invalid FPS, table clearance or lift mm")
     execute(args)
