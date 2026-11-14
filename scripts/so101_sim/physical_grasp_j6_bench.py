@@ -81,6 +81,9 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
     other = tuple(i for i in range(model.ngeom)
                   if (model.geom_contype[i] or model.geom_conaffinity[i])
                   and int(model.geom_bodyid[i]) != 0
+                  # A movable mocap table is environment, not a robot link.
+                  # Table clearance is separately enforced by validator.
+                  and int(model.body_mocapid[int(model.geom_bodyid[i])]) < 0
                   and int(model.geom_bodyid[i]) not in (
                       int(model.geom_bodyid[fixed_geoms[0]]),
                       int(model.geom_bodyid[moving_geoms[0]]),
