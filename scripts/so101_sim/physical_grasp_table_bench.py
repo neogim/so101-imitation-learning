@@ -1048,6 +1048,20 @@ def execute(args):
                 else:
                     model.actuator_forcerange[servo_id,:]=[
                         -args.max_torque,args.max_torque]
+            # Active, physically applied velocity damping: a position
+            # setpoint speed is NOT a joint speed limit. Apply a braking
+            # torque in the direction OPPOSITE current J6 motion, without
+            # teleporting qvel/qpos. Do not mask a failed brake: stop before
+            # fast motion reaches the object.
+            j6_speed_brake_nm=0.
+            if args.gentle_jaw_contact and stage in ("close","hold"):
+                speed_deg_s=float(math.degrees(data.qvel[jawd]))
+                excess=max(0.,abs(speed_deg_s)-
+                           args.j6_actual_speed_limit_deg_s)
+                j6_speed_brake_nm=min(1.2,0.012*excess)
+                if j6_speed_brake_nm>0.:
+                    data.qfrc_applied[jawd]=float(
+                        -math.copysign(j6_speed_brake_nm,speed_deg_s))
             # This pose is the configuration where MuJoCo computes forces.
             # A later mj_forward is the NEXT pose, not the same snapshot.
             # Reuse the prior post-step geometric gaps, except first step.
@@ -1233,6 +1247,9 @@ def execute(args):
                 "moving_jaw_gap_poststep_mm":float(
                     1000.*bench.geometry_gaps(model,data,obj,moving)),
                 "gentle_contact_active":bool(gentle_active),
+                "j6_speed_brake_nm":float(j6_speed_brake_nm),
+                "j6_actual_speed_limit_target_deg_s":float(
+                    args.j6_actual_speed_limit_deg_s),
                 "j6_servo_force_limit_nm":float(
                     model.actuator_forcerange[servo_id,1])
                     if args.simple_grasp else float(args.max_torque),
@@ -1436,6 +1453,14 @@ def execute(args):
                     math.degrees(max(r["j6_rad"] for r in recent)-
                                  min(r["j6_rad"] for r in recent))<.25):
                     contact_abort_reason="J6_POSITION_SERVO_STALLED"
+            # Exceeding the actual-speed envelope at contact range is a
+            # physical brake FAILURE, not grasp. Abort before another
+            # high-speed collision (~241 deg/s in previous run).
+            if (args.gentle_jaw_contact and stage=="close" and
+                moving_gap_at_solver_mm <= 3. and
+                abs(math.degrees(float(data.qvel[jawd]))) >
+                    2.*args.j6_actual_speed_limit_deg_s):
+                contact_abort_reason="J6_ACTUAL_SPEED_LIMIT_EXCEEDED"
             # This was captured immediately after mj_step, BEFORE
             # post-step mj_forward overwrote the contact-force snapshot.
             if jaw_self_contact_force_n>args.jaw_force_spike_abort_n:
@@ -1724,6 +1749,16 @@ def execute(args):
         "j6_dynamics_diagnostic":j6_dynamics,
         "j6_final_force_balance":j6_force_balance,
         "gentle_jaw_contact_enabled":bool(args.gentle_jaw_contact),
+        "j6_actual_speed_limit_target_deg_s":(
+            args.j6_actual_speed_limit_deg_s
+            if args.gentle_jaw_contact else None),
+        "j6_physical_speed_brake_rule":(
+            "Apply opposing qfrc_applied up to 1.2 Nm once measured "
+            "J6 speed exceeds selected deg/s; abort if at <=3mm "
+            "from Muhi and actual speed exceeds twice threshold. "
+            "This is a physical braking intervention, NOT a hard "
+            "velocity constraint and NOT a measured motor rating."
+            if args.gentle_jaw_contact else None),
         "gentle_jaw_contact_rule":(
             "If moving jaw near Muhi <=3mm, cap J6 actuator force "
             "to 0.08Nm and setpoint lead to 0.75deg; maintain "
@@ -1897,6 +1932,9 @@ def main():
     p.add_argument("--j5-deg",type=float,default=-90.)
     p.add_argument("--j6-position-speed-deg-s",type=float,default=35.,
                    help="Simple-grasp maximum command trajectory speed, deg/s")
+    p.add_argument("--j6-actual-speed-limit-deg-s",type=float,default=35.,
+                   help="Measured J6 speed threshold for active physical "
+                        "braking in gentle-jaw-contact mode (deg/s)")
     p.add_argument("--gentle-jaw-contact",action="store_true",
                    help="Study-only: reduce J6 setpoint lead and actuator "
                         "force near Muhi; never override contact physics")
@@ -2001,6 +2039,8 @@ def main():
         p.error("--precise-jaw-proxy requires fixed and moving surface proxy")
     if args.moving_jaw_surface_proxy and not args.fixed_jaw_surface_proxy:
         p.error("--moving-jaw-surface-proxy requires fixed jaw proxy")
+    if not (5. <= args.j6_actual_speed_limit_deg_s <= 60.):
+        p.error("--j6-actual-speed-limit-deg-s must be 5--60 deg/s")
     if args.gentle_jaw_contact and not (
         args.simple_grasp and args.moving_jaw_surface_proxy):
         p.error("--gentle-jaw-contact requires --simple-grasp "
