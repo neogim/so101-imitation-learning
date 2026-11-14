@@ -188,6 +188,7 @@ def build_model(args):
         prefer_small_moving_gap=True)
     if pose is None:
         return None,{"status":"NO_TABLE_CLEAR_TWO_JAW_SETUP",
+                     "collision_pair_policy":collision_policy_details,
                      "search":search,"table_clearance_search":rejected,
                      "table_clearance_requirement_mm":args.table_clearance_mm,
                      "note":"No valid pose at fixed J1-J5. Do not insert "
@@ -216,6 +217,7 @@ def build_model(args):
     actual_table_center=np.asarray(data.geom_xpos[table]).copy()
     if np.linalg.norm(actual_table_center-expected_table_center)>.0001:
         return None,{"status":"TABLE_KINEMATICS_INVALID",
+                     "collision_pair_policy":collision_policy_details,
                      "expected_table_center":expected_table_center.tolist(),
                      "actual_table_center":actual_table_center.tolist()}
     diag={"search":search,"table_clearance_search":rejected,
@@ -230,9 +232,9 @@ def build_model(args):
           "table_support_gap_mm":.5,
           "collision_pair_policy":collision_policy_details}
     if min(gap_fixed,gap_moving)<.0005:
-        return None,{"status":"INITIAL_JAW_INTERSECTION","diagnostic":diag}
+        return None,{"status":"INITIAL_JAW_INTERSECTION","diagnostic":diag,"collision_pair_policy":collision_policy_details}
     if robot_gap<args.table_clearance_mm/1000.:
-        return None,{"status":"ROBOT_TABLE_INTERSECTION","diagnostic":diag}
+        return None,{"status":"ROBOT_TABLE_INTERSECTION","diagnostic":diag,"collision_pair_policy":collision_policy_details}
     return (model,data,tuple(qids),tuple(dids),np.asarray(lows),np.asarray(highs),
             jawq,jawd,freeq,fixed,moving,obj,table,center,
             open_angle,closed_angle,robot_geoms),diag
@@ -275,6 +277,7 @@ def execute(args):
     args.out.mkdir(parents=True,exist_ok=False)
     info={"experiment":"J6 tabletop supported Muhi contact","version":"v1",
           "simulation_only":True,
+          "base_shoulder_contact_filter_requested":bool(args.exclude_base_shoulder_contact),
           "not_full_pick_place":True,
           "no_fixture_force":True,"no_object_pose_reset_during_steps":True,
           "table_is_mocap_fixed_during_simulation":True,
