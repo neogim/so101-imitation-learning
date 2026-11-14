@@ -43,6 +43,70 @@ def body_name(model, geom_id):
     return mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,body) or str(body)
 
 
+
+def install_fixed_surface_proxy_bench(spec, fine_mm=3., coarse_mm=6.,
+                                     max_boxes=2400):
+    """Opt-in fixed jaw contact replacement; original URDF & STL untouched.
+
+    Temporary compiled geometry is used ONLY to extract source STL points.
+    Returns metadata for the run. No separate external mesh files are made.
+    """
+    import gripper_fixed_surface_proxy_phase_a as proxy
+    import gripper_stl_convex_overlay_phase_a as overlay
+    import gripper_geometry_phase_a_audit as audit
+    temporary=spec.compile()
+    ref=proxy.get_pose(temporary,[-30.,-30.,45.,-20.,-90.],-10.)
+    fid,_=audit.owned_mesh_geom(
+        temporary,"gripper_link",audit.FINGER_MESH)
+    siteid=mujoco.mj_name2id(
+        temporary,mujoco.mjtObj.mjOBJ_SITE,TIP_SITE)
+    bodyid=mujoco.mj_name2id(
+        temporary,mujoco.mjtObj.mjOBJ_BODY,"gripper_link")
+    if siteid<0 or bodyid<0:
+        raise RuntimeError("Missing TCP site/gripper body in temporary model")
+    tcp=np.asarray(ref.site_xpos[siteid]).copy()
+    rot=np.asarray(ref.xmat[bodyid]).reshape(3,3)
+    vertices,triangles=overlay.mesh_in_gripper(
+        temporary,ref,fid,tcp,rot)
+    boxes=proxy.triangles_to_surface_boxes(
+        vertices,triangles,fine_mm,coarse_mm,max_boxes)
+    target=[
+        g for g in spec.geoms
+        if str(getattr(g,"meshname","") or "").startswith(audit.FINGER_MESH)]
+    if len(target)!=1:
+        raise RuntimeError(f"Expected one fixed finger source geom; got {len(target)}")
+    geom=target[0]
+    original_ct=int(temporary.geom_contype[fid])
+    original_ca=int(temporary.geom_conaffinity[fid])
+    if original_ct==0 or original_ca==0:
+        raise RuntimeError("Fixed jaw collision was already disabled")
+    geom.contype=0
+    geom.conaffinity=0
+    body=spec.body("gripper_link")
+    for index,b in enumerate(boxes):
+        g=body.add_geom()
+        g.name=f"{proxy.PROXY_PREFIX}{index:04d}"
+        g.type=mujoco.mjtGeom.mjGEOM_BOX
+        # TCP site and box coordinates are both gripper-link-aligned.
+        g.pos=(np.asarray(GRIPPER_FRAME_LOCAL_POS)+
+               b["center_tcp_mm"]/1000.).tolist()
+        g.size=(b["half_mm"]/1000.).tolist()
+        g.contype=original_ct
+        g.conaffinity=original_ca
+        g.density=0
+        g.group=4
+        g.rgba=[.14,.82,.57,.15]
+    return {"enabled":True,"boxes":len(boxes),
+            "fine_boxes":sum(b["pitch_mm"]==fine_mm for b in boxes),
+            "target_tcp_depth_mm":[8.,20.],
+            "fine_pitch_mm":fine_mm,"coarse_pitch_mm":coarse_mm,
+            "source_visual_stl_unchanged":True,
+            "original_fixed_mesh_collision_disabled_in_sim":True,
+            "source_urdf_modified":False,
+            "other_jaw_unchanged":True,
+            "experimental_surface_approximation":True}
+
+
 def build_model(args):
     """Select Muhi pose ONLY if its supporting table also clears the arm."""
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
@@ -89,6 +153,10 @@ def build_model(args):
         pos=[0.,0.,0.],size=[.08,.08,TABLE_HALF_THICKNESS_M],
         rgba=[.47,.51,.56,1.],friction=[.9,.01,.001],
         contype=1,conaffinity=1)
+    proxy_metadata=(
+        install_fixed_surface_proxy_bench(spec)
+        if getattr(args,"fixed_jaw_surface_proxy",False) else
+        {"enabled":False})
     model=spec.compile()
     # Reduce camera near clipping ONLY in this diagnostic benchmark.
     wrist_near_original=float(model.vis.map.znear)
@@ -220,7 +288,8 @@ def build_model(args):
                      "collision_pair_policy":collision_policy_details,
                      "expected_table_center":expected_table_center.tolist(),
                      "actual_table_center":actual_table_center.tolist()}
-    diag={"search":search,"table_clearance_search":rejected,
+    diag={"fixed_jaw_surface_proxy":proxy_metadata,
+          "search":search,"table_clearance_search":rejected,
           "wrist_near_ratio_original":wrist_near_original,
           "table_actual_world_center_xyz_m":actual_table_center.tolist(),
           "initial_fixed_gap_mm":float(gap_fixed*1000),
@@ -1373,6 +1442,12 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
+    p.add_argument("--fixed-jaw-surface-proxy",action="store_true",
+                   help="Opt-in Phase A fixed STL visual + 3/6mm collision BOX model; "
+                        "default remains the original MuJoCo collision model")
+    p.add_argument("--target-grasp-depth-min-mm",type=float,default=8.)
+    p.add_argument("--target-grasp-depth-max-mm",type=float,default=20.)
+
     p.add_argument("--exclude-base-shoulder-contact",action="store_true",
                    help="Experimental only: mask base-vs-shoulder contacts; "
                         "preserve Muhi, table, finger collisions")
