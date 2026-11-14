@@ -722,10 +722,17 @@ def execute(args):
             closing_peak_fixed_force_n=max(
                 closing_peak_fixed_force_n,fixed_normal_n)
             if stage=="close" and (
-                moving_normal_n>=args.j6_hold_force_n or
-                fixed_normal_n>=args.j6_hold_force_n):
+                (moving_normal_n>=args.j6_bilateral_min_force_n and
+                 fixed_normal_n>=args.j6_bilateral_min_force_n) or
+                max(moving_normal_n,fixed_normal_n)>=args.j6_hold_force_n):
+                # Continue closing after the first gentle contact, unless
+                # force exceeds the safe cap. Hold after bilateral load.
                 closing_low_force_stop=True
-                closing_low_force_reason="first_jaw_force_threshold"
+                closing_low_force_reason=(
+                    "bilateral_measured_contact" if
+                    moving_normal_n>=args.j6_bilateral_min_force_n and
+                    fixed_normal_n>=args.j6_bilateral_min_force_n else
+                    "excessive_one_sided_force")
                 closing_hold_target=float(data.qpos[jawq])
             if stage=="j1_precontact":
                 if counts["fixed"]>0:
@@ -1187,7 +1194,9 @@ def main():
     p.add_argument("--j6-precontact-max-torque",type=float,default=.015,
                    help="Reduced Nm cap while gently closing around Muhi")
     p.add_argument("--j6-hold-force-n",type=float,default=1.,
-                   help="Freeze advancing J6 target on first 1N measured contact")
+                   help="Stop advancing J6 if any one jaw exceeds 1N")
+    p.add_argument("--j6-bilateral-min-force-n",type=float,default=.02,
+                   help="Hold J6 when both jaws sustain minimum measured force")
     p.add_argument("--j1-contact-gap-mm",type=float,default=-.25,
                    help="Guarded J1 geometric limit (signed distance, -0.25mm); contact force required for J6")
     p.add_argument("--j1-min-fixed-normal-force-n",type=float,default=.02,
@@ -1215,6 +1224,7 @@ def main():
                 args.approach_mm,args.approach_s,args.approach_clearance_mm,
                 args.j1_stop_before_contact_mm,
                 args.j6_precontact_max_torque,args.j6_hold_force_n,
+                args.j6_bilateral_min_force_n,
                 args.j1_step_deg,args.j1_root_clearance_mm,
                 args.j1_fingertip_zone_mm,
                 args.j1_max_deg,args.j1_contact_gap_mm,
@@ -1244,6 +1254,7 @@ def main():
         not(.1<=args.j1_stop_before_contact_mm<=2.) or
         not(0<args.j6_precontact_max_torque<=args.max_torque) or
         not(.1<=args.j6_hold_force_n<=5.) or
+        not(0<args.j6_bilateral_min_force_n<=args.j6_hold_force_n) or
         not(0<args.j1_step_deg<=.05) or
         not(0.2<=args.j1_root_clearance_mm<=5.) or
         not(10<=args.j1_fingertip_zone_mm<=100) or not(0<args.j1_max_deg<=15) or
