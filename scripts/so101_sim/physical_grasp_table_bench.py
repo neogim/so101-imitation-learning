@@ -263,7 +263,13 @@ def build_model(args):
         fixed,moving,obj,candidate_validator=table_for_candidate,
         min_fixed_gap_m=args.min_initial_fixed_gap_mm/1000.,
         max_fixed_gap_m=args.max_initial_fixed_gap_mm/1000.,
-        prefer_small_moving_gap=True)
+        prefer_small_moving_gap=True,
+        candidate_local_z_range_m=(
+            (GRIPPER_FRAME_LOCAL_POS[2]+
+             args.target_grasp_depth_min_mm/1000.,
+             GRIPPER_FRAME_LOCAL_POS[2]+
+             args.target_grasp_depth_max_mm/1000.)
+            if args.fixed_jaw_surface_proxy else None))
     if pose is None:
         return None,{"status":"NO_TABLE_CLEAR_TWO_JAW_SETUP",
                      "collision_pair_policy":collision_policy_details,
