@@ -49,7 +49,14 @@ def build_model(args):
     physical.install_dynamic_muhi(spec)
     # Restore the same photographed, provisional wrist camera and bracket
     # from the previous real-to-sim/kinematic experiment.
-    wrist.install(spec)
+    # User ruler measurements: 15/35/35mm bracket segments.
+    # TCP is in gripper_link, while the camera installer expects a
+    # rig-local target (rig origin offset is DEFAULT_MOUNT_POS).
+    tcp_rig_local=tuple(
+        GRIPPER_FRAME_LOCAL_POS[i]-wrist.DEFAULT_MOUNT_POS[i]
+        for i in range(3))
+    wrist.install(spec,bracket_profile="ruler_15_35_35",
+                  camera_aim_at=tcp_rig_local)
     gripper_spec = spec.body("gripper_link")
     if gripper_spec is None:
         raise ValueError("URDF gripper_link missing: cannot install TCP site")
@@ -825,7 +832,9 @@ def execute(args):
             int(wrist_camera_frames_with_object_center),
         "wrist_object_center_projected_uv_last_px":
             wrist_camera_object_center_uv_last,
-        "wrist_camera_mount_source":"prior wrist_camera_sim photographic estimate; NOT calibrated",
+        "wrist_camera_mount_source":"photo and user ruler 15/35/35mm; angles approximate +/-30deg, NOT calibrated",
+        "wrist_bracket_profile":"ruler_15_35_35",
+        "wrist_optical_aim":"sim gripper TCP from existing fixed gripper_frame_joint; provisional, NOT calibrated",
         "wrist_camera_control_mode":"diagnostic rendering only; grasp remains geometric/force based",
         "j234_prealign_enabled":True,
         "j234_prealign_joints":"J2,J3,J4 only; J1/J5 fixed during prealignment",
