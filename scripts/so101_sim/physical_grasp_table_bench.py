@@ -1283,12 +1283,16 @@ def execute(args):
                 # connected jaw bodies and the solver applies ZERO force.
                 # Do not abort study-mode grasp from this false positive.
                 contact_abort_reason="J6_JAWS_INTERPENETRATION"
-            if (args.simple_grasp and stage=="close" and
-                    t-j1_force_seek_end>=.80 and
-                    math.degrees(j6_open_hold_angle-float(data.qpos[jawq]))<1.):
-                # Do not run a long "closed" animation when the physical
-                # joint never follows the setpoint. Report the blockage.
-                contact_abort_reason="J6_POSITION_SERVO_STALLED"
+            if args.simple_grasp and stage=="close":
+                # Stalling AFTER the first 10 degrees also matters. A moving
+                # 0.4-s sliding window is needed; total-closure-only checks
+                # missed the 88.75-deg plateau in the previous Mac log.
+                recent=[r for r in rows[-200:] if r["stage"]=="close"]
+                if (t-j1_force_seek_end>=.80 and len(recent)>=150 and
+                    math.degrees(float(data.qpos[jawq])-float(demand))>5. and
+                    math.degrees(max(r["j6_rad"] for r in recent)-
+                                 min(r["j6_rad"] for r in recent))<.25):
+                    contact_abort_reason="J6_POSITION_SERVO_STALLED"
             if contact_abort_reason:
                 contact_abort_step=i
                 break
@@ -1543,6 +1547,8 @@ def execute(args):
             default=None),
         "j6_stall_result_is_not_grasp_success":(
             contact_abort_reason=="J6_POSITION_SERVO_STALLED"),
+        "j6_stall_definition":"During close: >=150 samples over recent "
+            "0.4s move less than 0.25deg while target remains >5deg ahead",
         "simple_grasp_fixed_jaw_stop_gap_mm":(
             args.j1_stop_before_contact_mm if args.simple_grasp else None),
         "j6_position_speed_deg_s":(
