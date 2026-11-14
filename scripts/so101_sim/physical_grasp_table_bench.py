@@ -28,6 +28,10 @@ import real_to_sim as r2s
 import compare_id1_eye_to_hand as preview
 
 TABLE = "j6_bench_table"
+TIP_SITE = "j6_bench_gripper_tip_site"
+# Exact fixed gripper_frame_joint translation from so101_new_calib.urdf.
+# Fixed child links may be merged away by MuJoCo's URDF compiler.
+GRIPPER_FRAME_LOCAL_POS = (-.0079, -.000218121, -.0981274)
 TABLE_HALF_THICKNESS_M = .012
 OBJECT_HALF_LENGTH_M = physical.MUHI_LENGTH / 2.
 
@@ -42,6 +46,12 @@ def build_model(args):
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
+    gripper_spec = spec.body("gripper_link")
+    if gripper_spec is None:
+        raise ValueError("URDF gripper_link missing: cannot install TCP site")
+    gripper_spec.add_site(
+        name=TIP_SITE, pos=list(GRIPPER_FRAME_LOCAL_POS),
+        size=[.002, .002, .002], rgba=[.1, .9, .8, 1.])
     # Use an actual small tabletop, not a fake vertical holding force.
     # Its pose is adjusted during placement search (world geom, no freejoint).
     # A direct worldbody geom is compiled as a STATIC world geom. Editing
@@ -216,9 +226,10 @@ def execute(args):
     armhome=data.qpos[list(qids)].copy()
     # Approach with a fingertip-area reference, not the gripper motor body.
     # The J1-J4 move is simulation-only prescribed IK, never a servo command.
-    tip_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"gripper_frame_link")
-    if tip_body < 0:raise ValueError("gripper_frame_link is missing from URDF")
-    tip_xyz=np.asarray(data.xpos[tip_body]).copy()
+    tip_site=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_SITE,TIP_SITE)
+    if tip_site < 0:
+        raise ValueError("Explicit gripper TCP site missing from compiled MuJoCo model")
+    tip_xyz=np.asarray(data.site_xpos[tip_site]).copy()
     delta_xy=np.asarray(center[:2],float)-tip_xyz[:2]
     distance_xy=float(np.linalg.norm(delta_xy))
     approach_distance=min(float(args.approach_mm)/1000.,max(0.,distance_xy-.012))
@@ -254,9 +265,9 @@ def execute(args):
         saved=data.qpos[list(qids)].copy()
         mujoco.mj_forward(model,data)
         jac=np.zeros((3,model.nv));jac_r=np.zeros((3,model.nv))
-        mujoco.mj_jacBody(model,data,jac,jac_r,tip_body)
+        mujoco.mj_jacSite(model,data,jac,jac_r,tip_site)
         J=jac[:,list(dids[:4])]
-        err=np.asarray(goal,float)-np.asarray(data.xpos[tip_body]).copy()
+        err=np.asarray(goal,float)-np.asarray(data.site_xpos[tip_site]).copy()
         err[2]=0.
         dq=J.T@np.linalg.solve(J@J.T+.05**2*np.eye(3),err)
         dq=np.clip(dq,-.0012,.0012)
@@ -296,7 +307,7 @@ def execute(args):
                     data.qpos[list(qids)]=armhome
                     mujoco.mj_forward(model,data)
                     approach_max_mm=max(approach_max_mm,1000.*float(
-                      np.linalg.norm(data.xpos[tip_body,:2]-tip_xyz[:2])))
+                      np.linalg.norm(data.site_xpos[tip_site,:2]-tip_xyz[:2])))
                 else:
                     approach_blocked_steps+=1
             else:
@@ -363,7 +374,7 @@ def execute(args):
                 "j6_torque_nm":float(data.qfrc_applied[jawd]),
                 "j6_commanded_torque_nm":commanded_torque,
                 "approach_tip_horizontal_mm":float(
-                    np.linalg.norm(data.xpos[tip_body,:2]-tip_xyz[:2])*1000.),
+                    np.linalg.norm(data.site_xpos[tip_site,:2]-tip_xyz[:2])*1000.),
                 "object_x_m":float(data.qpos[freeq]),
                 "object_y_m":float(data.qpos[freeq+1]),
                 "object_z_m":float(data.qpos[freeq+2]),
