@@ -331,7 +331,9 @@ def execute(args):
     frames=[]
     wrist_frames=[]
     wrist_camera_frames_with_object_center=0
+    wrist_camera_frames_with_tcp_center=0
     wrist_camera_object_center_uv_last=None
+    wrist_camera_tcp_uv_last=None
     contact_abort_reason=None
     contact_abort_step=None
     jaw_self_gap_min_mm=float("inf")
@@ -704,6 +706,23 @@ def execute(args):
                         ImageDraw.Draw(wrist_image).ellipse(
                             (x-3,y-3,x+3,y+3),
                             outline=(240,220,20),width=2)
+                tcp_cam=cam_rot.T@(
+                    np.asarray(data.site_xpos[tip_site])-cam_pos)
+                tcp_depth=float(-tcp_cam[2])
+                if tcp_depth>1e-6:
+                    tx=float(tcp_cam[0]/(tcp_depth*focal*(480./360.)))
+                    ty=float(tcp_cam[1]/(tcp_depth*focal))
+                    if abs(tx)<=1 and abs(ty)<=1:
+                        wrist_camera_frames_with_tcp_center+=1
+                        wrist_camera_tcp_uv_last=[
+                            float((tx+1.)*.5*480.),
+                            float((1.-ty)*.5*360.)]
+                        # Cyan mark is the 3D jaw/TCP projection, not
+                        # image-recognition output or physical calibration.
+                        x,y=wrist_camera_tcp_uv_last
+                        d=ImageDraw.Draw(wrist_image)
+                        d.line((x-5,y,x+5,y),fill=(20,225,225),width=2)
+                        d.line((x,y-5,x,y+5),fill=(20,225,225),width=2)
                 image=Image.new("RGB",(1440,396),(20,24,30))
                 for idx,p in enumerate((*pics,wrist_image)):
                     image.paste(p,(idx*480,36))
@@ -830,6 +849,9 @@ def execute(args):
         "wrist_camera_frame_count":len(wrist_frames),
         "wrist_object_center_projected_in_fov_frames":
             int(wrist_camera_frames_with_object_center),
+        "wrist_tcp_projected_in_fov_frames":
+            int(wrist_camera_frames_with_tcp_center),
+        "wrist_tcp_projected_uv_last_px":wrist_camera_tcp_uv_last,
         "wrist_object_center_projected_uv_last_px":
             wrist_camera_object_center_uv_last,
         "wrist_camera_mount_source":"photo and user ruler 15/35/35mm; angles approximate +/-30deg, NOT calibrated",
