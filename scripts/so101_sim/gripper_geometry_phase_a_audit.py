@@ -55,6 +55,39 @@ def owned_mesh_geom(model, body_name, mesh_stem):
     return found[0]
 
 
+def mesh_points_world(model,data,geom_id):
+    """Sample compiled mesh vertices, NOT certified collision-surface points.
+
+    MuJoCo's compiled mesh reference frame is placed at the geom frame;
+    use runtime geom pose to bring samples to world coordinates.
+    """
+    mesh_id=int(model.geom_dataid[geom_id])
+    start=int(model.mesh_vertadr[mesh_id])
+    count=int(model.mesh_vertnum[mesh_id])
+    local=np.asarray(model.mesh_vert[start:start+count])
+    R=np.asarray(data.geom_xmat[geom_id]).reshape(3,3)
+    return local@R.T+np.asarray(data.geom_xpos[geom_id])
+
+
+def sample_distance_mm(a,b):
+    """Nearest VERTEX-SAMPLE distance; nonnegative and not contact gap."""
+    if not len(a) or not len(b):
+        return None
+    try:
+        from scipy.spatial import cKDTree
+        distances,_=cKDTree(b).query(a,k=1)
+        return float(np.min(distances)*1000)
+    except ImportError:
+        # Deterministic subset, fixed time/memory even without scipy.
+        a=a[np.linspace(0,len(a)-1,min(700,len(a)),dtype=int)]
+        b=b[np.linspace(0,len(b)-1,min(700,len(b)),dtype=int)]
+        minimum=float("inf")
+        for chunk in np.array_split(a,10):
+            delta=chunk[:,None,:]-b[None,:,:]
+            minimum=min(minimum,float(np.min(np.sum(delta*delta,axis=2))))
+        return math.sqrt(minimum)*1000
+
+
 def write_csv(path,rows):
     if not rows: return
     with path.open("w",newline="",encoding="utf-8") as f:
@@ -89,6 +122,11 @@ def main():
              "video_layout":"5 views: top side A/B; bottom wrist TCP/shelf/retracted, 1440x780",
              "status":"INITIALIZING"}
     rows=[]
+    tip_rows=[]
+    # Relative to the true fixed gripper_frame_link TCP origin, measured
+    # along +Z of the parent gripper_link, i.e. toward the palm.
+    # This is a VERTEX sample diagnostic, not a contact/collision proxy.
+    depth_zones=((0.,8.),(8.,20.),(20.,30.),(30.,45.),(45.,70.))
     frame_dir=args.out/"_video_frames"
     names=("combined","side","side_b","wrist","shelf","retracted")
     output_names=("gripper_geometry_combined.mp4","gripper_geometry_side.mp4",
@@ -127,6 +165,16 @@ def main():
             model,mujoco.mjtObj.mjOBJ_BODY,"gripper_link"))
         jointid=int(mujoco.mj_name2id(
             model,mujoco.mjtObj.mjOBJ_JOINT,JOINT))
+        framebid=int(mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_BODY,"gripper_frame_link"))
+        if framebid<0:
+            raise RuntimeError("gripper_frame_link missing from compiled model")
+        summary["gripper_frame_link_body_id"]=framebid
+        summary["tip_zone_depths_mm"]=[list(v) for v in depth_zones]
+        summary["tip_zone_method"] = (
+            "nearest pair of sampled STL mesh VERTICES within matched "
+            "TCP-relative depth bands; nonnegative, NOT inner-face clearance "
+            "or collision-solver gap; face normals/convex hull ignored")
         def mesh_geometry_report(gid):
             mesh_id=int(model.geom_dataid[gid])
             vert_start=int(model.mesh_vertadr[mesh_id])
@@ -195,6 +243,23 @@ def main():
             pfix=witness[:3].copy()
             pmov=witness[3:].copy()
             d=(pfix-tcp)@R
+            fw=mesh_points_world(model,data,fixed)
+            mw=mesh_points_world(model,data,moving)
+            fdepth=(fw-tcp)@R[:,2]*1000.
+            mdepth=(mw-tcp)@R[:,2]*1000.
+            for zlow,zhigh in depth_zones:
+                fm=fw[(fdepth>=zlow)&(fdepth<zhigh)]
+                mm=mw[(mdepth>=zlow)&(mdepth<zhigh)]
+                tip_rows.append({
+                    "index":k,"j6_angle_deg":math.degrees(angle),
+                    "depth_from_tcp_min_mm":zlow,
+                    "depth_from_tcp_max_mm":zhigh,
+                    "fixed_sample_vertices":len(fm),
+                    "moving_sample_vertices":len(mm),
+                    "nearest_vertex_sample_distance_mm":
+                        sample_distance_mm(fm,mm),
+                    "method":"vertex-sample distance; not contact gap",
+                })
             rows.append({
                 "index":k,"j6_angle_deg":math.degrees(angle),
                 "fixed_moving_signed_gap_mm":gap*1000,
@@ -272,6 +337,31 @@ def main():
                 hull_canvas.save(
                     args.out/f"gripper_collision_hulls_{k:02d}.png")
         write_csv(args.out/"j6_collision_geometry_sweep.csv",rows)
+        write_csv(args.out/"j6_tip_depth_sample_distances.csv",tip_rows)
+        # Show why the global minimum (near the base) is not the
+        # relevant opening width at 8..30 mm grasp depths.
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            fig,ax=plt.subplots(figsize=(11,5.5))
+            for low,high in depth_zones:
+                series=[r for r in tip_rows if
+                    r["depth_from_tcp_min_mm"]==low]
+                yy=[r["nearest_vertex_sample_distance_mm"] for r in series]
+                ax.plot([r["j6_angle_deg"] for r in series],yy,
+                    marker=".",label=f"Depth {low:g}-{high:g} mm")
+            ax.set_xlabel("J6 angle (degrees; open 100 / closed -10)")
+            ax.set_ylabel("Nearest sampled mesh-vertex distance (mm)")
+            ax.set_title("SO-101 grasp-depth vertex distance (NOT physical clearance)")
+            ax.legend()
+            ax.grid(alpha=.25)
+            fig.tight_layout()
+            fig.savefig(args.out/"j6_tip_depth_samples.png",dpi=160)
+            plt.close(fig)
+            summary["tip_depth_plot"]="j6_tip_depth_samples.png"
+        except Exception as plot_error:
+            summary["tip_depth_plot_error"]=repr(plot_error)
         summary["frames_or_angles_measured"]=len(rows)
         summary["j6_min_fixed_moving_gap_mm"]=min(
             r["fixed_moving_signed_gap_mm"] for r in rows)
@@ -295,6 +385,8 @@ def main():
             "Check mesh visual/collision mismatch and convex hull behaviour",
             "Inspect inside grasp-face at intended depth, not just nearest gap",
             "Verify opposing normals and opening width with target object",
+            "Check whether sampled vertices cover the inner grasp face; "
+            "vertex distances are not signed contact gaps or opening widths",
             "Only then generate valid 6D Grasp Pose candidates"]
     except Exception as exc:
         summary["status"]="AUDIT_INCOMPLETE"
