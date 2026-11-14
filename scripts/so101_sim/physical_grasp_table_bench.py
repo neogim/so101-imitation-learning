@@ -886,23 +886,26 @@ def execute(args):
                         d=ImageDraw.Draw(wrist_image)
                         d.line((x-5,y,x+5,y),fill=(20,225,225),width=2)
                         d.line((x,y-5,x,y+5),fill=(20,225,225),width=2)
-                panels=(*pics,wrist_image,shelf_image)
+                # 2-row layout for desktop inspection: the two side
+                # views above, three wrist views BELOW. 1440x780 instead
+                # of the previous unusable 2400px-wide strip.
+                image=Image.new("RGB",(1440,780),(20,24,30))
+                image.paste(pics[0],(240,30))
+                image.paste(pics[1],(720,30))
+                image.paste(wrist_image,(0,420))
+                image.paste(shelf_image,(480,420))
                 if retracted_image is not None:
-                    panels=(*panels,retracted_image)
-                image=Image.new("RGB",(480*len(panels),396),(20,24,30))
-                for idx,p in enumerate(panels):
-                    image.paste(p,(idx*480,36))
+                    image.paste(retracted_image,(960,420))
                 draw=ImageDraw.Draw(image)
-                draw.text((8,8),
+                draw.text((248,8),
                     f"SIDE A | {stage.upper()} t={data.time:.2f}s "
-                    f"fixed={counts['fixed']} moving={counts['moving']} "
                     f"tilt={tilt:.1f}deg",fill="white")
-                draw.text((488,8),"SIDE B | same step",fill="white")
-                draw.text((968,8),"WRIST TCP AIM | provisional",fill="white")
-                draw.text((1448,8),"WRIST SHELF AXIS | same lens",fill="white")
+                draw.text((728,8),"SIDE B | same step",fill="white")
+                draw.text((8,398),"WRIST | TCP AIM",fill="white")
+                draw.text((488,398),"WRIST | SHELF AXIS",fill="white")
                 if retracted_image is not None:
-                    draw.text((1928,8),
-                        f"WRIST RETRACTED | {args.wrist_retract_mm:g}mm",
+                    draw.text((968,398),
+                        f"WRIST | RETRACTED {args.wrist_retract_mm:g}mm",
                         fill="white")
                 frames.append(image)
             # Stop on wrong (root) contact, bottle tip-over, physically
@@ -1017,6 +1020,7 @@ def execute(args):
         "jaw_overpenetration_threshold_mm":float(args.abort_jaw_penetration_mm),
         "wrist_camera_installed":True,
         "wrist_camera_name":wrist.CAMERA,
+        "video_layout":"top row two side views, bottom row three wrist views (1440x780)",
         "wrist_camera_frame_count":len(wrist_frames),
         "wrist_shelf_camera_name":wrist.SHELF_DIAGNOSTIC_CAMERA,
         "wrist_shelf_camera_frame_count":len(shelf_wrist_frames),
