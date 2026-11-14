@@ -256,6 +256,22 @@ def execute(args):
         approach_target[:2]+=delta_xy/distance_xy*approach_distance
     approach_blocked_steps=0
     approach_max_mm=0.
+    # J2/J3/J4 first align the TCP with the bottle. J1 must never be
+    # tasked with both approaching the bottle and correcting wrist geometry.
+    j234_start_q=armhome[1:4].copy()
+    j234_accepted_steps=0
+    j234_rejected_steps=0
+    j234_tcp_initial=np.asarray(data.site_xpos[tip_site]).copy()
+    j234_tcp_target=j234_tcp_initial.copy()
+    toward=np.asarray(center[:2])-j234_tcp_initial[:2]
+    toward_norm=float(np.linalg.norm(toward))
+    j234_tcp_target[:2]+=(
+        toward/max(toward_norm,1e-9)
+        *min(float(args.j234_reposition_mm)/1000.,
+             max(0.,toward_norm-args.j234_tcp_object_clearance_mm/1000.)))
+    j234_tcp_target[2]+=float(np.clip(
+        center[2]-j234_tcp_initial[2],-.010,.010))
+    j234_tcp_move_mm=0.
     j1_precontact_reached=False
     j1_precontact_reason="not_started"
     j1_precontact_start_rad=float(armhome[0])
@@ -290,6 +306,43 @@ def execute(args):
         cam.distance=.32
         cam.elevation=-20
     n=math.ceil(args.duration_s/model.opt.timestep)
+    def reposition_j234(goal):
+        """Constrained TCP prealignment with ONLY J2,J3,J4, no object teleport."""
+        nonlocal armhome,j234_accepted_steps,j234_rejected_steps,j234_tcp_move_mm
+        saved=data.qpos[list(qids)].copy()
+        mujoco.mj_forward(model,data)
+        jac=np.zeros((3,model.nv));jacr=np.zeros((3,model.nv))
+        mujoco.mj_jacSite(model,data,jac,jacr,tip_site)
+        J=jac[:,list(dids[1:4])]
+        error=np.asarray(goal,float)-np.asarray(data.site_xpos[tip_site]).copy()
+        dq=J.T@np.linalg.solve(J@J.T+(.05**2)*np.eye(3),error)
+        dq=np.clip(dq,-.0008,.0008)
+        proposed=armhome.copy()
+        proposed[1:4]=np.clip(proposed[1:4]+dq,lows[1:4],highs[1:4])
+        if np.max(np.abs(proposed[1:4]-armhome[1:4]))<1e-9:
+            j234_rejected_steps+=1
+            return
+        data.qpos[list(qids)]=proposed
+        mujoco.mj_forward(model,data)
+        table_clearance=min((bench.signed_pair_gap(model,data,g,table)
+                             for g in robot_geoms),default=float("inf"))
+        bottle_clearance=min((bench.signed_pair_gap(model,data,g,o)
+                              for g in robot_geoms for o in obj),default=float("inf"))
+        tcp_before=float(np.linalg.norm(
+            np.asarray(data.site_xpos[tip_site])-np.asarray(goal)))
+        # Use geometric collision guard; never run J2/J3/J4 into the object.
+        if (table_clearance>=args.table_clearance_mm/1000. and
+            bottle_clearance>=args.j234_object_clearance_mm/1000. and
+            np.isfinite(tcp_before)):
+            armhome=proposed
+            j234_accepted_steps+=1
+            j234_tcp_move_mm=float(np.linalg.norm(
+                np.asarray(data.site_xpos[tip_site])-j234_tcp_initial)*1000.)
+        else:
+            j234_rejected_steps+=1
+        data.qpos[list(qids)]=saved
+        mujoco.mj_forward(model,data)
+
     def try_approach_step(goal):
         """Bounded DLS joint step, requires robot-table AND robot-object clearance."""
         saved=data.qpos[list(qids)].copy()
@@ -362,7 +415,15 @@ def execute(args):
             if t<args.settle_s:
                 stage="settle"
                 demand=open_angle
-            elif t < args.settle_s + args.approach_s:
+            elif t < args.settle_s + args.j234_s:
+                stage="j234_prealign"
+                demand=open_angle
+                u234=min(1.,max(0.,(t-args.settle_s)/args.j234_s))
+                v234=u234*u234*(3.-2.*u234)
+                goal234=j234_tcp_initial+(
+                    j234_tcp_target-j234_tcp_initial)*v234
+                reposition_j234(goal234)
+            elif t < args.settle_s + args.j234_s + args.approach_s:
                 stage="j1_precontact"
                 demand=open_angle
                 mujoco.mj_forward(model,data)
@@ -398,7 +459,7 @@ def execute(args):
                     j1_precontact_reason="no_effective_fixed_jaw_force"
                 demand=open_angle
             else:
-                u=min(1.,max(0.,(t-args.settle_s-args.approach_s)/args.close_s))
+                u=min(1.,max(0.,(t-args.settle_s-args.j234_s-args.approach_s)/args.close_s))
                 smooth=u*u*(3.-2.*u)
                 demand=open_angle+smooth*(closed_angle-open_angle)
                 stage="close" if u<1. else "hold"
@@ -406,7 +467,7 @@ def execute(args):
                 # sustained TWO-JAW contact in recent on-table samples.
                 # A table-supported contact alone never proves a pickup.
                 if (not lift_requested and
-                    t>args.settle_s+args.approach_s+args.close_s+.22 and
+                    t>args.settle_s+args.j234_s+args.approach_s+args.close_s+.22 and
                     len(rows)>=60 and
                     sum(r["bilateral"] for r in rows[-60:])>=48 and
                     sum(r["table_contacts"]>0 for r in rows[-60:])>=48 and
@@ -574,6 +635,14 @@ def execute(args):
         "jaw_overpenetration_abort":bool(contact_overpenetration_abort),
         "jaw_overpenetration_step":contact_overpenetration_step,
         "jaw_overpenetration_threshold_mm":float(args.abort_jaw_penetration_mm),
+        "j234_prealign_enabled":True,
+        "j234_prealign_joints":"J2,J3,J4 only; J1/J5 fixed during prealignment",
+        "j234_prealign_target_world_xyz_m":j234_tcp_target.tolist(),
+        "j234_prealign_actual_tcp_move_mm":float(j234_tcp_move_mm),
+        "j234_prealign_accepted_steps":int(j234_accepted_steps),
+        "j234_prealign_rejected_steps":int(j234_rejected_steps),
+        "j234_total_joint_change_deg":np.degrees(
+            armhome[1:4]-j234_start_q).tolist(),
         "j1_precontact_enabled":True,
         "j1_control_note":"J1 advances gently to -0.25mm max geometry; J6 runs only after sustained measured fixed-jaw normal force; no force -> no J6.",
         "j1_precontact_reached":bool(j1_precontact_reached),
@@ -663,13 +732,17 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
-    p.add_argument("--duration-s",type=float,default=5.2)
+    p.add_argument("--duration-s",type=float,default=6.0)
     p.add_argument("--approach-mm",type=float,default=0.,
                    help="Do not move arm during baseline. The Muhi is placed closer by search.")
     p.add_argument("--min-initial-fixed-gap-mm",type=float,default=2.)
     p.add_argument("--max-initial-fixed-gap-mm",type=float,default=25.)
     p.add_argument("--j6-armature",type=float,default=.002)
     p.add_argument("--j6-joint-damping",type=float,default=.06)
+    p.add_argument("--j234-s",type=float,default=.8)
+    p.add_argument("--j234-reposition-mm",type=float,default=15.)
+    p.add_argument("--j234-tcp-object-clearance-mm",type=float,default=22.)
+    p.add_argument("--j234-object-clearance-mm",type=float,default=.8)
     p.add_argument("--approach-s",type=float,default=1.0,
                    help="Time reserved for gentle J1 fixed-jaw contact")
     p.add_argument("--j1-step-deg",type=float,default=.012)
@@ -702,7 +775,9 @@ def main():
                 args.j1_step_deg,args.j1_max_deg,args.j1_contact_gap_mm,
                 args.j1_max_penetration_mm,args.j1_moving_clearance_mm,
                 args.j1_max_tilt_deg,
-                args.j1_min_fixed_normal_force_n)):
+                args.j1_min_fixed_normal_force_n,
+                args.j234_s,args.j234_reposition_mm,
+                args.j234_tcp_object_clearance_mm,args.j234_object_clearance_mm)):
         p.error("parameters must be finite")
     if (args.fps<=0 or args.table_clearance_mm<0 or
         args.j6_armature<0 or args.j6_joint_damping<0 or
@@ -718,7 +793,11 @@ def main():
         args.j1_moving_clearance_mm<0 or
         not(0<args.j1_max_tilt_deg<=15) or
         not(.5<=args.abort_jaw_penetration_mm<=3.) or
-        args.settle_s+args.approach_s+args.close_s>=args.duration_s):
+        args.j234_s<=0 or
+        not(0<=args.j234_reposition_mm<=25) or
+        args.j234_tcp_object_clearance_mm<0 or
+        args.j234_object_clearance_mm<0 or
+        args.settle_s+args.j234_s+args.approach_s+args.close_s>=args.duration_s):
         p.error("Invalid FPS, table clearance or lift mm")
     execute(args)
 
