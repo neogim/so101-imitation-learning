@@ -500,6 +500,7 @@ def execute(args):
     lift_started_at=None
     lift_rejected_steps=0
     rows=[];contactrows=[]
+    j6_blocking_contacts=[]
     no_table_support=False
     contact_overpenetration_abort=False
     contact_overpenetration_step=None
@@ -921,6 +922,35 @@ def execute(args):
             # the actual impact / normal-force record. This previously made
             # the 1.414s Muhi impulse appear to happen with ZERO jaw contact.
             contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
+            if args.simple_grasp and stage in ("close","hold","lift"):
+                # Record non-object contacts involving the finger(s),
+                # directly from the solver BEFORE any mj_forward call.
+                # Geometric overlap alone is NOT evidence of a force.
+                jaw_ids=set(fixed)|set(moving)
+                object_ids=set(obj)
+                strongest=None
+                for ck,con in enumerate(data.contact[:data.ncon]):
+                    pair={int(con.geom1),int(con.geom2)}
+                    if not(pair&jaw_ids) or pair&object_ids:
+                        continue
+                    f6=np.zeros(6,dtype=float)
+                    mujoco.mj_contactForce(model,data,ck,f6)
+                    fn=float(max(0.,f6[0]))
+                    if fn<.005:
+                        continue
+                    record={
+                        "step":i,"solver_time_s":float(t),
+                        "normal_force_n":fn,
+                        "penetration_mm":float(min(0.,con.dist)*1000.),
+                        "geom1":mujoco.mj_id2name(
+                            model,mujoco.mjtObj.mjOBJ_GEOM,int(con.geom1)),
+                        "geom2":mujoco.mj_id2name(
+                            model,mujoco.mjtObj.mjOBJ_GEOM,int(con.geom2)),
+                    }
+                    if strongest is None or fn>strongest["normal_force_n"]:
+                        strongest=record
+                if strongest is not None:
+                    j6_blocking_contacts.append(strongest)
             tcp_contact_reference=np.asarray(data.site_xpos[tip_site]).copy()
             grip_rot=np.asarray(data.xmat[grip_body]).reshape(3,3).copy()
             for c in contacts:
@@ -1207,6 +1237,12 @@ def execute(args):
                 contact_abort_reason="J6_JOINT_LIMIT_EXCEEDED"
             elif (jaw_self_gap_mm<min(-1.,jaw_self_gap_initial_mm-1.)):
                 contact_abort_reason="J6_JAWS_INTERPENETRATION"
+            if (args.simple_grasp and stage=="close" and
+                    t-j1_force_seek_end>=.80 and
+                    math.degrees(j6_open_hold_angle-float(data.qpos[jawq]))<1.):
+                # Do not run a long "closed" animation when the physical
+                # joint never follows the setpoint. Report the blockage.
+                contact_abort_reason="J6_POSITION_SERVO_STALLED"
             if contact_abort_reason:
                 contact_abort_step=i
                 break
@@ -1230,6 +1266,14 @@ def execute(args):
                 break
     finally:
         if render is not None:render.close()
+    if args.simple_grasp:
+        with (args.out/"j6_nonobject_jaw_contacts.csv").open(
+                "x",newline="",encoding="utf-8") as f:
+            fields=["step","solver_time_s","normal_force_n",
+                    "penetration_mm","geom1","geom2"]
+            writer=csv.DictWriter(f,fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(j6_blocking_contacts)
     with (args.out/"table_grasp_trace.csv").open("x",newline="",encoding="utf-8") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
     with (args.out/"contact_points.csv").open("x",newline="",encoding="utf-8") as f:
@@ -1433,6 +1477,16 @@ def execute(args):
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_dynamics_diagnostic":j6_dynamics,
         "simple_grasp_mode":bool(args.simple_grasp),
+        "j6_nonobject_jaw_contact_samples":len(j6_blocking_contacts),
+        "j6_peak_nonobject_jaw_force_n":max(
+            (row["normal_force_n"] for row in j6_blocking_contacts),
+            default=0.),
+        "j6_strongest_nonobject_jaw_contact":max(
+            j6_blocking_contacts,
+            key=lambda row:row["normal_force_n"],
+            default=None),
+        "j6_stall_result_is_not_grasp_success":(
+            contact_abort_reason=="J6_POSITION_SERVO_STALLED"),
         "simple_grasp_fixed_jaw_stop_gap_mm":(
             args.j1_stop_before_contact_mm if args.simple_grasp else None),
         "j6_position_speed_deg_s":(
