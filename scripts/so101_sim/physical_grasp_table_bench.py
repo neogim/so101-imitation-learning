@@ -884,13 +884,23 @@ def execute(args):
             # the 1.414s Muhi impulse appear to happen with ZERO jaw contact.
             contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
             tcp_contact_reference=np.asarray(data.site_xpos[tip_site]).copy()
+            grip_rot=np.asarray(data.xmat[grip_body]).reshape(3,3).copy()
             for c in contacts:
                 if c["kind"]=="fixed":
+                    point=np.asarray(c["point_xyz_m"],dtype=float)
                     c["tip_distance_mm"]=1000.*float(np.linalg.norm(
-                        np.asarray(c["point_xyz_m"],dtype=float)
-                        -tcp_contact_reference))
+                        point-tcp_contact_reference))
+                    # +Z in gripper_link means "toward root" from TCP.
+                    c["grasp_depth_from_tcp_mm"]=1000.*float(
+                        np.dot(point-tcp_contact_reference,grip_rot[:,2]))
+                    c["in_target_depth_band"]=bool(
+                        args.target_grasp_depth_min_mm <=
+                        c["grasp_depth_from_tcp_mm"] <
+                        args.target_grasp_depth_max_mm)
                 else:
                     c["tip_distance_mm"]=None
+                    c["grasp_depth_from_tcp_mm"]=None
+                    c["in_target_depth_band"]=False
                 c["solver_time_s"]=float(data.time-model.opt.timestep)
             if dynamic_j1:
                 data.qpos[list(qids[1:])]=armhome[1:]
@@ -972,7 +982,9 @@ def execute(args):
                     j1_force_seek_contact_loss_steps+=1
                 else:
                     j1_force_seek_contact_loss_steps=0
-            for c in contacts:contactrows.append({"step":i,"time_s":float(data.time),**c})
+            for c in contacts:
+                contactrows.append({"step":i,"time_s":float(data.time),
+                                    "stage":stage,**c})
             rotation=np.empty(9)
             mujoco.mju_quat2Mat(rotation,data.qpos[freeq+3:freeq+7])
             tilt=math.degrees(math.acos(float(np.clip(rotation[8],-1.,1.))))
@@ -1176,9 +1188,10 @@ def execute(args):
     with (args.out/"table_grasp_trace.csv").open("x",newline="",encoding="utf-8") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
     with (args.out/"contact_points.csv").open("x",newline="",encoding="utf-8") as f:
-        fields=["step","time_s","solver_time_s","kind","geom1","geom2",
-                "geom1_name","geom2_name","efc_address","tip_distance_mm",
-                "point_xyz_m",
+        fields=["step","time_s","solver_time_s","stage","kind",
+                "geom1","geom2","geom1_name","geom2_name",
+                "efc_address","tip_distance_mm","grasp_depth_from_tcp_mm",
+                "in_target_depth_band","point_xyz_m",
                 "contact_normal_xyz","penetration_mm",
                 "normal_force_n","tangential_force_n"]
         w=csv.DictWriter(f,fieldnames=fields);w.writeheader()
@@ -1204,6 +1217,14 @@ def execute(args):
         max_lift_z>=.8*args.lift_mm and
         any(r["table_contacts"]==0 and r["bilateral"] for r in lift_samples) and
         deepest>-2.)
+    target_contacts=[c for c in contactrows if
+        c["kind"]=="fixed" and c["in_target_depth_band"] and
+        c["stage"] in ("close","hold","lift") and
+        c["normal_force_n"]>0.02]
+    target_contact_steps=len({c["step"] for c in target_contacts})
+    target_zone_verified=target_contact_steps>=5
+    # A lift elsewhere on the gripper is NOT successful target-depth grasp.
+    target_depth_lift_success=bool(lift_pass and target_zone_verified)
     result_status=("SHORT_LIFT_OBSERVED" if lift_pass else
                    "SHORT_LIFT_FAILED" if lift_requested else
                    "TABLE_CONTACT_OBSERVED" if simultaneous else
@@ -1214,6 +1235,10 @@ def execute(args):
         result_status="JAW_OVERPENETRATION_ABORT"
     if contact_abort_reason:
         result_status=contact_abort_reason
+    if (args.fixed_jaw_surface_proxy and lift_pass
+            and not target_zone_verified):
+        result_status="SHORT_LIFT_OUTSIDE_TARGET_DEPTH"
+        lift_pass=False
     info.update({
         "status":result_status,
         "contact_logging":"snapshot immediately after mj_step before mj_forward; solver_time_s marks pre-integration contacts",
@@ -1339,6 +1364,12 @@ def execute(args):
         "short_lift_command_mm":args.lift_mm,
         "short_lift_attempted":lift_requested,
         "short_lift_success":lift_pass,
+        "fixed_jaw_surface_proxy":bool(args.fixed_jaw_surface_proxy),
+        "target_grasp_depth_band_mm":[args.target_grasp_depth_min_mm,
+                                      args.target_grasp_depth_max_mm],
+        "target_depth_fixed_contact_steps":target_contact_steps,
+        "target_depth_fixed_contact_verified":target_zone_verified,
+        "target_depth_lift_success":target_depth_lift_success,
         "max_object_vertical_rise_mm":float(max_lift_z),
         "lift_table_clearance_rejected_steps":lift_rejected_steps,
         "arm_lift_control":"DLS kinematic J1-J4; J5 fixed, J6 torque PD; object free dynamics",
@@ -1526,6 +1557,9 @@ def main():
     p.add_argument("--fps",type=float,default=12.)
     p.add_argument("--render-every",type=int,default=20)
     args=p.parse_args()
+    if not (0 <= args.target_grasp_depth_min_mm <
+            args.target_grasp_depth_max_mm <= 70):
+        p.error("target grasp depth must satisfy 0 <= min < max <= 70mm")
     if not all(math.isfinite(v) for v in
                (args.j5_deg,args.duration_s,args.settle_s,args.close_s,
                 args.kp,args.kd,args.max_torque,args.fps,
