@@ -73,6 +73,13 @@ def main():
     ap.add_argument("--min-path-clearance-mm", type=float, default=4.)
     ap.add_argument("--tcp-tolerance-mm", type=float, default=12.)
     ap.add_argument("--max-iterations", type=int, default=400)
+    ap.add_argument("--reach-mode", choices=("staged", "direct"),
+                    default="staged",
+                    help="Staged: lift TCP, move over target, descend; "
+                         "direct retains old diagnostic behavior")
+    ap.add_argument("--via-height-mm", type=float, default=110.,
+                    help="Increase TCP Z by this amount above home AND pregrasp "
+                         "TCP heights before the horizontal segment")
     ap.add_argument("--render", action="store_true",
                     help="Save snapshots if MuJoCo offscreen renderer is available")
     ap.add_argument("--exclude-base-shoulder-contact", action="store_true",
@@ -81,14 +88,16 @@ def main():
     if args.out.exists():
         ap.error("Output folder exists; choose a fresh path")
     if not finite([*args.muhi_xy_m, args.table_top_z_m, *args.home_deg,
-                   *args.pregrasp_offset_m, args.min_initial_clearance_mm,
+                   *args.pregrasp_offset_m, args.via_height_mm,
+                   args.min_initial_clearance_mm,
                    args.min_path_clearance_mm, args.tcp_tolerance_mm]):
         ap.error("Non-finite pose or tolerance")
     if not (0.08 <= args.table_top_z_m <= .45 and
             args.min_initial_clearance_mm >= 20. and
             1. <= args.min_path_clearance_mm <= 20. and
             1. <= args.tcp_tolerance_mm <= 30. and
-            10 <= args.max_iterations <= 1500):
+            10 <= args.max_iterations <= 1500 and
+            30 <= args.via_height_mm <= 250):
         ap.error("Invalid guard thresholds")
 
     args.out.mkdir(parents=True, exist_ok=False)
@@ -232,7 +241,9 @@ def main():
             "world_muhi_center_m": center.tolist(),
             "world_table_top_m": float(args.table_top_z_m),
             "world_pregrasp_tcp_target_m": target.tolist(),
-            "robot_home_deg": list(map(float, args.home_deg)),
+            "robot_home_deg": np.degrees(home).tolist(),
+            "home_pose_requested_deg": list(map(float, args.home_deg)),
+            "home_pose_applied_deg": np.degrees(home).tolist(),
             "tcp_initial_world_m": start_tcp.tolist(),
             "tcp_initial_distance_to_muhi_mm":
                 float(np.linalg.norm(start_tcp-center)*1000),
@@ -250,66 +261,143 @@ def main():
             raise ValueError("INITIAL_TCP_TOO_CLOSE_TO_PREGRASP")
         report["status"] = "INITIAL_SCENE_VALID"
 
-        # Plan a collision-guarded position-only DLS TCP reach. J5 orientation
-        # stays fixed; this is not full 6D grasp pose/orientation planning.
+        # Position-only IK, with optional *world-frame* staged approach.
+        # This is still not a global path planner. A rigid world target and
+        # 4mm robot-table/object clearance are enforced throughout. Neither
+        # Muhi nor the table is moved to make an unreachable stage succeed.
         pose = home.copy()
         trajectory.append(pose.copy())
         min_gap = initial_object_gap
+        min_table_gap = initial_table_gap
         report["planned_tcp_position_only"] = True
-        failure = None
-        for it in range(args.max_iterations):
-            data.qpos[qs] = pose
-            mujoco.mj_forward(model, data)
-            tcp = np.asarray(data.site_xpos[tcp_id]).copy()
-            e = target-tcp
-            error_mm = float(np.linalg.norm(e)*1000.)
-            if error_mm <= args.tcp_tolerance_mm:
-                break
-            jacp = np.zeros((3,model.nv))
-            jacr = np.zeros((3,model.nv))
-            mujoco.mj_jacSite(model, data, jacp, jacr, tcp_id)
-            J = jacp[:,ds[:4]]
-            step = J.T @ np.linalg.solve(J@J.T + .04**2*np.eye(3), e)
-            if not finite(step):
-                failure = "NONFINITE_DLS_UPDATE"
-                break
-            step = np.clip(step, -.012, .012)
-            trial_ok = False
-            original = pose.copy()
-            for scale in (1., .5, .25, .125):
-                proposed = original.copy()
-                proposed[:4] = np.clip(
-                    proposed[:4]+scale*step,
-                    np.array(lims)[:4,0], np.array(lims)[:4,1])
-                if np.linalg.norm(proposed-original)<1e-8:
-                    continue
-                data.qpos[qs] = proposed
+        raised_z = max(float(start_tcp[2]), float(target[2])) + (
+            args.via_height_mm / 1000.)
+        if args.reach_mode == "staged":
+            stages = (
+                ("raise_above_table",
+                 np.array([start_tcp[0], start_tcp[1], raised_z])),
+                ("translate_above_table",
+                 np.array([target[0], target[1], raised_z])),
+                ("descend_to_pregrasp", target.copy()),
+            )
+        else:
+            stages = (("direct_to_pregrasp", target.copy()),)
+        report["reach_mode"] = args.reach_mode
+        report["via_height_mm"] = float(args.via_height_mm)
+        report["reach_stage_targets_world_m"] = [
+            dict(stage=n, tcp_goal_m=t.tolist()) for n,t in stages]
+        stage_summaries = []
+        trajectory_stages = ["home"]
+        overall_failure = None
+        for stage_name, goal in stages:
+            counters = {
+                "accepted_steps": 0, "unsafe_object": 0,
+                "unsafe_table": 0, "no_improvement": 0,
+                "joint_limit_or_zero_step": 0,
+            }
+            stage_failure = None
+            for _ in range(args.max_iterations):
+                data.qpos[qs] = pose
                 mujoco.mj_forward(model, data)
-                gap = robot_obj()
-                table_gap = robot_table()
-                new_err = float(np.linalg.norm(target-data.site_xpos[tcp_id]))
-                if (gap >= args.min_path_clearance_mm/1000. and
-                    table_gap >= args.min_path_clearance_mm/1000. and
-                    new_err < float(np.linalg.norm(e))-1e-8):
-                    pose = proposed
-                    min_gap = min(min_gap,gap)
-                    trajectory.append(pose.copy())
-                    trial_ok=True
+                tcp = np.asarray(data.site_xpos[tcp_id]).copy()
+                e = goal-tcp
+                distance = float(np.linalg.norm(e))
+                if distance*1000. <= args.tcp_tolerance_mm:
                     break
-            if not trial_ok:
-                failure = "DLS_STALLED_OR_CLEARANCE_REJECTED"
+                jacp = np.zeros((3,model.nv))
+                jacr = np.zeros((3,model.nv))
+                mujoco.mj_jacSite(model,data,jacp,jacr,tcp_id)
+                J = jacp[:,ds[:4]]
+                step = J.T @ np.linalg.solve(
+                    J@J.T + .04**2*np.eye(3),e)
+                if not finite(step):
+                    stage_failure = "NONFINITE_DLS_UPDATE"
+                    break
+                step = np.clip(step,-.012,.012)
+                best = None
+                for scale in (1., .5, .25, .125, .0625):
+                    proposed = pose.copy()
+                    proposed[:4] = np.clip(
+                        proposed[:4]+scale*step,
+                        np.asarray(lims)[:4,0],
+                        np.asarray(lims)[:4,1])
+                    if np.linalg.norm(proposed-pose)<1e-8:
+                        counters["joint_limit_or_zero_step"]+=1
+                        continue
+                    # Check the swept joint segment, not merely its endpoint:
+                    # otherwise a single IK step can tunnel through Muhi/table.
+                    candidate_ok = True
+                    candidate_min_obj = float("inf")
+                    candidate_min_table = float("inf")
+                    for fraction in (.25,.5,.75,1.):
+                        intermediate = pose + fraction*(proposed-pose)
+                        data.qpos[qs] = intermediate
+                        mujoco.mj_forward(model,data)
+                        gap = robot_obj()
+                        table_gap = robot_table()
+                        candidate_min_obj = min(candidate_min_obj,gap)
+                        candidate_min_table = min(candidate_min_table,table_gap)
+                        if gap < args.min_path_clearance_mm/1000.:
+                            counters["unsafe_object"]+=1
+                            candidate_ok=False
+                            break
+                        if table_gap < args.min_path_clearance_mm/1000.:
+                            counters["unsafe_table"]+=1
+                            candidate_ok=False
+                            break
+                    if not candidate_ok:
+                        continue
+                    new_error = float(
+                        np.linalg.norm(goal-data.site_xpos[tcp_id]))
+                    if new_error >= distance-1e-8:
+                        counters["no_improvement"]+=1
+                        continue
+                    if best is None or new_error < best[0]:
+                        best=(new_error,proposed.copy(),
+                              candidate_min_obj,candidate_min_table)
+                if best is None:
+                    stage_failure="DLS_STALLED_OR_CLEARANCE_REJECTED"
+                    break
+                pose=best[1]
+                min_gap=min(min_gap,best[2])
+                min_table_gap=min(min_table_gap,best[3])
+                trajectory.append(pose.copy())
+                trajectory_stages.append(stage_name)
+                counters["accepted_steps"]+=1
+            data.qpos[qs]=pose
+            mujoco.mj_forward(model,data)
+            final_stage_error_mm = float(
+                np.linalg.norm(goal-data.site_xpos[tcp_id])*1000.)
+            stage_ok = final_stage_error_mm <= args.tcp_tolerance_mm
+            if not stage_ok and stage_failure is None:
+                stage_failure="STAGE_ITERATION_LIMIT"
+            stage_summaries.append({
+                "stage": stage_name,
+                "target_tcp_world_m": goal.tolist(),
+                "end_tcp_world_m": np.asarray(
+                    data.site_xpos[tcp_id]).tolist(),
+                "final_error_mm": final_stage_error_mm,
+                "success": bool(stage_ok),
+                "failure_reason": stage_failure,
+                **counters,
+            })
+            if not stage_ok:
+                overall_failure=f"{stage_name}: {stage_failure}"
                 break
         data.qpos[qs] = pose
         mujoco.mj_forward(model, data)
-        reached_error_mm = float(np.linalg.norm(target-data.site_xpos[tcp_id])*1000)
+        reached_error_mm = float(
+            np.linalg.norm(target-data.site_xpos[tcp_id])*1000.)
         report.update({
             "reach_accepted_steps": len(trajectory)-1,
+            "reach_stage_results": stage_summaries,
             "reach_final_tcp_error_mm": reached_error_mm,
             "reach_final_joint_deg": np.degrees(pose).tolist(),
-            "reach_min_robot_object_clearance_mm": min_gap*1000,
-            "reach_failure_reason": failure,
+            "reach_min_robot_object_clearance_mm": min_gap*1000.,
+            "reach_min_robot_table_clearance_mm": min_table_gap*1000.,
+            "reach_failure_reason": overall_failure,
         })
-        if reached_error_mm > args.tcp_tolerance_mm:
+        if overall_failure or reached_error_mm > args.tcp_tolerance_mm:
             report["status"]="REACH_NOT_ESTABLISHED"
         else:
             report["status"]="PREGRASP_POSITION_REACHED_NO_GRASP"
@@ -343,6 +431,7 @@ def main():
                 table_gap = robot_table()
                 timeline.append(dict(
                     time_s=float(data.time), waypoint_index=k,
+                    reach_stage=trajectory_stages[k],
                     tcp_x_m=float(data.site_xpos[tcp_id,0]),
                     tcp_y_m=float(data.site_xpos[tcp_id,1]),
                     tcp_z_m=float(data.site_xpos[tcp_id,2]),
@@ -392,7 +481,8 @@ def main():
             write_csv(args.out/"reach_replay_trace.csv",timeline)
         if trajectory:
             write_csv(args.out/"reach_joint_path_deg.csv",[
-                {"waypoint":i,**{name:float(np.degrees(q[j]))
+                {"waypoint":i,"reach_stage":trajectory_stages[i],
+                 **{name:float(np.degrees(q[j]))
                                  for j,name in enumerate(r2s.JOINTS)}}
                 for i,q in enumerate(trajectory)])
         (args.out/"summary.json").write_text(
