@@ -221,6 +221,7 @@ def execute(args):
     lift_started_at=None
     lift_rejected_steps=0
     rows=[];contactrows=[]
+    no_table_support=False
     frames=[]
     render=None
     cam=None
@@ -334,6 +335,15 @@ def execute(args):
                    f"fixed={counts['fixed']} moving={counts['moving']} "
                    f"table={counts['table']} tilt={tilt:.1f}deg",fill="white")
                 frames.append(image)
+            # The Muhi starts only 0.5mm above the table. If no contact
+            # occurs by 0.15s and it has already dropped 5mm below the
+            # nominal starting position, this is a broken table collision
+            # setup, not a failed grasp. Stop before wasting simulation time.
+            if (stage=="settle" and t>=.15 and
+                not any(row["table_contacts"]>0 for row in rows) and
+                data.qpos[freeq+2]<mj_initial_object_z-.005):
+                no_table_support=True
+                break
     finally:
         if render is not None:render.close()
     with (args.out/"table_grasp_trace.csv").open("x",newline="",encoding="utf-8") as f:
@@ -362,8 +372,11 @@ def execute(args):
                    "SHORT_LIFT_FAILED" if lift_requested else
                    "TABLE_CONTACT_OBSERVED" if simultaneous else
                    "TABLE_BILATERAL_NOT_OBSERVED")
+    if no_table_support:
+        result_status="NO_TABLE_SUPPORT_CONTACT"
     info.update({
         "status":result_status,
+        "table_support_preflight_failed":no_table_support,
         "short_lift_command_mm":args.lift_mm,
         "short_lift_attempted":lift_requested,
         "short_lift_success":lift_pass,
