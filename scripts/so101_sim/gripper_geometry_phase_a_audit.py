@@ -167,11 +167,15 @@ def main():
             model,mujoco.mjtObj.mjOBJ_BODY,"gripper_link"))
         jointid=int(mujoco.mj_name2id(
             model,mujoco.mjtObj.mjOBJ_JOINT,JOINT))
+        # gripper_frame_link is connected to gripper_link by a FIXED
+        # URDF joint; MuJoCo may fuse it away when compiling the model.
+        # The pre-installed TCP site on gripper_link retains its position.
         framebid=int(mujoco.mj_name2id(
             model,mujoco.mjtObj.mjOBJ_BODY,"gripper_frame_link"))
-        if framebid<0:
-            raise RuntimeError("gripper_frame_link missing from compiled model")
-        summary["gripper_frame_link_body_id"]=framebid
+        summary["gripper_frame_link_body_id"]=(
+            framebid if framebid>=0 else None)
+        summary["gripper_frame_link_merged"]=bool(framebid<0)
+        summary["TCP_measurement_source"]="phase_a_gripper_tcp site on gripper_link"
         summary["tip_zone_depths_mm"]=[list(v) for v in depth_zones]
         summary["tip_zone_method"] = (
             "nearest pair of sampled STL mesh VERTICES within matched "
