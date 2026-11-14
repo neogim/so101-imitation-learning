@@ -93,7 +93,7 @@ def build_model(args):
     # Exclude both the bottle and the table from arm collision candidates.
     robot_geoms=tuple(g for g in range(model.ngeom)
         if int(model.geom_bodyid[g]) not in
-            (0,int(model.geom_bodyid[obj[0]]))
+            (0,table_body_id,int(model.geom_bodyid[obj[0]]))
         and (model.geom_contype[g] or model.geom_conaffinity[g]))
     rejected={"tested":0,"rejected":0,"max_rejected_clearance_mm":None}
     def table_for_candidate(center,quat,xyz):
@@ -326,8 +326,9 @@ def execute(args):
                     cam.azimuth=az
                     render.update_scene(data,camera=cam)
                     pics.append(Image.fromarray(render.render().copy()))
-                image=Image.new("RGB",(960,395),(20,24,30))
-                image.paste(pics[0],(0,35));image.paste(pics[1],(480,35))
+                # Even height required for libx264/yuv420p.
+                image=Image.new("RGB",(960,396),(20,24,30))
+                image.paste(pics[0],(0,36));image.paste(pics[1],(480,36))
                 ImageDraw.Draw(image).text(
                    (8,8),f"{stage.upper()} t={data.time:.2f}s | "
                    f"fixed={counts['fixed']} moving={counts['moving']} "
@@ -384,18 +385,31 @@ def execute(args):
                "arm is moved kinematically via DLS, not dynamic servo tracking. "
                "Not a calibrated real robot pickup.",
     })
+    # Save numeric results BEFORE video encoding. ffmpeg errors must never
+    # destroy the simulation's diagnostics or prevent summary.json output.
+    (args.out/"summary.json").write_text(
+        json.dumps(info,ensure_ascii=False,indent=2)+"\n")
     if frames:
         frame_dir=args.out/"frames";frame_dir.mkdir()
         for i,p in enumerate(frames):p.save(frame_dir/f"frame_{i:04d}.png")
         ffmpeg=shutil.which("ffmpeg")
         if ffmpeg:
-            subprocess.run([ffmpeg,"-hide_banner","-loglevel","error","-y",
-                "-framerate",str(args.fps),
-                "-i",str(frame_dir/"frame_%04d.png"),
-                "-c:v","libx264","-pix_fmt","yuv420p",
-                "-movflags","+faststart",
-                str(args.out/"table_contact_views.mp4")],check=True)
-            info["video_status"]="created"
+            try:
+                subprocess.run([ffmpeg,"-hide_banner","-loglevel","error","-y",
+                    "-framerate",str(args.fps),
+                    "-i",str(frame_dir/"frame_%04d.png"),
+                    "-vf","pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                    "-c:v","libx264","-pix_fmt","yuv420p",
+                    "-movflags","+faststart",
+                    str(args.out/"table_contact_views.mp4")],check=True)
+                info["video_status"]="created"
+            except subprocess.CalledProcessError as exc:
+                info["video_status"]="ffmpeg_failed_frames_saved"
+                info["ffmpeg_exit_code"]=int(exc.returncode)
+                # A zero-byte MP4 is not a video; remove it.
+                broken=args.out/"table_contact_views.mp4"
+                if broken.exists() and broken.stat().st_size==0:
+                    broken.unlink()
         else:info["video_status"]="ffmpeg_missing_frames_saved"
     else:info["video_status"]="not_requested"
     (args.out/"summary.json").write_text(json.dumps(info,ensure_ascii=False,indent=2)+"\n")
