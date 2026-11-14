@@ -214,6 +214,19 @@ def execute(args):
         return
     model,data,qids,dids,lows,highs,jawq,jawd,freeq,fixed,moving,obj,table,center,open_angle,closed_angle,robot_geoms=built
     armhome=data.qpos[list(qids)].copy()
+    # Approach with a fingertip-area reference, not the gripper motor body.
+    # The J1-J4 move is simulation-only prescribed IK, never a servo command.
+    tip_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"gripper_frame_link")
+    if tip_body < 0:raise ValueError("gripper_frame_link is missing from URDF")
+    tip_xyz=np.asarray(data.xpos[tip_body]).copy()
+    delta_xy=np.asarray(center[:2],float)-tip_xyz[:2]
+    distance_xy=float(np.linalg.norm(delta_xy))
+    approach_distance=min(float(args.approach_mm)/1000.,max(0.,distance_xy-.012))
+    approach_target=tip_xyz.copy()
+    if distance_xy>1e-9:
+        approach_target[:2]+=delta_xy/distance_xy*approach_distance
+    approach_blocked_steps=0
+    approach_max_mm=0.
     grip_body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,bench.FINGER_BODY)
     mj_initial_gripper_z=float(data.xpos[grip_body,2])
     mj_initial_object_z=float(data.qpos[freeq+2])
@@ -236,6 +249,29 @@ def execute(args):
         cam.distance=.32
         cam.elevation=-20
     n=math.ceil(args.duration_s/model.opt.timestep)
+    def try_approach_step(goal):
+        """Bounded DLS joint step, requires robot-table AND robot-object clearance."""
+        saved=data.qpos[list(qids)].copy()
+        mujoco.mj_forward(model,data)
+        jac=np.zeros((3,model.nv));jac_r=np.zeros((3,model.nv))
+        mujoco.mj_jacBody(model,data,jac,jac_r,tip_body)
+        J=jac[:,list(dids[:4])]
+        err=np.asarray(goal,float)-np.asarray(data.xpos[tip_body]).copy()
+        err[2]=0.
+        dq=J.T@np.linalg.solve(J@J.T+.05**2*np.eye(3),err)
+        dq=np.clip(dq,-.0012,.0012)
+        trial=armhome.copy()
+        trial[:4]=np.clip(trial[:4]+dq,lows[:4],highs[:4])
+        data.qpos[list(qids)]=trial
+        mujoco.mj_forward(model,data)
+        table_gap=min((bench.signed_pair_gap(model,data,g,table)
+                       for g in robot_geoms),default=float("inf"))
+        object_gap=min((bench.signed_pair_gap(model,data,g,o)
+                        for g in robot_geoms for o in obj),default=float("inf"))
+        data.qpos[list(qids)]=saved
+        mujoco.mj_forward(model,data)
+        return trial,(table_gap>=args.table_clearance_mm/1000. and
+                      object_gap>=args.approach_clearance_mm/1000.)
     try:
         for i in range(n):
             t=float(data.time)
@@ -248,15 +284,31 @@ def execute(args):
             if t<args.settle_s:
                 stage="settle"
                 demand=open_angle
+            elif t < args.settle_s + args.approach_s:
+                stage="approach"
+                demand=open_angle
+                v=min(1.,max(0.,(t-args.settle_s)/args.approach_s))
+                smooth=v*v*(3.-2.*v)
+                goal=tip_xyz+(approach_target-tip_xyz)*smooth
+                trial,clear=try_approach_step(goal)
+                if clear:
+                    armhome=trial
+                    data.qpos[list(qids)]=armhome
+                    mujoco.mj_forward(model,data)
+                    approach_max_mm=max(approach_max_mm,1000.*float(
+                      np.linalg.norm(data.xpos[tip_body,:2]-tip_xyz[:2])))
+                else:
+                    approach_blocked_steps+=1
             else:
-                u=min(1.,(t-args.settle_s)/max(.2,args.close_s))
-                demand=open_angle+u*(closed_angle-open_angle)
+                u=min(1.,max(0.,(t-args.settle_s-args.approach_s)/args.close_s))
+                smooth=u*u*(3.-2.*u)
+                demand=open_angle+smooth*(closed_angle-open_angle)
                 stage="close" if u<1. else "hold"
                 # Only attempt a kinematically guided 5mm lift after
                 # sustained TWO-JAW contact in recent on-table samples.
                 # A table-supported contact alone never proves a pickup.
                 if (not lift_requested and
-                    t>args.settle_s+args.close_s+.22 and
+                    t>args.settle_s+args.approach_s+args.close_s+.22 and
                     len(rows)>=60 and
                     sum(r["bilateral"] for r in rows[-60:])>=48 and
                     sum(r["table_contacts"]>0 for r in rows[-60:])>=48 and
@@ -289,7 +341,8 @@ def execute(args):
                         data.qpos[list(qids)]=oldq
                         mujoco.mj_forward(model,data)
             torque=args.kp*(demand-data.qpos[jawq])-args.kd*data.qvel[jawd]
-            data.qfrc_applied[jawd]=float(np.clip(torque,-args.max_torque,args.max_torque))
+            commanded_torque=float(np.clip(torque,-args.max_torque,args.max_torque))
+            data.qfrc_applied[jawd]=commanded_torque
             mujoco.mj_step(model,data)
             data.qpos[list(qids)]=armhome
             data.qvel[list(dids)]=0.
@@ -308,6 +361,9 @@ def execute(args):
                 "gripper_lift_mm":float((data.xpos[grip_body,2]-mj_initial_gripper_z)*1000.),
                 "j6_target_rad":float(demand),
                 "j6_torque_nm":float(data.qfrc_applied[jawd]),
+                "j6_commanded_torque_nm":commanded_torque,
+                "approach_tip_horizontal_mm":float(
+                    np.linalg.norm(data.xpos[tip_body,:2]-tip_xyz[:2])*1000.),
                 "object_x_m":float(data.qpos[freeq]),
                 "object_y_m":float(data.qpos[freeq+1]),
                 "object_z_m":float(data.qpos[freeq+2]),
@@ -377,6 +433,11 @@ def execute(args):
     info.update({
         "status":result_status,
         "table_support_preflight_failed":no_table_support,
+        "approach_requested_mm":float(args.approach_mm),
+        "approach_executed_max_horizontal_mm":float(approach_max_mm),
+        "approach_blocked_steps":int(approach_blocked_steps),
+        "approach_method":"DLS J1-J4, check full robot/table and robot/object clearance",
+        "j6_trajectory":"cubic smoothstep with velocity-zero endpoints",
         "short_lift_command_mm":args.lift_mm,
         "short_lift_attempted":lift_requested,
         "short_lift_success":lift_pass,
@@ -438,23 +499,30 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
-    p.add_argument("--duration-s",type=float,default=3.0)
+    p.add_argument("--duration-s",type=float,default=5.0)
+    p.add_argument("--approach-mm",type=float,default=15.)
+    p.add_argument("--approach-s",type=float,default=1.0)
+    p.add_argument("--approach-clearance-mm",type=float,default=.5)
     p.add_argument("--table-clearance-mm",type=float,default=2.0)
     p.add_argument("--lift-mm",type=float,default=5.0)
     p.add_argument("--settle-s",type=float,default=.35)
-    p.add_argument("--close-s",type=float,default=1.2)
-    p.add_argument("--kp",type=float,default=2.)
-    p.add_argument("--kd",type=float,default=.08)
-    p.add_argument("--max-torque",type=float,default=.4)
+    p.add_argument("--close-s",type=float,default=1.8)
+    p.add_argument("--kp",type=float,default=.6)
+    p.add_argument("--kd",type=float,default=.2)
+    p.add_argument("--max-torque",type=float,default=.15)
     p.add_argument("--video",action="store_true")
     p.add_argument("--fps",type=float,default=12.)
     p.add_argument("--render-every",type=int,default=20)
     args=p.parse_args()
     if not all(math.isfinite(v) for v in
                (args.j5_deg,args.duration_s,args.settle_s,args.close_s,
-                args.kp,args.kd,args.max_torque,args.fps)):
+                args.kp,args.kd,args.max_torque,args.fps,
+                args.approach_mm,args.approach_s,args.approach_clearance_mm)):
         p.error("parameters must be finite")
-    if args.fps<=0 or args.table_clearance_mm<0 or not(0<args.lift_mm<=10):
+    if (args.fps<=0 or args.table_clearance_mm<0 or
+        not(0<args.lift_mm<=10) or not(0<=args.approach_mm<=25) or
+        args.approach_s<=0 or args.approach_clearance_mm<0 or
+        args.settle_s+args.approach_s+args.close_s>=args.duration_s):
         p.error("Invalid FPS, table clearance or lift mm")
     execute(args)
 
