@@ -1017,6 +1017,26 @@ def execute(args):
                 commanded_torque=float(np.clip(
                     torque,-torque_cap,torque_cap))
                 data.qfrc_applied[jawd]=commanded_torque
+            # On approach, cap the actuator force and the position setpoint
+            # lead BEFORE MuJoCo integrates the contact step. A soft
+            # velocity setpoint alone does not limit impact or stored PD
+            # spring energy; limit both. Applies only when explicitly asked.
+            gentle_active=False
+            if args.gentle_jaw_contact and stage in ("close","hold"):
+                lookahead_gap_mm=(
+                    rows[-1]["moving_jaw_gap_poststep_mm"] if rows
+                    else 1000.*bench.geometry_gaps(model,data,obj,moving))
+                if lookahead_gap_mm <= 3.:
+                    gentle_active=True
+                    # Work in dynamic MuJoCo actuator space, not qpos.
+                    model.actuator_forcerange[servo_id,:]=[-.08,.08]
+                    data.ctrl[servo_id]=float(np.clip(
+                        max(data.ctrl[servo_id],
+                            data.qpos[jawq]-math.radians(.75)),
+                        closed_angle,j6_open_hold_angle))
+                else:
+                    model.actuator_forcerange[servo_id,:]=[
+                        -args.max_torque,args.max_torque]
             # This pose is the configuration where MuJoCo computes forces.
             # A later mj_forward is the NEXT pose, not the same snapshot.
             # Reuse the prior post-step geometric gaps, except first step.
@@ -1189,6 +1209,10 @@ def execute(args):
                 "fixed_jaw_gap_mm":float(1000.*bench.geometry_gaps(model,data,obj,fixed)),
                 "moving_jaw_gap_poststep_mm":float(
                     1000.*bench.geometry_gaps(model,data,obj,moving)),
+                "gentle_contact_active":bool(gentle_active),
+                "j6_servo_force_limit_nm":float(
+                    model.actuator_forcerange[servo_id,1])
+                    if args.simple_grasp else float(args.max_torque),
                 "fixed_gap_at_solver_pose_mm":float(fixed_gap_at_solver_mm),
                 "moving_gap_at_solver_pose_mm":float(moving_gap_at_solver_mm),
                 "fixed_contact_solver_count":int(counts["fixed"]),
@@ -1676,6 +1700,12 @@ def execute(args):
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_dynamics_diagnostic":j6_dynamics,
         "j6_final_force_balance":j6_force_balance,
+        "gentle_jaw_contact_enabled":bool(args.gentle_jaw_contact),
+        "gentle_jaw_contact_rule":(
+            "If moving jaw near Muhi <=3mm, cap J6 actuator force "
+            "to 0.08Nm and setpoint lead to 0.75deg; maintain "
+            "force-spike abort. Sim-only, NOT hardware-certified."
+            if args.gentle_jaw_contact else None),
         "jaw_gap_force_timebase_warning":(
             "post-step mj_forward geometric gaps describe next pose; "
             "mj_step solver forces describe pre-integration pose. "
@@ -1838,6 +1868,9 @@ def main():
     p.add_argument("--j5-deg",type=float,default=-90.)
     p.add_argument("--j6-position-speed-deg-s",type=float,default=35.,
                    help="Simple-grasp maximum command trajectory speed, deg/s")
+    p.add_argument("--gentle-jaw-contact",action="store_true",
+                   help="Study-only: reduce J6 setpoint lead and actuator "
+                        "force near Muhi; never override contact physics")
     p.add_argument("--moving-jaw-surface-proxy",action="store_true",
                    help="EXPERIMENTAL: moving jaw STL convex collider -> "
                         "3mm local surface boxes; original STL unchanged")
@@ -1930,6 +1963,10 @@ def main():
     args=p.parse_args()
     if args.moving_jaw_surface_proxy and not args.fixed_jaw_surface_proxy:
         p.error("--moving-jaw-surface-proxy requires fixed jaw proxy")
+    if args.gentle_jaw_contact and not (
+        args.simple_grasp and args.moving_jaw_surface_proxy):
+        p.error("--gentle-jaw-contact requires --simple-grasp "
+                "and --moving-jaw-surface-proxy")
     if args.simple_grasp:
         # Deliberately minimal sequence: fixed jaw approaches ~0.1 mm,
         # J6 closes with a bounded PD torque, then bilateral-contact
