@@ -222,7 +222,7 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
     else:
         if len(camera_aim_at)!=3:
             raise ValueError("camera_aim_at needs rig-local XYZ")
-        camera_right,camera_up,_=camera_axes(optical_center,camera_aim_at)
+        camera_right,camera_up,camera_back=camera_axes(optical_center,camera_aim_at)
     rig.add_camera(name=CAMERA, pos=optical_center,
                    xyaxes=list(camera_right+camera_up), fovy=fovy)
     # Second optical orientation with SAME lens position and bracket:
@@ -233,7 +233,7 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
         if camera_retract_mm > 0:
             # Camera-only virtual diagnostic: the physical mount, PCB,
             # collision proxies and regular camera are NOT moved.
-            shifted=tuple(optical_center[i]+back[i]*camera_retract_mm/1000.
+            shifted=tuple(optical_center[i]+camera_back[i]*camera_retract_mm/1000.
                           for i in range(3))
             shifted_right,shifted_up,_=camera_axes(shifted,camera_aim_at)
             rig.add_camera(name=RETRACTED_DIAGNOSTIC_CAMERA,
