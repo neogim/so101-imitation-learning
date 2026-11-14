@@ -1441,30 +1441,52 @@ def execute(args):
     # Force-balance snapshot at the final step, including the full inertial
     # coupling of J6 to the other DOFs. This is the genuine dynamics
     # diagnostic; a reported zero contact count alone is insufficient.
-    qM=np.zeros((model.nv,model.nv),dtype=float)
-    mujoco.mj_fullM(model,qM,data.qM)
-    j6_mass_row_accel=float(np.dot(qM[jawd,:],data.qacc))
-    j6_rhs=float(
-        data.qfrc_applied[jawd]+data.qfrc_actuator[jawd]+
-        data.qfrc_passive[jawd]+data.qfrc_constraint[jawd]-
-        data.qfrc_bias[jawd])
+    # MuJoCo <=3.x exposed legacy qM; newer versions use CSR data.M.
+    # This is DIAGNOSTICS ONLY; inability to convert the mass matrix must
+    # never prevent a completed grasp trial from writing summary and videos.
     j6_force_balance={
+        "available":False,
+        "reason":None,
         "model_joint_dof":int(jawd),
         "joint_armature_kg_m2":float(model.dof_armature[jawd]),
         "joint_damping_nm_s_rad":float(model.dof_damping[jawd]),
         "joint_frictionloss_nm":float(model.dof_frictionloss[jawd]),
-        "mass_matrix_j6_row_times_qacc_nm":j6_mass_row_accel,
-        "right_hand_side_nm":j6_rhs,
-        "residual_nm":j6_rhs-j6_mass_row_accel,
         "actuator_nm":float(data.qfrc_actuator[jawd]),
         "applied_nm":float(data.qfrc_applied[jawd]),
         "passive_nm":float(data.qfrc_passive[jawd]),
         "constraint_nm":float(data.qfrc_constraint[jawd]),
         "bias_nm":float(data.qfrc_bias[jawd]),
         "qacc_rad_s2":float(data.qacc[jawd]),
-        "note":"Final-step terms, not whole-trajectory inference; "
-               "joint coupling is included through the full M row."
+        "note":"Final step only; full mass matrix includes coupling of J6 to all DOFs."
     }
+    try:
+        qM=np.zeros((model.nv,model.nv),dtype=float)
+        if hasattr(data,"qM"):
+            mujoco.mj_fullM(model,qM,data.qM)
+            j6_force_balance["matrix_source"]="legacy_data_qM"
+        else:
+            # New MuJoCo >=3.17 uses CSR-format inertia data.M.
+            # See MuJoCo changelog: replace mj_fullM on qM with
+            # mju_sym2dense on M and the model's CSR row/index arrays.
+            mujoco.mju_sym2dense(
+                qM,data.M,model.nv,
+                model.M_rownnz,model.M_rowadr,model.M_colind)
+            j6_force_balance["matrix_source"]="csr_data_M"
+        j6_mass_row_accel=float(np.dot(qM[jawd,:],data.qacc))
+        j6_rhs=float(
+            data.qfrc_applied[jawd]+data.qfrc_actuator[jawd]+
+            data.qfrc_passive[jawd]+data.qfrc_constraint[jawd]-
+            data.qfrc_bias[jawd])
+        j6_force_balance.update({
+            "available":True,
+            "mass_matrix_j6_row_times_qacc_nm":j6_mass_row_accel,
+            "right_hand_side_nm":j6_rhs,
+            "residual_nm":j6_rhs-j6_mass_row_accel
+        })
+    except (AttributeError,TypeError,ValueError,RuntimeError) as exc:
+        j6_force_balance["reason"]=(
+            "optional mass-matrix diagnostic unavailable: "+
+            type(exc).__name__+": "+str(exc))
     # This is a TABLE-CONTACT criterion only. NEVER classify this as
     # successful pickup: the object may still be resting on the table.
     simultaneous=sum(r["bilateral"] for r in hold)
