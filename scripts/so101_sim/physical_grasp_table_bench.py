@@ -438,12 +438,23 @@ def contact_observations(model,data,object_geoms,fixed,moving,table_id):
               "table" if table_id in other else "other")
         force=np.zeros(6,dtype=float)
         mujoco.mj_contactForce(model,data,index,force)
+        adr=int(con.efc_address)
+        # Contact may exist geometrically yet its inequality constraint
+        # remains SATISFIED (inactive), giving zero solver force.
+        # Record the actual solver row so "contact count" cannot be
+        # mistaken for a mechanically loaded grasp.
+        efc_state=(int(data.efc_state[adr]) if
+                   0<=adr<len(data.efc_state) else None)
+        efc_force=(float(data.efc_force[adr]) if
+                   0<=adr<len(data.efc_force) else None)
         if kind in counts: counts[kind]+=1
         records.append(dict(
            kind=kind,geom1=int(con.geom1),geom2=int(con.geom2),
            geom1_name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(con.geom1)),
            geom2_name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(con.geom2)),
            efc_address=int(con.efc_address),
+           efc_state=efc_state,
+           efc_normal_row_force=efc_force,
            point_xyz_m=[float(v) for v in con.pos],
            contact_normal_xyz=[float(v) for v in con.frame[:3]],
            penetration_mm=float(min(0.,con.dist)*1000.),
@@ -1501,7 +1512,8 @@ def execute(args):
     with (args.out/"contact_points.csv").open("x",newline="",encoding="utf-8") as f:
         fields=["step","time_s","solver_time_s","stage","kind",
                 "geom1","geom2","geom1_name","geom2_name",
-                "efc_address","tip_distance_mm","grasp_depth_from_tcp_mm",
+                "efc_address","efc_state","efc_normal_row_force",
+                "tip_distance_mm","grasp_depth_from_tcp_mm",
                 "in_target_depth_band","point_xyz_m",
                 "contact_normal_xyz","penetration_mm",
                 "normal_force_n","tangential_force_n"]
@@ -1749,6 +1761,19 @@ def execute(args):
         "j6_dynamics_diagnostic":j6_dynamics,
         "j6_final_force_balance":j6_force_balance,
         "gentle_jaw_contact_enabled":bool(args.gentle_jaw_contact),
+        "solver_contact_rows_with_zero_force":sum(
+            1 for c in contactrows
+            if c["kind"] in ("fixed","moving") and
+            c["normal_force_n"]==0.),
+        "solver_contact_rows_active_with_zero_force":sum(
+            1 for c in contactrows
+            if c["kind"] in ("fixed","moving") and
+            c["normal_force_n"]==0. and
+            c["efc_normal_row_force"] is not None and
+            c["efc_normal_row_force"]>1e-8),
+        "solver_contact_row_force_logging":(
+            "efc_state and efc_normal_row_force come from "
+            "the same mj_step solver snapshot as mj_contactForce"),
         "j6_actual_speed_limit_target_deg_s":(
             args.j6_actual_speed_limit_deg_s
             if args.gentle_jaw_contact else None),
