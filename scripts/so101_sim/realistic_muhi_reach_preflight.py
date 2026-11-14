@@ -638,7 +638,8 @@ def main():
                 other_gap=min((dist(model,data,g,og)
                     for g in other_robot_geoms for og in obj_geoms),
                     default=float("inf"))
-                if (other_gap<-.00001 or table_gap<0 or
+                if (other_gap<args.min_path_clearance_mm/1000. or
+                    table_gap<args.min_path_clearance_mm/1000. or
                     fixed_gap<-.00005 or force>2.):
                     report["status"]="REPLAY_COLLISION_OR_FORCE_LIMIT"
                     report["replay_abort_details"]={
@@ -777,14 +778,21 @@ def main():
             "FIXED_JAW_FORCE_CONFIRMED" if
             fixed_contact_max_consecutive>=5 else
             "FIXED_JAW_FORCE_NOT_CONFIRMED")
+        verified=(fixed_contact_max_consecutive>=5 and
+                  report.get("fixed_fingertip_approach",{}).get(
+                      "success",False) and
+                  report["fixed_fingertip_approach"][
+                      "fixed_jaw_witness_tcp_distance_mm"] <=
+                  args.fingertip_zone_mm)
+        report["fixed_jaw_tip_contact_verified"]=bool(verified)
         if (args.approach_fixed_jaw and
                 report["status"] not in (
                     "REPLAY_COLLISION_DETECTED",
                     "REPLAY_COLLISION_OR_FORCE_LIMIT") and
-                fixed_contact_max_consecutive<5):
+                not verified):
             report["status"]="FIXED_JAW_CONTACT_NOT_CONFIRMED"
         elif (args.approach_fixed_jaw and
-              fixed_contact_max_consecutive>=5 and
+              verified and
               report["status"] not in (
                   "REPLAY_COLLISION_DETECTED",
                   "REPLAY_COLLISION_OR_FORCE_LIMIT")):
