@@ -61,7 +61,8 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
                       open_gripper_adr, fixed_geoms, moving_geoms, dynamic_geoms,
                       candidate_validator=None, *,
                       min_fixed_gap_m=.0005, max_fixed_gap_m=.007,
-                      prefer_small_moving_gap=False):
+                      prefer_small_moving_gap=False,
+                      candidate_local_z_range_m=None):
     """Find an open, nonpenetrating position with a CLOSING jaw collision path.
 
     The Muhi long axis is perpendicular to finger extension (local X/Y),
@@ -99,6 +100,12 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
     best=None; best_score=math.inf
     for label,quat in orientations:
         for xyz in itertools.product(*grid):
+            # Optional early geometrical filter: before expensive mesh
+            # distances; default None preserves the original full search.
+            if candidate_local_z_range_m is not None and not (
+                    candidate_local_z_range_m[0] <= xyz[2] <
+                    candidate_local_z_range_m[1]):
+                continue
             center=origin+rot@np.asarray(xyz)
             data.qpos[object_adr:object_adr+3]=center
             data.qpos[object_adr+3:object_adr+7]=quat
