@@ -563,19 +563,27 @@ def execute(args):
             commanded_torque=float(np.clip(torque,-args.max_torque,args.max_torque))
             data.qfrc_applied[jawd]=commanded_torque
             mujoco.mj_step(model,data)
+            # CRITICAL: mj_step has solved contacts for the *pre-integration*
+            # configuration and stores their constraint impulses in efc_force.
+            # Do not call mj_forward before snapshotting these: mj_forward
+            # recomputes the contact list at post-step positions, erasing
+            # the actual impact / normal-force record. This previously made
+            # the 1.414s Muhi impulse appear to happen with ZERO jaw contact.
+            contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
+            tcp_contact_reference=np.asarray(data.site_xpos[tip_site]).copy()
+            for c in contacts:
+                if c["kind"]=="fixed":
+                    c["tip_distance_mm"]=1000.*float(np.linalg.norm(
+                        np.asarray(c["point_xyz_m"],dtype=float)
+                        -tcp_contact_reference))
+                else:
+                    c["tip_distance_mm"]=None
+                c["solver_time_s"]=float(data.time-model.opt.timestep)
             data.qpos[list(qids)]=armhome
             data.qvel[list(dids)]=0.
             mujoco.mj_forward(model,data)
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 raise FloatingPointError(f"nonfinite state at step={i}")
-            contacts,counts=contact_observations(model,data,obj,fixed,moving,table)
-            for c in contacts:
-                if c["kind"]=="fixed":
-                    c["tip_distance_mm"]=1000.*float(np.linalg.norm(
-                        np.asarray(c["point_xyz_m"],dtype=float)
-                        -np.asarray(data.site_xpos[tip_site],dtype=float)))
-                else:
-                    c["tip_distance_mm"]=None
             fixed_normal_n=sum(
                 max(0.,float(c["normal_force_n"])) for c in contacts
                 if c["kind"]=="fixed" and
@@ -698,7 +706,7 @@ def execute(args):
     with (args.out/"table_grasp_trace.csv").open("x",newline="",encoding="utf-8") as f:
         w=csv.DictWriter(f,fieldnames=list(rows[0]));w.writeheader();w.writerows(rows)
     with (args.out/"contact_points.csv").open("x",newline="",encoding="utf-8") as f:
-        fields=["step","time_s","kind","geom1","geom2",
+        fields=["step","time_s","solver_time_s","kind","geom1","geom2",
                 "geom1_name","geom2_name","efc_address","tip_distance_mm",
                 "point_xyz_m",
                 "contact_normal_xyz","penetration_mm",
@@ -738,6 +746,7 @@ def execute(args):
         result_status=contact_abort_reason
     info.update({
         "status":result_status,
+        "contact_logging":"snapshot immediately after mj_step before mj_forward; solver_time_s marks pre-integration contacts",
         "contact_abort_reason":contact_abort_reason,
         "contact_abort_step":contact_abort_step,
         "jaw_self_gap_open_mm":float(jaw_self_gap_initial_mm),
