@@ -59,7 +59,9 @@ def geometry_gaps(model, data, object_geoms, candidate_geoms):
 
 def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
                       open_gripper_adr, fixed_geoms, moving_geoms, dynamic_geoms,
-                      candidate_validator=None):
+                      candidate_validator=None, *,
+                      min_fixed_gap_m=.0005, max_fixed_gap_m=.007,
+                      prefer_small_moving_gap=False):
     """Find an open, nonpenetrating position with a CLOSING jaw collision path.
 
     The Muhi long axis is perpendicular to finger extension (local X/Y),
@@ -102,10 +104,10 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
             gf=geometry_gaps(model,data,dynamic_geoms,fixed_geoms)
             gm=geometry_gaps(model,data,dynamic_geoms,moving_geoms)
             diagnostics["evaluated"]+=1
-            if gf<=.0005 or gm<=.0005:
+            if gf<=min_fixed_gap_m or gm<=.0005:
                 continue
             diagnostics["open_clear"]+=1
-            if gf>.007:
+            if gf>max_fixed_gap_m:
                 continue
             diagnostics["fixed_jaw_near"]+=1
             # Do not pick a collision with the palm, other arm parts, or mount.
@@ -128,7 +130,7 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
             diagnostics["closing_crossings"]+=1
             # Prefer earliest useful closing contact at a fixed-jaw gap
             # under 2mm, reducing reliance on free-body translation.
-            if gf>.003:
+            if gf>max(.003, max_fixed_gap_m if prefer_small_moving_gap else .003):
                 continue
             if candidate_validator is not None:
                 # Evaluate environment clearance at this actual open-pose
@@ -139,7 +141,9 @@ def select_bench_pose(model, data, object_adr, open_angle, closed_angle,
                     diagnostics["candidate_validator_rejections"]+=1
                     continue
             diagnostics["fully_valid"]+=1
-            score=3*gf + .2*gm + .1*abs(xyz[2]+.070)
+            score=(gm + .35*gf + .06*abs(xyz[2]+.070)
+                   if prefer_small_moving_gap else
+                   3*gf + .2*gm + .1*abs(xyz[2]+.070))
             if score<best_score:
                 best_score=score
                 best=(center.copy(),quat.copy(),gf,gm,tuple(xyz),label,
