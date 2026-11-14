@@ -127,6 +127,22 @@ def main():
             model,mujoco.mjtObj.mjOBJ_BODY,"gripper_link"))
         jointid=int(mujoco.mj_name2id(
             model,mujoco.mjtObj.mjOBJ_JOINT,JOINT))
+        def mesh_geometry_report(gid):
+            mesh_id=int(model.geom_dataid[gid])
+            vert_start=int(model.mesh_vertadr[mesh_id])
+            vert_count=int(model.mesh_vertnum[mesh_id])
+            verts=np.asarray(model.mesh_vert[
+                vert_start:vert_start+vert_count])
+            bbox_min=verts.min(axis=0).tolist() if len(verts) else None
+            bbox_max=verts.max(axis=0).tolist() if len(verts) else None
+            return {
+                "mesh_id":mesh_id,"compiled_vertices":vert_count,
+                "compiled_mesh_vertex_bbox_min_m":bbox_min,
+                "compiled_mesh_vertex_bbox_max_m":bbox_max,
+                "collision_uses_convex_hull":True,
+                "geom_contype":int(model.geom_contype[gid]),
+                "geom_conaffinity":int(model.geom_conaffinity[gid]),
+            }
         summary.update({
             "urdf":str(args.urdf),
             "J6_joint_axis_local":model.jnt_axis[jointid].tolist(),
@@ -136,9 +152,11 @@ def main():
             "TCP_frame_orientation_note":
                 "gripper_frame_joint has RPY(0,pi,0); this site records position only",
             "fixed_finger":{"geom_id":fixed,"mesh_name":fmesh,
-                            "body":"gripper_link"},
+                            "body":"gripper_link",
+                            **mesh_geometry_report(fixed)},
             "moving_finger":{"geom_id":moving,"mesh_name":mmesh,
-                             "body":"moving_jaw_so101_v1_link"},
+                             "body":"moving_jaw_so101_v1_link",
+                             **mesh_geometry_report(moving)},
             "wrist_mount":"ruler_15_35_35 photo/ruler estimate",
             "wrist_mount_has_collision_proxies":True,
             "original_video_contract_preserved":True,
@@ -154,6 +172,10 @@ def main():
             renderer=mujoco.Renderer(model,width=480,height=360)
         option=mujoco.MjvOption()
         option.geomgroup[3]=0
+        hull_option=mujoco.MjvOption()
+        hull_option.geomgroup[3]=0
+        hull_option.flags[mujoco.mjtVisFlag.mjVIS_CONVEXHULL]=1
+        summary["hull_visualization"]="Separate 5-view PNG at J6 open/mid/closed; convex hull flag enabled"
         side=mujoco.MjvCamera()
         side.type=mujoco.mjtCamera.mjCAMERA_FREE
         side.distance=.36
@@ -221,6 +243,34 @@ def main():
                 img.save(frame_dir/name/f"frame_{k:04d}.png")
             if k in (0,11,22):
                 canvas.save(args.out/f"gripper_fiveview_{k:02d}.png")
+                hull_canvas=Image.new("RGB",(1440,780),(22,26,32))
+                side.azimuth=70
+                renderer.update_scene(
+                    data,camera=side,scene_option=hull_option)
+                hull_a=Image.fromarray(renderer.render().copy())
+                side.azimuth=-70
+                renderer.update_scene(
+                    data,camera=side,scene_option=hull_option)
+                hull_b=Image.fromarray(renderer.render().copy())
+                hull_images=[hull_a,hull_b]
+                for cam in (wrist.CAMERA,wrist.SHELF_DIAGNOSTIC_CAMERA,
+                            wrist.RETRACTED_DIAGNOSTIC_CAMERA):
+                    renderer.update_scene(
+                        data,camera=cam,scene_option=hull_option)
+                    hull_images.append(
+                        Image.fromarray(renderer.render().copy()))
+                for img,pos in zip(hull_images,
+                    ((240,30),(720,30),(0,420),(480,420),(960,420))):
+                    hull_canvas.paste(img,pos)
+                hd=ImageDraw.Draw(hull_canvas)
+                hd.text((245,8),
+                    f"CONVEX HULL VIEW | J6={math.degrees(angle):.1f} deg",
+                    fill="white")
+                hd.text((8,393),
+                    "WRIST TCP / SHELF / RETRACTED: convex hull enabled",
+                    fill="white")
+                hull_canvas.save(
+                    args.out/f"gripper_collision_hulls_{k:02d}.png")
         write_csv(args.out/"j6_collision_geometry_sweep.csv",rows)
         summary["frames_or_angles_measured"]=len(rows)
         summary["j6_min_fixed_moving_gap_mm"]=min(
