@@ -818,7 +818,7 @@ def execute(args):
                 demand=open_angle
             else:
                 u=min(1.,max(0.,(t-j1_force_seek_end)/args.close_s))
-                smooth=u*u*(3.-2.*u)
+                smooth=(u if args.simple_grasp else u*u*(3.-2.*u))
                 demand=open_angle+smooth*(closed_angle-open_angle)
                 if closing_low_force_stop and closing_hold_target is not None:
                     demand=closing_hold_target
@@ -1414,6 +1414,13 @@ def execute(args):
             float(j6_preclose_drift_max_deg),
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_dynamics_diagnostic":j6_dynamics,
+        "simple_grasp_mode":bool(args.simple_grasp),
+        "simple_grasp_fixed_jaw_stop_gap_mm":(
+            args.j1_stop_before_contact_mm if args.simple_grasp else None),
+        "simple_grasp_note":(
+            "Study mode only: target initial fixed-jaw geometric proximity, "
+            "then bounded J6 PD close; actual fixed+moving contacts and 5mm "
+            "Lift must be verified separately." if args.simple_grasp else None),
         "j6_torque_saturation_fraction_during_close_hold":
             float(j6_command_saturation_fraction),
         "j6_not_closing":j6_not_closing,
@@ -1529,6 +1536,9 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
+    p.add_argument("--simple-grasp",action="store_true",
+                   help="Study-mode: near-contact fixed jaw then purposeful "
+                        "bounded J6 closure; original bench unchanged by default")
     p.add_argument("--fixed-jaw-surface-proxy",action="store_true",
                    help="Opt-in Phase A fixed STL visual + 3/6mm collision BOX model; "
                         "default remains the original MuJoCo collision model")
@@ -1613,6 +1623,17 @@ def main():
     p.add_argument("--fps",type=float,default=12.)
     p.add_argument("--render-every",type=int,default=20)
     args=p.parse_args()
+    if args.simple_grasp:
+        # Deliberately minimal sequence: fixed jaw approaches ~0.1 mm,
+        # J6 closes with a bounded PD torque, then bilateral-contact
+        # gate before 5 mm Lift. Never bypass collision/table guards.
+        if not args.fixed_jaw_surface_proxy:
+            p.error("--simple-grasp requires --fixed-jaw-surface-proxy")
+        if args.j1_contact_first_diagnostic:
+            p.error("--simple-grasp cannot combine with J1 force-seek")
+        args.j1_stop_before_contact_mm=.10
+        args.j6_precontact_max_torque=.06
+        args.max_torque=.06
     if not (0 <= args.target_grasp_depth_min_mm <
             args.target_grasp_depth_max_mm <= 70):
         p.error("target grasp depth must satisfy 0 <= min < max <= 70mm")
