@@ -447,6 +447,16 @@ def contact_observations(model,data,object_geoms,fixed,moving,table_id):
                    0<=adr<len(data.efc_state) else None)
         efc_force=(float(data.efc_force[adr]) if
                    0<=adr<len(data.efc_force) else None)
+        # State=SATISFIED with zero force can be caused by a
+        # separating normal velocity even when a box geometry overlaps.
+        # Compare signed constraint velocity and reference acceleration
+        # at EXACTLY the same solver snapshot, not after mj_forward.
+        efc_normal_velocity=(float(data.efc_vel[adr]) if
+                   0<=adr<len(data.efc_vel) else None)
+        efc_reference_accel=(float(data.efc_aref[adr]) if
+                   0<=adr<len(data.efc_aref) else None)
+        efc_position=(float(data.efc_pos[adr]) if
+                   0<=adr<len(data.efc_pos) else None)
         if kind in counts: counts[kind]+=1
         records.append(dict(
            kind=kind,geom1=int(con.geom1),geom2=int(con.geom2),
@@ -455,6 +465,9 @@ def contact_observations(model,data,object_geoms,fixed,moving,table_id):
            efc_address=int(con.efc_address),
            efc_state=efc_state,
            efc_normal_row_force=efc_force,
+           efc_normal_velocity=efc_normal_velocity,
+           efc_reference_acceleration=efc_reference_accel,
+           efc_position=efc_position,
            point_xyz_m=[float(v) for v in con.pos],
            contact_normal_xyz=[float(v) for v in con.frame[:3]],
            penetration_mm=float(min(0.,con.dist)*1000.),
@@ -1513,7 +1526,8 @@ def execute(args):
         fields=["step","time_s","solver_time_s","stage","kind",
                 "geom1","geom2","geom1_name","geom2_name",
                 "efc_address","efc_state","efc_normal_row_force",
-                "tip_distance_mm","grasp_depth_from_tcp_mm",
+                "efc_normal_velocity","efc_reference_acceleration",
+                "efc_position","tip_distance_mm","grasp_depth_from_tcp_mm",
                 "in_target_depth_band","point_xyz_m",
                 "contact_normal_xyz","penetration_mm",
                 "normal_force_n","tangential_force_n"]
@@ -1772,8 +1786,10 @@ def execute(args):
             c["efc_normal_row_force"] is not None and
             c["efc_normal_row_force"]>1e-8),
         "solver_contact_row_force_logging":(
-            "efc_state and efc_normal_row_force come from "
-            "the same mj_step solver snapshot as mj_contactForce"),
+            "efc_state, efc_normal_row_force, efc_normal_velocity, "
+            "efc_reference_acceleration and efc_position come from "
+            "the same mj_step solver snapshot as mj_contactForce; "
+            "velocity uses MuJoCo constraint coordinates"),
         "j6_actual_speed_limit_target_deg_s":(
             args.j6_actual_speed_limit_deg_s
             if args.gentle_jaw_contact else None),
