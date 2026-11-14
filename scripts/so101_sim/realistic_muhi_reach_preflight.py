@@ -26,6 +26,7 @@ import physical_workcell_sim as physical
 import real_to_sim as r2s
 import base_shoulder_pair_filter as pair_filter
 import wrist_camera_sim as wrist
+import fixed_fingertip_contact_planner as fingertip
 
 SITE = "realistic_reach_tcp"
 TABLE = "realistic_reach_table"
@@ -90,6 +91,13 @@ def main():
                          "TCP heights before the horizontal segment")
     ap.add_argument("--render", action="store_true",
                     help="Save start, middle and final snapshots")
+    ap.add_argument("--approach-fixed-jaw", action="store_true",
+                    help="After Reach, plan guarded *fixed fingertip* geometric "
+                         "precontact. Report physical force separately.")
+    ap.add_argument("--fingertip-zone-mm", type=float, default=30.,
+                    help="Max distance between Muhi/fixed-jaw witness and TCP")
+    ap.add_argument("--fixed-jaw-target-gap-mm", type=float, default=.03,
+                    help="Positive geometric stopping gap before force check")
     ap.add_argument("--video", action="store_true",
                     help="Render original 2-side + 3-wrist combined MP4 and separate camera MP4s")
     ap.add_argument("--wrist-retract-mm", type=float, default=5.,
@@ -105,7 +113,8 @@ def main():
         ap.error("Output folder exists; choose a fresh path")
     if not finite([*args.muhi_xy_m, args.table_top_z_m, *args.home_deg,
                    *args.pregrasp_offset_m, args.via_height_mm,
-                   args.j4_weight,
+                   args.j4_weight, args.fingertip_zone_mm,
+                   args.fixed_jaw_target_gap_mm,
                    args.min_initial_clearance_mm,
                    args.min_path_clearance_mm, args.tcp_tolerance_mm]):
         ap.error("Non-finite pose or tolerance")
@@ -116,6 +125,8 @@ def main():
             10 <= args.max_iterations <= 1500 and
             30 <= args.via_height_mm <= 250 and
             1 <= args.j4_weight <= 1000 and
+            15 <= args.fingertip_zone_mm <= 60 and
+            0 <= args.fixed_jaw_target_gap_mm <= .5 and
             0 <= args.wrist_retract_mm <= 15 and
             1 <= args.fps <= 60 and
             1 <= args.video_every_waypoints <= 30):
@@ -500,6 +511,34 @@ def main():
         else:
             report["status"]="PREGRASP_POSITION_REACHED_NO_GRASP"
 
+        # This was missing in the old "Reach success" definition.
+        # A TCP 75mm from bottle center is NOT a fixed-fingertip contact.
+        fixed_geoms=bench.owned_collision_geoms(model,bench.FINGER_BODY)
+        other_robot_geoms=tuple(g for g in robot_geoms if g not in fixed_geoms)
+        report["fixed_fingertip_contact_phase"]="NOT_REQUESTED"
+        if args.approach_fixed_jaw:
+            if report["status"]!="PREGRASP_POSITION_REACHED_NO_GRASP":
+                report["fixed_fingertip_contact_phase"]="REACH_FAILED_SKIP"
+            elif not fixed_geoms:
+                report["fixed_fingertip_contact_phase"]="NO_FIXED_GEOMS"
+            else:
+                subpath,metrics,approach=fingertip.plan_fixed_fingertip_approach(
+                    model,data,pose,qs,obj_geoms,fixed_geoms,
+                    other_robot_geoms,table_geom,tcp_id,lims,
+                    target_gap_mm=args.fixed_jaw_target_gap_mm,
+                    tip_zone_mm=args.fingertip_zone_mm,
+                    clearance_mm=args.min_path_clearance_mm,
+                    max_steps=300)
+                report["fixed_fingertip_contact_phase"]=approach["status"]
+                report["fixed_fingertip_approach"]=approach
+                write_csv(args.out/"fixed_fingertip_plan_trace.csv",metrics)
+                for q in subpath[1:]:
+                    trajectory.append(q.copy())
+                    trajectory_stages.append("fixed_fingertip_approach")
+                if approach["success"]:
+                    report["status"]="FINGERTIP_PRECONTACT_GEOMETRY_ONLY"
+                else:
+                    report["status"]="FINGERTIP_APPROACH_NOT_ESTABLISHED"
         # Replay the path at fixed 10ms steps. Only object dynamics are free.
         # J1-J5 are kinematically prescribed; this is NOT servo-control proof.
         mujoco.mj_resetData(model,data)
@@ -511,6 +550,12 @@ def main():
         mujoco.mj_forward(model,data)
         path = trajectory if len(trajectory)>1 else [home]
         snapshot_index = {0, len(path)//2, len(path)-1}
+        fixed_contact_count=0
+        fixed_contact_consecutive=0
+        fixed_contact_max_consecutive=0
+        max_fixed_contact_force_n=0.
+        # MuJoCo's solver is the only authority for claiming force contact.
+        # Being 0.03mm away geometrically does not prove force or grasp.
         # Same desktop comparison layout as physical_grasp_table_bench.py:
         # 2 side views (top), 3 wrist views (bottom), 1440x780.
         # Also emit each individual camera movie. Keep frame series synced.
@@ -554,6 +599,25 @@ def main():
                 mujoco.mj_forward(model,data)
                 gap = robot_obj()
                 table_gap = robot_table()
+                force=0.
+                obj_set=set(obj_geoms)
+                fixed_set=set(fixed_geoms)
+                for ci in range(data.ncon):
+                    ct=data.contact[ci]
+                    g1,g2=int(ct.geom1),int(ct.geom2)
+                    if ((g1 in fixed_set and g2 in obj_set) or
+                        (g2 in fixed_set and g1 in obj_set)):
+                        wrench=np.zeros(6)
+                        mujoco.mj_contactForce(model,data,ci,wrench)
+                        force+=max(0.,float(wrench[0]))
+                max_fixed_contact_force_n=max(max_fixed_contact_force_n,force)
+                if force>=.02:
+                    fixed_contact_count+=1
+                    fixed_contact_consecutive+=1
+                    fixed_contact_max_consecutive=max(
+                        fixed_contact_max_consecutive,fixed_contact_consecutive)
+                else:
+                    fixed_contact_consecutive=0
                 timeline.append(dict(
                     time_s=float(data.time), waypoint_index=k,
                     reach_stage=trajectory_stages[k],
@@ -562,6 +626,8 @@ def main():
                     tcp_z_m=float(data.site_xpos[tcp_id,2]),
                     robot_muhi_gap_mm=gap*1000,
                     robot_table_gap_mm=table_gap*1000,
+                    fixed_jaw_force_n=force,
+                    fixed_jaw_force_confirmed=(fixed_contact_consecutive>=5),
                     muhi_x_m=float(data.qpos[free_q]),
                     muhi_y_m=float(data.qpos[free_q+1]),
                     muhi_z_m=float(data.qpos[free_q+2])))
@@ -686,7 +752,19 @@ def main():
             (r["robot_table_gap_mm"] for r in timeline),default=None)
         report["replay_final_muhi_center_m"] = (
             data.qpos[free_q:free_q+3].tolist())
-        report["physical_contact_phase"] = "NOT_STARTED"
+        report["fixed_jaw_force_max_n"]=max_fixed_contact_force_n
+        report["fixed_jaw_contact_steps"]=fixed_contact_count
+        report["fixed_jaw_contact_max_consecutive_steps"]=(
+            fixed_contact_max_consecutive)
+        report["fixed_jaw_physical_contact_confirmed"]=(
+            fixed_contact_max_consecutive>=5)
+        report["physical_contact_phase"]=(
+            "FIXED_JAW_FORCE_CONFIRMED" if
+            fixed_contact_max_consecutive>=5 else
+            "FIXED_JAW_FORCE_NOT_CONFIRMED")
+        if args.approach_fixed_jaw and not (
+                fixed_contact_max_consecutive>=5):
+            report["status"]="FIXED_JAW_CONTACT_NOT_CONFIRMED"
         # If the target TCP is still >tolerance, never report Reach success.
         if report["status"] == "PREGRASP_POSITION_REACHED_NO_GRASP" and (
                 len(trajectory) < 2):
