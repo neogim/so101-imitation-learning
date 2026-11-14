@@ -94,6 +94,10 @@ def main():
     ap.add_argument("--approach-fixed-jaw", action="store_true",
                     help="After Reach, plan guarded *fixed fingertip* geometric "
                          "precontact. Report physical force separately.")
+    ap.add_argument("--grasp-depth-mm", type=float, default=18.,
+                    help="Bottle-center depth from fixed fingertip toward palm in gripper coordinates")
+    ap.add_argument("--grasp-depth-tolerance-mm",type=float,default=7.,
+                    help="Accepted grasp depth error in millimeters")
     ap.add_argument("--fingertip-zone-mm", type=float, default=30.,
                     help="Max distance between Muhi/fixed-jaw witness and TCP")
     ap.add_argument("--fixed-jaw-target-gap-mm", type=float, default=-.02,
@@ -113,7 +117,8 @@ def main():
         ap.error("Output folder exists; choose a fresh path")
     if not finite([*args.muhi_xy_m, args.table_top_z_m, *args.home_deg,
                    *args.pregrasp_offset_m, args.via_height_mm,
-                   args.j4_weight, args.fingertip_zone_mm,
+                   args.j4_weight, args.grasp_depth_mm,
+                   args.grasp_depth_tolerance_mm, args.fingertip_zone_mm,
                    args.fixed_jaw_target_gap_mm,
                    args.min_initial_clearance_mm,
                    args.min_path_clearance_mm, args.tcp_tolerance_mm]):
@@ -125,6 +130,8 @@ def main():
             10 <= args.max_iterations <= 1500 and
             30 <= args.via_height_mm <= 250 and
             1 <= args.j4_weight <= 1000 and
+            10 <= args.grasp_depth_mm <= 30 and
+            2 <= args.grasp_depth_tolerance_mm <= 12 and
             15 <= args.fingertip_zone_mm <= 60 and
             -.04 <= args.fixed_jaw_target_gap_mm <= .5 and
             0 <= args.wrist_retract_mm <= 15 and
@@ -514,6 +521,9 @@ def main():
         # This was missing in the old "Reach success" definition.
         # A TCP 75mm from bottle center is NOT a fixed-fingertip contact.
         fixed_geoms=bench.owned_collision_geoms(model,bench.FINGER_BODY)
+        moving_geoms=bench.owned_collision_geoms(model,bench.MOVING_BODY)
+        grip_body=int(mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_BODY,bench.FINGER_BODY))
         other_robot_geoms=tuple(g for g in robot_geoms if g not in fixed_geoms)
         report["fixed_fingertip_contact_phase"]="NOT_REQUESTED"
         if args.approach_fixed_jaw:
@@ -528,7 +538,14 @@ def main():
                     target_gap_mm=args.fixed_jaw_target_gap_mm,
                     tip_zone_mm=args.fingertip_zone_mm,
                     clearance_mm=args.min_path_clearance_mm,
-                    max_steps=300)
+                    max_steps=400,
+                    object_center_world=center,
+                    grip_body_id=grip_body,
+                    moving_geoms=moving_geoms,
+                    jaw_qpos_id=jaw_q,
+                    jaw_limits=jaw_lim,
+                    target_depth_mm=args.grasp_depth_mm,
+                    depth_tolerance_mm=args.grasp_depth_tolerance_mm)
                 report["fixed_fingertip_contact_phase"]=approach["status"]
                 report["fixed_fingertip_approach"]=approach
                 write_csv(args.out/"fixed_fingertip_plan_trace.csv",metrics)
@@ -778,12 +795,14 @@ def main():
             "FIXED_JAW_FORCE_CONFIRMED" if
             fixed_contact_max_consecutive>=5 else
             "FIXED_JAW_FORCE_NOT_CONFIRMED")
+        approach_result=report.get("fixed_fingertip_approach",{})
         verified=(fixed_contact_max_consecutive>=5 and
-                  report.get("fixed_fingertip_approach",{}).get(
-                      "success",False) and
-                  report["fixed_fingertip_approach"][
-                      "fixed_jaw_witness_tcp_distance_mm"] <=
-                  args.fingertip_zone_mm)
+                  approach_result.get("success",False) and
+                  approach_result.get("moving_jaw_crossing_angle_deg") is not None and
+                  abs(approach_result.get("grasp_depth_mm",0.)-
+                      args.grasp_depth_mm)<=args.grasp_depth_tolerance_mm and
+                  approach_result.get("fixed_jaw_witness_tcp_distance_mm",
+                                      float("inf"))<=args.fingertip_zone_mm)
         report["fixed_jaw_tip_contact_verified"]=bool(verified)
         if (args.approach_fixed_jaw and
                 report["status"] not in (
