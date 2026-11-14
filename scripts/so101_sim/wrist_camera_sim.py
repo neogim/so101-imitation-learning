@@ -29,6 +29,17 @@ KNEE_POS = (0.0, 0.013, 0.0)
 ELBOW_POS = (0.0, 0.038, 0.031)
 SHELF_END_POS = (0.0, 0.074, 0.009)
 BOARD_POS = (0.0, 0.065, 0.0145)
+
+# Ruler estimates (2026-11-14): first straight 15mm, next 35mm,
+# final 35mm; near-root and far-tip endpoints lie on one straight line.
+# Approximate +/-30 degree diagonals in the bracket YZ plane.
+# Old photographic model is retained as default for prior experiments.
+MEASURED_FOOT_POS = (0.0, 0.0, 0.0)
+MEASURED_KNEE_POS = (0.0, 0.015, 0.0)
+MEASURED_ELBOW_POS = (0.0, 0.015 + 0.035*math.cos(math.pi/6),
+                      0.035*math.sin(math.pi/6))
+MEASURED_SHELF_END_POS = (0.0, 0.015 + 0.070*math.cos(math.pi/6), 0.0)
+MEASURED_BOARD_POS = (0.0, MEASURED_SHELF_END_POS[1]-0.005, 0.004)
 PCB_HALF = (0.016, 0.016, 0.002)
 BARREL_RADIUS_M = 0.008
 BARREL_HALF_LENGTH_M = 0.013
@@ -112,12 +123,24 @@ def between_endpoints(a, b, width, thickness):
 
 
 def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
-            fovy=DEFAULT_FOVY_DEG, look_at=DEFAULT_LOOK_AT):
+            fovy=DEFAULT_FOVY_DEG, look_at=DEFAULT_LOOK_AT,
+            bracket_profile="legacy", camera_aim_at=None):
     """Install the bent J5-side fixture and its aligned camera board."""
     import mujoco
     pos, rpy_deg = validate_mount(pos, rpy_deg)
     if not math.isfinite(fovy) or not 20 <= fovy <= 130:
         raise ValueError("FOV must be 20..130 degrees")
+    if bracket_profile not in ("legacy", "ruler_15_35_35"):
+        raise ValueError(f"Unknown bracket profile: {bracket_profile}")
+    if bracket_profile=="ruler_15_35_35":
+        foot_pos=MEASURED_FOOT_POS
+        knee_pos=MEASURED_KNEE_POS
+        elbow_pos=MEASURED_ELBOW_POS
+        shelf_end_pos=MEASURED_SHELF_END_POS
+        board_pos=MEASURED_BOARD_POS
+    else:
+        foot_pos,knee_pos,elbow_pos,shelf_end_pos,board_pos=(
+            FOOT_POS,KNEE_POS,ELBOW_POS,SHELF_END_POS,BOARD_POS)
     parent = spec.body("gripper_link")
     if parent is None:
         raise ValueError("Expected J5/J6 gripper_link in source URDF")
@@ -140,9 +163,9 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
     # Actual fixture: a narrow screw-on foot, an angled up-and-out bridge,
     # and a small shelf carrying the camera. Each plate is a thin, connected
     # beam (visual plus independently collidable proxy).
-    foot = (FOOT_POS, (0.015, 0.013, 0.004), (1., 0., 0., 0.))
-    rise = between_endpoints(KNEE_POS, ELBOW_POS, 0.014, 0.006)
-    shelf = between_endpoints(ELBOW_POS, SHELF_END_POS, 0.037, 0.006)
+    foot = (foot_pos, (0.015, 0.013, 0.004), (1., 0., 0., 0.))
+    rise = between_endpoints(knee_pos, elbow_pos, 0.014, 0.006)
+    shelf = between_endpoints(elbow_pos, shelf_end_pos, 0.037, 0.006)
     for i,(name,(center,halfsize,rotation)) in enumerate(zip(
         ("foot","diagonal","shelf"),(foot,rise,shelf))):
         rig.add_geom(name=COLLISION_NAMES[i],
@@ -157,13 +180,14 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
     # outer shelf; look-at must not independently rotate the camera away from
     # its bracket. The shelf's +Y is the camera's up axis, -Z points at jaws.
     right = (1.0, 0.0, 0.0)
-    up = normalize(tuple(SHELF_END_POS[i] - ELBOW_POS[i] for i in range(3)))
+    up = normalize(tuple(shelf_end_pos[i] - elbow_pos[i] for i in range(3)))
     back = normalize(cross(right, up))
     rotation = quat_from_basis(right, up, back)
-    board = tuple(float(v) for v in BOARD_POS)
+    board = tuple(float(v) for v in board_pos)
     target_direction = normalize(tuple(float(look_at[i])-board[i] for i in range(3)))
-    if sum(-back[i]*target_direction[i] for i in range(3)) < 0.98:
-        raise ValueError("Look-at disagrees with shelf/PCB angle; adjust the fixture together")
+    if camera_aim_at is None:
+        if sum(-back[i]*target_direction[i] for i in range(3)) < 0.98:
+            raise ValueError("Look-at disagrees with shelf/PCB angle; adjust the fixture together")
     lens_center = tuple(board[i]-back[i]*0.014 for i in range(3))
     optical_center = tuple(board[i]-back[i]*0.029 for i in range(3))
 
@@ -183,8 +207,19 @@ def install(spec, *, pos=DEFAULT_MOUNT_POS, rpy_deg=DEFAULT_MOUNT_RPY_DEG,
                  pos=lens_center, quat=rotation,
                  size=[BARREL_RADIUS_M,BARREL_HALF_LENGTH_M,0],
                  rgba=[0.08,0.08,0.09,1], **visual)
+    # The bracket shelf is measured only approximately. For the tabletop
+    # diagnostic, aim the rendered optic at the gripper TCP so the jaw is
+    # in view. This is a provisional optical alignment, NOT a physical
+    # camera extrinsic calibration. Keep original shelf-parallel camera
+    # orientation for legacy callers.
+    if camera_aim_at is None:
+        camera_right,camera_up=right,up
+    else:
+        if len(camera_aim_at)!=3:
+            raise ValueError("camera_aim_at needs rig-local XYZ")
+        camera_right,camera_up,_=camera_axes(optical_center,camera_aim_at)
     rig.add_camera(name=CAMERA, pos=optical_center,
-                   xyaxes=list(right+up), fovy=fovy)
+                   xyaxes=list(camera_right+camera_up), fovy=fovy)
 
     # The inspection camera is not an ACT input. It stays on the rig so it
     # follows J5 and shows the L from the side for mechanical verification.
