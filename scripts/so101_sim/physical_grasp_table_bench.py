@@ -210,6 +210,7 @@ def build_model(args):
                      "expected_table_center":expected_table_center.tolist(),
                      "actual_table_center":actual_table_center.tolist()}
     diag={"search":search,"table_clearance_search":rejected,
+          "wrist_near_ratio_original":wrist_near_original,
           "table_actual_world_center_xyz_m":actual_table_center.tolist(),
           "initial_fixed_gap_mm":float(gap_fixed*1000),
           "initial_moving_gap_mm":float(gap_moving*1000),
@@ -916,7 +917,7 @@ def execute(args):
         "wrist_retracted_camera_frame_count":len(retracted_wrist_frames),
         "wrist_retract_mm_virtual_diagnostic":float(args.wrist_retract_mm),
         "wrist_render_background":"legacy Real-to-Sim pale gray wall; visual only",
-        "wrist_near_ratio_original":float(wrist_near_original),
+        "wrist_near_ratio_original":diag.get("wrist_near_ratio_original"),
         "wrist_near_ratio_applied":float(model.vis.map.znear),
         "wrist_comparison_note":"Same MuJoCo pose/lens/mount/FOV; only optical orientation differs",
         "wrist_object_center_projected_in_fov_frames":
