@@ -78,11 +78,7 @@ def hull_edges_clipped(hull, points, low=0., high=70.):
         if max(a,b)<low or min(a,b)>high:
             continue
         if abs(b-a)>1e-10:
-            lo=max(0.,min(1.,(low-a)/(b-a)))
-            hi=max(0.,min(1.,(high-a)/(b-a)))
-            if b<a:
-                lo,hi=1.-hi,1.-lo
-            # Robust alternative: clip parameter t by interval intersection.
+            # Clip segment parameter t to the shown depth interval.
             t0=min((low-a)/(b-a),(high-a)/(b-a))
             t1=max((low-a)/(b-a),(high-a)/(b-a))
             t0,t1=max(0.,t0),min(1.,t1)
@@ -140,8 +136,18 @@ def plot_overlay(shapes, rows, out):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.collections import LineCollection
+    from matplotlib import font_manager
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection,Line3DCollection
+
+    # Japanese system fonts on macOS, Windows, Linux; never require
+    # shipping font files with the repo or the results.
+    preferred=("Hiragino Sans","Yu Gothic","Noto Sans CJK JP",
+               "IPAexGothic","Meiryo","Arial Unicode MS")
+    installed={f.name for f in font_manager.fontManager.ttflist}
+    for name in preferred:
+        if name in installed:
+            plt.rcParams["font.family"]=name
+            break
     from matplotlib.lines import Line2D
 
     palette=(("#2376b7","#104c7a"),("#e18a38","#a24b18"))
@@ -185,23 +191,21 @@ def plot_overlay(shapes, rows, out):
             ax.set_ylim(lo[1],hi[1])
             ax.set_zlim(0.,70.)
             ax.set_box_aspect(np.maximum(hi-lo,1.))
-            ax.set_xlabel("X (mm)",labelpad=4)
-            ax.set_ylabel("Y (mm)",labelpad=4)
-            ax.set_zlabel("Depth from TCP (mm)",labelpad=3)
+            ax.set_xlabel("X方向［mm］",labelpad=4)
+            ax.set_ylabel("Y方向［mm］",labelpad=4)
+            ax.set_zlabel("TCPから根元方向の深さ［mm］",labelpad=3)
             ax.set_title(
-                f"J6 = {angle:g} deg ({'OPEN' if angle>0 else 'CLOSED'})"
-                f"  |  viewpoint {'A' if col==0 else 'B'}",
+                f"J6 = {angle:g}°（{'開' if angle>0 else '閉'}）"
+                f"  ／ 視点 {'A' if col==0 else 'B'}",
                 fontsize=12,pad=12)
     fig.suptitle(
-        "SO-101: STL triangles (pale surfaces) + their convex hull "
-        "(dark wireframe) in SAME 3D pose",fontsize=17,y=.995)
+        "SO-101：STLの表面と衝突用の凸包（同じ姿勢で3D重ね合わせ）",
+        fontsize=17,y=.995)
     fig.text(.5,.95,
-        "Blue = fixed jaw  |  Orange = moving jaw  |  "
-        "Red dashed = selected facing-face centers at closed J6",
+        "青＝固定爪 ／ オレンジ＝可動爪 ／ 薄い面＝STL ／ 濃い線＝凸包 ／ 赤点線＝把持候補面の中心同士",
         fontsize=12,ha="center")
     fig.text(.5,.02,
-        "Depth from TCP: 0–70 mm. Full-mesh convex hull, clipped for "
-        "display. Mesh hulls model collision; this is NOT a contact proof.",
+        "表示範囲：TCPから根元方向へ0〜70mm。凸包はメッシュ全体で生成し、表示時だけ切断。把持成功の証明ではない。",
         fontsize=11,ha="center")
     fig.subplots_adjust(left=.03,right=.98,bottom=.05,top=.92,
                         wspace=.06,hspace=.22)
