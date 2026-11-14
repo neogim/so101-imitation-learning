@@ -24,7 +24,6 @@ import gripper_stl_convex_overlay_phase_a as overlay
 
 DEPTH_BANDS=((8.,20.),(20.,30.))
 POSE_DEG=-10.
-SAMPLE_COUNT=101
 
 
 def hull_segment_interval(hull,start,stop):
@@ -181,7 +180,7 @@ def main():
             length=float(np.linalg.norm(mp-fp))
             row={"j6_angle_deg":POSE_DEG,
                 "depth_start_mm":low,"depth_end_mm":high,
-                "segment_length_mm":length,"sample_count":SAMPLE_COUNT,
+                "segment_length_mm":length,
                 "face_normal_angle_deg":pair["face_angle_deg"],
                 "fixed_center_gripper_mm":fp.tolist(),
                 "moving_center_gripper_mm":mp.tolist()}
