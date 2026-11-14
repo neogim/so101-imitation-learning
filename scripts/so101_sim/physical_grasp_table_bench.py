@@ -392,6 +392,7 @@ def build_model(args):
                      "expected_table_center":expected_table_center.tolist(),
                      "actual_table_center":actual_table_center.tolist()}
     diag={"fixed_jaw_surface_proxy":proxy_metadata,
+          "moving_jaw_surface_proxy":moving_proxy_metadata,
           "target_grasp_depth_band_mm":[args.target_grasp_depth_min_mm,
                                          args.target_grasp_depth_max_mm],
           "selected_muhi_center_gripper_depth_mm":1000.*(
@@ -1182,6 +1183,10 @@ def execute(args):
                 "j6_commanded_torque_nm":commanded_torque,
                 "j6_velocity_deg_s":float(math.degrees(data.qvel[jawd])),
                 "j6_acceleration_rad_s2":float(data.qacc[jawd]),
+                "j6_applied_torque_nm":float(data.qfrc_applied[jawd]),
+                "j6_smooth_torque_nm":float(data.qfrc_smooth[jawd]),
+                "j6_frictionloss_nm":float(model.dof_frictionloss[jawd]),
+                "j6_damping_nm_s_rad":float(model.dof_damping[jawd]),
                 "j6_constraint_torque_nm":float(data.qfrc_constraint[jawd]),
                 "j6_bias_torque_nm":float(data.qfrc_bias[jawd]),
                 "j6_passive_torque_nm":float(data.qfrc_passive[jawd]),
@@ -1433,6 +1438,33 @@ def execute(args):
         "caution":"MuJoCo joint constraint/forces are simulation solver terms; "
                   "not measured motor torques or actual contact proof."
     }
+    # Force-balance snapshot at the final step, including the full inertial
+    # coupling of J6 to the other DOFs. This is the genuine dynamics
+    # diagnostic; a reported zero contact count alone is insufficient.
+    qM=np.zeros((model.nv,model.nv),dtype=float)
+    mujoco.mj_fullM(model,qM,data.qM)
+    j6_mass_row_accel=float(np.dot(qM[jawd,:],data.qacc))
+    j6_rhs=float(
+        data.qfrc_applied[jawd]+data.qfrc_actuator[jawd]+
+        data.qfrc_passive[jawd]+data.qfrc_constraint[jawd]-
+        data.qfrc_bias[jawd])
+    j6_force_balance={
+        "model_joint_dof":int(jawd),
+        "joint_armature_kg_m2":float(model.dof_armature[jawd]),
+        "joint_damping_nm_s_rad":float(model.dof_damping[jawd]),
+        "joint_frictionloss_nm":float(model.dof_frictionloss[jawd]),
+        "mass_matrix_j6_row_times_qacc_nm":j6_mass_row_accel,
+        "right_hand_side_nm":j6_rhs,
+        "residual_nm":j6_rhs-j6_mass_row_accel,
+        "actuator_nm":float(data.qfrc_actuator[jawd]),
+        "applied_nm":float(data.qfrc_applied[jawd]),
+        "passive_nm":float(data.qfrc_passive[jawd]),
+        "constraint_nm":float(data.qfrc_constraint[jawd]),
+        "bias_nm":float(data.qfrc_bias[jawd]),
+        "qacc_rad_s2":float(data.qacc[jawd]),
+        "note":"Final-step terms, not whole-trajectory inference; "
+               "joint coupling is included through the full M row."
+    }
     # This is a TABLE-CONTACT criterion only. NEVER classify this as
     # successful pickup: the object may still be resting on the table.
     simultaneous=sum(r["bilateral"] for r in hold)
@@ -1588,6 +1620,7 @@ def execute(args):
             float(j6_preclose_drift_max_deg),
         "j6_actual_closure_deg":float(j6_actual_closure_deg),
         "j6_dynamics_diagnostic":j6_dynamics,
+        "j6_final_force_balance":j6_force_balance,
         "simple_grasp_mode":bool(args.simple_grasp),
         "j6_actuation_method":(
             "MuJoCo compiled position actuator via data.ctrl"
