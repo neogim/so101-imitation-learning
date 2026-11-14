@@ -56,13 +56,25 @@ def build_model(args):
         GRIPPER_FRAME_LOCAL_POS[i]-wrist.DEFAULT_MOUNT_POS[i]
         for i in range(3))
     wrist.install(spec,bracket_profile="ruler_15_35_35",
-                  camera_aim_at=tcp_rig_local)
+                  camera_aim_at=tcp_rig_local,
+                  camera_retract_mm=args.wrist_retract_mm)
     gripper_spec = spec.body("gripper_link")
     if gripper_spec is None:
         raise ValueError("URDF gripper_link missing: cannot install TCP site")
     gripper_spec.add_site(
         name=TIP_SITE, pos=list(GRIPPER_FRAME_LOCAL_POS),
         size=[.002, .002, .002], rgba=[.1, .9, .8, 1.])
+    # Visual-only pale backdrop: reuse the color/intent of the legacy
+    # Real-to-Sim add_backdrop(), but keep it invisible to collision.
+    # Its mocap pose is aligned with the wrist viewing direction after
+    # selecting the actual tabletop grasp pose.
+    background=spec.worldbody.add_body(
+        name="j6_wrist_visual_backdrop_mocap",mocap=True,
+        pos=[0.,0.,-10.])
+    background.add_geom(
+        name="j6_wrist_visual_backdrop",type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[3.,3.,.01],pos=[0.,0.,0.],
+        rgba=[.73,.76,.79,1.],contype=0,conaffinity=0,group=4)
     # Use an actual small tabletop, not a fake vertical holding force.
     # Its pose is adjusted during placement search (world geom, no freejoint).
     # A direct worldbody geom is compiled as a STATIC world geom. Editing
@@ -77,6 +89,9 @@ def build_model(args):
         rgba=[.47,.51,.56,1.],friction=[.9,.01,.001],
         contype=1,conaffinity=1)
     model=spec.compile()
+    # Reduce camera near clipping ONLY in this diagnostic benchmark.
+    wrist_near_original=float(model.vis.map.znear)
+    model.vis.map.znear=min(wrist_near_original,args.wrist_near_ratio)
     wrist_camera_id=mujoco.mj_name2id(
         model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
     if wrist_camera_id<0:
@@ -272,8 +287,26 @@ def execute(args):
         model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
     shelf_wrist_camera_id=mujoco.mj_name2id(
         model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.SHELF_DIAGNOSTIC_CAMERA)
-    if wrist_camera_id<0 or shelf_wrist_camera_id<0:
-        raise ValueError("Wrist TCP-aim or shelf-view camera missing")
+    retracted_wrist_camera_id=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.RETRACTED_DIAGNOSTIC_CAMERA)
+    if wrist_camera_id<0 or shelf_wrist_camera_id<0 or (
+            args.wrist_retract_mm>0 and retracted_wrist_camera_id<0):
+        raise ValueError("Wrist TCP-aim, shelf-view, or retracted camera missing")
+    backdrop_bid=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_BODY,"j6_wrist_visual_backdrop_mocap")
+    backdrop_mid=int(model.body_mocapid[backdrop_bid])
+    if backdrop_mid<0:
+        raise ValueError("Wrist visual backdrop mocap body missing")
+    # Visual backdrop is 1.8m along wrist optical -Z, perpendicular to
+    # the first camera direction. Same pale gray as old Real-to-Sim.
+    # It has NO contact, mass, or force on the robot/bottle.
+    wrist_R=np.asarray(data.cam_xmat[wrist_camera_id]).reshape(3,3)
+    data.mocap_pos[backdrop_mid]=(
+        np.asarray(data.cam_xpos[wrist_camera_id])-1.8*wrist_R[:,2])
+    wrist_quat=np.zeros(4,dtype=float)
+    mujoco.mju_mat2Quat(wrist_quat,np.asarray(wrist_R).reshape(9))
+    data.mocap_quat[backdrop_mid]=wrist_quat
+    mujoco.mj_forward(model,data)
     armhome=data.qpos[list(qids)].copy()
     # Approach with a fingertip-area reference, not the gripper motor body.
     # The J1-J4 move is simulation-only prescribed IK, never a servo command.
@@ -333,6 +366,7 @@ def execute(args):
     frames=[]
     wrist_frames=[]
     shelf_wrist_frames=[]
+    retracted_wrist_frames=[]
     wrist_camera_frames_with_object_center=0
     wrist_camera_frames_with_tcp_center=0
     wrist_camera_object_center_uv_last=None
@@ -356,6 +390,12 @@ def execute(args):
         cam.elevation=-20
         render_option=mujoco.MjvOption()
         render_option.geomgroup[3]=0
+        # Backdrop group 4 visible in wrist views but not side views,
+        # so it cannot obscure the original side camera inspection.
+        render_option.geomgroup[4]=0
+        wrist_render_option=mujoco.MjvOption()
+        wrist_render_option.geomgroup[3]=0
+        wrist_render_option.geomgroup[4]=1
     jaw_self_gap_initial_mm=float(1000.*bench.geometry_gaps(
         model,data,fixed,moving))
     n=math.ceil(args.duration_s/model.opt.timestep)
@@ -686,13 +726,20 @@ def execute(args):
                                         scene_option=render_option)
                     pics.append(Image.fromarray(render.render().copy()))
                 render.update_scene(data,camera=wrist.CAMERA,
-                                    scene_option=render_option)
+                                    scene_option=wrist_render_option)
                 wrist_image=Image.fromarray(render.render().copy())
                 wrist_frames.append(wrist_image)
                 render.update_scene(data,camera=wrist.SHELF_DIAGNOSTIC_CAMERA,
-                                    scene_option=render_option)
+                                    scene_option=wrist_render_option)
                 shelf_image=Image.fromarray(render.render().copy())
                 shelf_wrist_frames.append(shelf_image)
+                retracted_image=None
+                if retracted_wrist_camera_id>=0:
+                    render.update_scene(
+                        data,camera=wrist.RETRACTED_DIAGNOSTIC_CAMERA,
+                        scene_option=wrist_render_option)
+                    retracted_image=Image.fromarray(render.render().copy())
+                    retracted_wrist_frames.append(retracted_image)
                 cam_pos=np.asarray(data.cam_xpos[wrist_camera_id])
                 cam_rot=np.asarray(
                     data.cam_xmat[wrist_camera_id]).reshape(3,3)
@@ -730,8 +777,11 @@ def execute(args):
                         d=ImageDraw.Draw(wrist_image)
                         d.line((x-5,y,x+5,y),fill=(20,225,225),width=2)
                         d.line((x,y-5,x,y+5),fill=(20,225,225),width=2)
-                image=Image.new("RGB",(1920,396),(20,24,30))
-                for idx,p in enumerate((*pics,wrist_image,shelf_image)):
+                panels=(*pics,wrist_image,shelf_image)
+                if retracted_image is not None:
+                    panels=(*panels,retracted_image)
+                image=Image.new("RGB",(480*len(panels),396),(20,24,30))
+                for idx,p in enumerate(panels):
                     image.paste(p,(idx*480,36))
                 draw=ImageDraw.Draw(image)
                 draw.text((8,8),
@@ -741,6 +791,10 @@ def execute(args):
                 draw.text((488,8),"SIDE B | same step",fill="white")
                 draw.text((968,8),"WRIST TCP AIM | provisional",fill="white")
                 draw.text((1448,8),"WRIST SHELF AXIS | same lens",fill="white")
+                if retracted_image is not None:
+                    draw.text((1928,8),
+                        f"WRIST RETRACTED | {args.wrist_retract_mm:g}mm",
+                        fill="white")
                 frames.append(image)
             # Stop on wrong (root) contact, bottle tip-over, physically
             # impossible J6 angle, or jaw mesh interpenetration. Never
@@ -857,6 +911,13 @@ def execute(args):
         "wrist_camera_frame_count":len(wrist_frames),
         "wrist_shelf_camera_name":wrist.SHELF_DIAGNOSTIC_CAMERA,
         "wrist_shelf_camera_frame_count":len(shelf_wrist_frames),
+        "wrist_retracted_camera_name":(
+            wrist.RETRACTED_DIAGNOSTIC_CAMERA if args.wrist_retract_mm>0 else None),
+        "wrist_retracted_camera_frame_count":len(retracted_wrist_frames),
+        "wrist_retract_mm_virtual_diagnostic":float(args.wrist_retract_mm),
+        "wrist_render_background":"legacy Real-to-Sim pale gray wall; visual only",
+        "wrist_near_ratio_original":float(wrist_near_original),
+        "wrist_near_ratio_applied":float(model.vis.map.znear),
         "wrist_comparison_note":"Same MuJoCo pose/lens/mount/FOV; only optical orientation differs",
         "wrist_object_center_projected_in_fov_frames":
             int(wrist_camera_frames_with_object_center),
@@ -944,10 +1005,15 @@ def execute(args):
         wrist_dir.mkdir()
         shelf_dir=args.out/"wrist_shelf_frames"
         shelf_dir.mkdir()
+        retracted_dir=args.out/"wrist_retracted_frames"
+        if retracted_wrist_frames:
+            retracted_dir.mkdir()
         for i,p in enumerate(wrist_frames):
             p.save(wrist_dir/f"wrist_{i:04d}.png")
         for i,p in enumerate(shelf_wrist_frames):
             p.save(shelf_dir/f"shelf_{i:04d}.png")
+        for i,p in enumerate(retracted_wrist_frames):
+            p.save(retracted_dir/f"retracted_{i:04d}.png")
         ffmpeg=shutil.which("ffmpeg")
         if ffmpeg:
             try:
@@ -978,6 +1044,17 @@ def execute(args):
                         "-movflags","+faststart",
                         str(args.out/"wrist_shelf_camera.mp4")],check=True)
                     info["wrist_shelf_video_status"]="created"
+                    if retracted_wrist_frames:
+                        subprocess.run([
+                            ffmpeg,"-hide_banner","-loglevel","error","-y",
+                            "-framerate",str(args.fps),
+                            "-i",str(retracted_dir/"retracted_%04d.png"),
+                            "-vf","pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                            "-c:v","libx264","-pix_fmt","yuv420p",
+                            "-movflags","+faststart",
+                            str(args.out/"wrist_retracted_camera.mp4")],
+                            check=True)
+                        info["wrist_retracted_video_status"]="created"
                 except subprocess.CalledProcessError:
                     info["wrist_video_status"]="ffmpeg_failed_pngs_saved"
             except subprocess.CalledProcessError as exc:
@@ -1002,6 +1079,10 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
+    p.add_argument("--wrist-near-ratio",type=float,default=.001,
+                   help="MuJoCo model.vis.map.znear ratio for camera near clip")
+    p.add_argument("--wrist-retract-mm",type=float,default=5.,
+                   help="Virtual optical comparison only; physical mount unchanged")
     p.add_argument("--muhi-mass-g",type=float,default=50.,
                    help="Measured total mass in grams, defaults to provisional 50g")
     p.add_argument("--fixed-contact-max-tip-distance-mm",type=float,default=45.)
@@ -1064,10 +1145,13 @@ def main():
                 args.j234_min_progress_mm,
                 args.j234_tcp_object_clearance_mm,args.j234_object_clearance_mm,
                 args.j6_limit_margin_deg,
+                args.wrist_near_ratio,args.wrist_retract_mm,
                 args.muhi_mass_g,args.fixed_contact_max_tip_distance_mm,
                 args.root_contact_abort_force_n,args.jaw_force_spike_abort_n)):
         p.error("parameters must be finite")
     if (args.fps<=0 or args.table_clearance_mm<0 or
+        not(0.0001<=args.wrist_near_ratio<=.01) or
+        not(0<=args.wrist_retract_mm<=15) or
         not(5<=args.muhi_mass_g<=500) or
         not(10<=args.fixed_contact_max_tip_distance_mm<=100) or
         not(0<args.root_contact_abort_force_n<=5) or
