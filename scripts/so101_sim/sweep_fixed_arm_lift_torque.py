@@ -30,6 +30,7 @@ def one_run(root: Path, torque: float, args, *, video: bool) -> dict:
         "--j6-speed-deg-s", str(args.j6_speed_deg_s),
         "--j6-max-torque-nm", str(torque),
         "--lift-mm", "5",
+        "--lift-drive", args.lift_drive,
         "--lift-ramp-s", "1.0",
         "--bilateral-hold-steps", "150",
         "--render-every", "25",
@@ -51,6 +52,7 @@ def one_run(root: Path, torque: float, args, *, video: bool) -> dict:
         s = json.loads(report.read_text(encoding="utf-8"))
         for key in ("status", "lift_success", "max_arm_command_lift_mm",
                     "max_object_rise_mm", "final_object_rise_mm",
+                    "max_arm_actual_rise_mm",
                     "final_object_table_gap_approx_mm",
                     "peak_fixed_force_n", "peak_moving_force_n",
                     "bilateral_frames", "physics_steps", "video_status"):
@@ -69,6 +71,8 @@ def main():
                         default=[.12, .14, .16, .18, .20])
     parser.add_argument("--duration-s", type=float, default=4.5)
     parser.add_argument("--j5-deg", type=float, default=-90)
+    parser.add_argument("--lift-drive", choices=["mocap","slide"],default="slide",
+                        help="Default physical slide (mocap has no velocity in contact solver)")
     parser.add_argument("--j6-speed-deg-s", type=float, default=35)
     parser.add_argument("--render-best", action="store_true",
                         help="After CSV sweep, generate one detailed 5-view MP4 at selected setting")
@@ -105,6 +109,7 @@ def main():
         "source": "headless MuJoCo dynamics; identical fixed-arm J6-first 5mm task",
         "torques_nm": args.torques,
         "duration_s": args.duration_s,
+        "lift_drive": args.lift_drive,
         "selected_torque_nm": best["torque_nm"] if best else None,
         "selected_has_verified_lift": bool(best and best.get("lift_success")),
         "comparison": results,
@@ -113,7 +118,8 @@ def main():
             "Max object rise is NOT the same as sustained lift; use lift_success and table normal force.",
             "When no candidate lifts, the selected run is exploratory and is not a grasp success.",
             "Physical wrist 3 + side 2 layout is inherited from earlier physical_grasp_table_bench rendering path.",
-            "Each candidate re-compiles model and repeats geometry search; no GPU required."
+            "Each candidate re-compiles model and repeats geometry search; no GPU required.",
+            "Slide is a simulator-only artificial base joint for testing load transfer, not J1-J5 IK."
         ]
     }
     (args.out / "sweep_summary.json").write_text(json.dumps(status,indent=2,ensure_ascii=False)+"\n")
