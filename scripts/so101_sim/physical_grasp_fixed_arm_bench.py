@@ -271,10 +271,15 @@ def run(args):
         model,mujoco.mjtObj.mjOBJ_BODY,"fixed_arm_wrist_backdrop_mocap")
     backdrop_mocap=int(model.body_mocapid[backdrop_id])
     wrist_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
-    wrist_pos=np.asarray(data.cam_xpos[wrist_id]).copy()
-    wrist_back=np.asarray(data.cam_xmat[wrist_id]).reshape(3,3)[:,2]
-    data.mocap_pos[backdrop_mocap]=wrist_pos-1.5*wrist_back
-    data.mocap_quat[backdrop_mocap]=data.mocap_quat[base_mocap_id]
+    # Exact history-backed visual backdrop transform from the older
+    # physical_grasp_table_bench.py: 1.8m along optical -Z and oriented
+    # perpendicular to the wrist optical axis (not base orientation).
+    wrist_R=np.asarray(data.cam_xmat[wrist_id]).reshape(3,3)
+    data.mocap_pos[backdrop_mocap]=(
+        np.asarray(data.cam_xpos[wrist_id])-1.8*wrist_R[:,2])
+    wrist_quat=np.zeros(4,dtype=float)
+    mujoco.mju_mat2Quat(wrist_quat,wrist_R.reshape(9))
+    data.mocap_quat[backdrop_mocap]=wrist_quat
     mujoco.mj_forward(model,data)
     all_dir=args.out/"combined_frames"
     wrist_dirs=[]
