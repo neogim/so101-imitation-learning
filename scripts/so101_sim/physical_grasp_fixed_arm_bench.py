@@ -192,7 +192,7 @@ def run(args):
         "render_restore":"wide side views; native wrist MP4s unchanged; virtual jaw close-up explicitly labeled in combined panel",
         "virtual_jaw_detail_cameras":list(jaw_detail_names),
         "virtual_jaw_detail_is_real_wrist_optic":False,
-        "combined_lower_row":"3 clearly labeled virtual gripper inspection views (not physical wrist cameras)",
+        "combined_lower_row":"3 actual mounted wrist optics restored (TCP/shelf/retracted), small separately labeled virtual detail inset",
         "original_wrist_camera_mp4s_preserved":True,
         "lift_ramp_s":float(args.lift_ramp_s),
         "lift_min_consecutive_bilateral_steps":int(args.bilateral_hold_steps),
@@ -334,22 +334,26 @@ def run(args):
                     wrist_renderer.update_scene(data,camera=name)
                     jaw_inspection.append(
                         Image.fromarray(wrist_renderer.render().copy()))
-                # Bottom row is dedicated to THREE clearly labeled virtual
-                # closeups, so the jaws remain inspectable from left/front/
-                # right. Physical wrist cameras retain their original
-                # unmodified individual output videos.
+                # RESTORE the previous 2-side + 3-mounted-wrist layout.
+                # Never substitute virtual cameras for the three user-
+                # requested wrist optical streams in the combined MP4.
+                # The small separate gripper detail below is explicitly
+                # a virtual *overlay inset*, not the wrist-camera image.
                 panel=Image.new("RGB",(1440,780),(28,34,44))
                 for i in range(2):panel.paste(views[3+i],(720*i,0))
-                for i,img in enumerate(jaw_inspection):
-                    panel.paste(img,(480*i,390))
+                for i in range(3):panel.paste(views[i],(480*i,390))
+                jaw_inset=jaw_inspection[1].resize((190,150))
+                panel.paste(jaw_inset,(1250,600))
                 draw=ImageDraw.Draw(panel)
                 draw.rectangle((0,0,1439,26),fill=(32,40,52))
                 draw.rectangle((0,390,1439,416),fill=(32,40,52))
+                draw.rectangle((1248,579,1439,600),fill=(32,40,52))
                 draw.text((12,7),f"SIDE A | t={data.time:.3f}s | arm +{lift_motion_mm:.2f}mm",fill=(255,255,255))
                 draw.text((730,7),f"SIDE B | object +{object_rise_mm:.2f}mm | table {table_force:.2f}N",fill=(255,255,255))
-                draw.text((12,397),"VIRTUAL JAW | LEFT | NOT WRIST",fill=(255,255,255))
-                draw.text((490,397),"VIRTUAL JAW | CENTER | NOT WRIST",fill=(255,255,255))
-                draw.text((970,397),f"VIRTUAL JAW | RIGHT | J6 {math.degrees(data.qpos[jawq]):.1f}deg",fill=(255,255,255))
+                draw.text((12,397),"WRIST | TCP AIM | MOUNTED",fill=(255,255,255))
+                draw.text((490,397),"WRIST | SHELF AXIS | MOUNTED",fill=(255,255,255))
+                draw.text((970,397),f"WRIST | RETRACTED 5mm | J6 {math.degrees(data.qpos[jawq]):.1f}deg",fill=(255,255,255))
+                draw.text((1253,584),"VIRTUAL DETAIL INSET",fill=(255,255,255))
                 panel.save(all_dir/f"frame_{images:04d}.png")
                 for i,folder in enumerate(wrist_dirs):views[i].save(folder/f"frame_{images:04d}.png")
                 images+=1
