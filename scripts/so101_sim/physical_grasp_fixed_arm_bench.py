@@ -292,6 +292,41 @@ def run(args):
     # geometric FOV miss at the new fixed-arm grasp pose.
     framing={}
     bottle_center=np.asarray(data.qpos[freeq:freeq+3],dtype=float)
+    # Derive the actual grasp-region geometry after the full arm is frozen
+    # and the bottle pose has been chosen. The prior camera_aim_at=TCP
+    # predates this placement search and missed the moving jaw.
+    fixed_near=min(fixed,key=lambda g:float(np.linalg.norm(
+        np.asarray(data.geom_xpos[g])-bottle_center)))
+    moving_near=min(moving,key=lambda g:float(np.linalg.norm(
+        np.asarray(data.geom_xpos[g])-bottle_center)))
+    aim_world=0.5*(np.asarray(data.geom_xpos[fixed_near])+
+                   np.asarray(data.geom_xpos[moving_near]))
+    wrist_aim_adjustments={}
+    if args.wrist_aim_mode=="grasp":
+        for cam_name in cameras:
+            cid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,cam_name)
+            body_id=int(model.cam_bodyid[cid])
+            origin=np.asarray(data.cam_xpos[cid],dtype=float).copy()
+            old_q=np.asarray(model.cam_quat[cid],dtype=float).copy()
+            cam_right,cam_up,cam_back=wrist.camera_axes(
+                tuple(origin),tuple(aim_world))
+            # mju_mat2Quat takes row-major 3x3. Cam local axes in world
+            # must be transformed into the mounting BODY local frame.
+            world_axes=np.column_stack((cam_right,cam_up,cam_back))
+            body_axes=np.asarray(data.xmat[body_id]).reshape(3,3)
+            new_local=body_axes.T@world_axes
+            new_q=np.zeros(4,dtype=float)
+            mujoco.mju_mat2Quat(new_q,new_local.reshape(9))
+            model.cam_quat[cid]=new_q
+            wrist_aim_adjustments[cam_name]={
+                "camera_position_unchanged":True,
+                "source_quat_wxyz":old_q.tolist(),
+                "sim_grasp_aim_quat_wxyz":new_q.tolist(),
+                "target_world_m":aim_world.tolist(),
+                "is_real_camera_calibration":False}
+        mujoco.mj_forward(model,data)
+    summary["wrist_optical_adjustment"]=wrist_aim_adjustments
+    summary["wrist_camera_aim_mode"]=args.wrist_aim_mode
     for cam_name in cameras:
         cid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,cam_name)
         origin=np.asarray(data.cam_xpos[cid],dtype=float)
@@ -452,9 +487,11 @@ def run(args):
                 draw=ImageDraw.Draw(panel)
                 draw.text((248,8),f"SIDE A | t={data.time:.2f}s | arm +{lift_motion_mm:.2f}mm",fill="white")
                 draw.text((728,8),f"SIDE B | object +{object_rise_mm:.2f}mm",fill="white")
-                draw.text((8,398),"WRIST | TCP AIM",fill="white")
-                draw.text((488,398),"WRIST | SHELF AXIS",fill="white")
-                draw.text((968,398),"WRIST | RETRACTED 5mm",fill="white")
+                label_suffix=("SIM GRASP-AIM (NOT CALIBRATED)"
+                              if args.wrist_aim_mode=="grasp" else "ORIGINAL OPTIC")
+                draw.text((8,398),"MOUNTED WRIST 1 | "+label_suffix,fill="white")
+                draw.text((488,398),"MOUNTED WRIST 2 | "+label_suffix,fill="white")
+                draw.text((968,398),"MOUNTED WRIST 3 | "+label_suffix,fill="white")
                 panel.save(all_dir/f"frame_{images:04d}.png")
                 for i,folder in enumerate(wrist_dirs):views[i].save(folder/f"frame_{images:04d}.png")
                 images+=1
@@ -523,6 +560,9 @@ def main():
     p.add_argument("--lift-ramp-s",type=float,default=1.)
     p.add_argument("--bilateral-hold-steps",type=int,default=150)
     p.add_argument("--bilateral-force-min-n",type=float,default=.02)
+    p.add_argument("--wrist-aim-mode",choices=["grasp","original"],
+                   default="grasp",
+                   help="grasp: rotate only simulated lens optics to both jaw contact regions; original: historical optical axes")
     p.add_argument("--j6-speed-deg-s",type=float,default=35.)
     p.add_argument("--j6-max-torque-nm",type=float,default=.08,
                    help="J6 actuator force limit in Nm; baseline .08, optional modest test .10")
