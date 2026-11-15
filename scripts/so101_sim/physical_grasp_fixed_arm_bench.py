@@ -134,15 +134,48 @@ def run(args):
     base_spec=spec.body("base_link")
     if base_spec is None:
         raise ValueError("Missing SO-101 base_link in URDF")
-    base_spec.mocap=True
+    use_slide=(args.lift_drive=="slide")
+    if use_slide:
+        # A real 1-DOF dynamic slide is needed for tangential friction to
+        # perceive arm velocity. Direct mocap_pos updates have ZERO velocity
+        # in MuJoCo's contact solver (official modeling docs).
+        slide=base_spec.add_joint(name="r2s_lift_slide",
+            type=mujoco.mjtJoint.mjJNT_SLIDE,axis=[0.,0.,1.],
+            range=[0.,.006],limited=True)
+        slide.damping=15.
+        lift_act=spec.add_actuator(name="r2s_lift_position",
+                                  target="r2s_lift_slide")
+        lift_act.trntype=mujoco.mjtTrn.mjTRN_JOINT
+        lift_act.dyntype=mujoco.mjtDyn.mjDYN_NONE
+        lift_act.gaintype=mujoco.mjtGain.mjGAIN_FIXED
+        lift_act.biastype=mujoco.mjtBias.mjBIAS_AFFINE
+        lift_act.gainprm[0]=5000.
+        lift_act.biasprm[1]=-5000.
+        lift_act.biasprm[2]=-80.
+        lift_act.forcelimited=True
+        lift_act.forcerange[:]=[-100.,100.]
+    else:
+        base_spec.mocap=True
     model=spec.compile()
     count=sum(mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n)>=0 for n in r2s.JOINTS)
     if count:raise AssertionError(f"{count} arm joints survived freeze")
     base_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"base_link")
-    if base_id<0:raise RuntimeError("Compiled mocap base body is missing")
+    if base_id<0:raise RuntimeError("Compiled base body is missing")
     base_mocap_id=int(model.body_mocapid[base_id])
-    if base_mocap_id<0:
-        raise RuntimeError("base_link must remain a mocap body for physical Lift")
+    slide_q=None
+    slide_d=None
+    lift_actuator_id=None
+    if use_slide:
+        joint_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,
+                                   "r2s_lift_slide")
+        lift_actuator_id=mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_ACTUATOR,"r2s_lift_position")
+        if min(joint_id,lift_actuator_id)<0 or base_mocap_id>=0:
+            raise RuntimeError("Compiled slide actuator/DOF setup failed")
+        slide_q=int(model.jnt_qposadr[joint_id])
+        slide_d=int(model.jnt_dofadr[joint_id])
+    elif base_mocap_id<0:
+        raise RuntimeError("base_link must be a mocap body in mocap mode")
     # Assert the source link names remain addressable after compilation.
     # Without fusestatic=False the URDF compiler may merge gripper_link.
     for name in ("gripper_link", "moving_jaw_so101_v1_link"):
@@ -160,7 +193,13 @@ def run(args):
     model.dof_armature[jawd]=max(float(model.dof_armature[jawd]),.002)
     model.dof_damping[jawd]=max(float(model.dof_damping[jawd]),.06)
     data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
-    initial_base_mocap=np.asarray(data.mocap_pos[base_mocap_id],dtype=float).copy()
+    initial_base_mocap=(
+        np.asarray(data.mocap_pos[base_mocap_id],dtype=float).copy()
+        if not use_slide else None)
+    if use_slide:
+        data.qpos[slide_q]=0.
+        data.qvel[slide_d]=0.
+        data.ctrl[lift_actuator_id]=0.
     opened=float(limits[1])-math.radians(1)
     closed=float(limits[0])
     servo_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_ACTUATOR,"fixed_arm_j6_position")
@@ -186,7 +225,11 @@ def run(args):
     summary={"status":"SETUP_NOT_FOUND","mode":"TRUE_FIXED_J1_J5_DYNAMIC_J6",
         "arm_joint_count":count,"frozen_angles_deg":frozen,
         "same_pregrasp_pose_as_previous_trial":False,
-        "lift_method":"kinematic vertical motion of mocap base; Muhi freejoint never overwritten",
+        "lift_method":(
+            "physical slide joint with position actuator; Muhi freejoint never overwritten"
+            if use_slide else
+            "mocap kinematic base displacement, no solver body velocity"),
+        "lift_drive":args.lift_drive,
         "lift_goal_mm":float(args.lift_mm),
         "j6_max_torque_nm":float(args.j6_max_torque_nm),
         "render_restore":"original physical_grasp_table_bench five-view 480x360 renderer, side 55/150, geomgroup masks, wrist visual backdrop",
@@ -197,6 +240,7 @@ def run(args):
         "lift_ramp_s":float(args.lift_ramp_s),
         "lift_min_consecutive_bilateral_steps":int(args.bilateral_hold_steps),
         "is_dynamic_j1_j5_joint_lift":False,
+        "slide_max_actuator_force_n":100. if use_slide else None,
         "renderer_resolution_fix":"native wrist 480x390 and side 720x390; no image stretch",
         "target_initial_fixed_jaw_gap_mm":[1.,2.],
         "contact_sequence_intent":"J6 moving jaw touches and translates Muhi into stationary fixed jaw; no J1 collision approach",
@@ -205,7 +249,7 @@ def run(args):
         "collision_proxy_metadata":{"fixed":fixed_meta,"moving":moving_meta},
         "setup_search":search_diag,
         "warnings":["Separate fixed pose, not exact reproduction of previous 2.154s contact",
-                    "Base mocap lift is prescribed; does not validate J1-J5 actuators or IK",
+                    "Lift is one slide DOF at robot base; not J1-J5 IK or real SO-101 servo motion",
                     "Muhi translation and rotation are exclusively MuJoCo freejoint physics",
                     "50g Muhi properties and proxy geometry remain provisional"]}
     def save():
@@ -294,6 +338,7 @@ def run(args):
     lift_object_z_initial=None
     lift_reference_base_z=None
     lift_motion_mm=0.
+    initial_base_world_z=float(data.xpos[base_id,2])
     try:
         steps=int(math.ceil(args.duration_s/model.opt.timestep))
         for step in range(steps):
@@ -305,8 +350,16 @@ def run(args):
                 # Smooth position/velocity at both ends of the ramp.
                 smooth=u*u*(3.-2.*u)
                 lift_motion_mm=float(args.lift_mm*smooth)
-                data.mocap_pos[base_mocap_id,:]=initial_base_mocap
-                data.mocap_pos[base_mocap_id,2]+=lift_motion_mm/1000.
+                if use_slide:
+                    data.ctrl[lift_actuator_id]=lift_motion_mm/1000.
+                else:
+                    data.mocap_pos[base_mocap_id,:]=initial_base_mocap
+                    data.mocap_pos[base_mocap_id,2]+=lift_motion_mm/1000.
+            if use_slide:
+                # Gravity bias on the actuated base DOF avoids a static
+                # weight-dependent servo error, without applying any
+                # external forces to the Muhi.
+                data.qfrc_applied[slide_d]=float(data.qfrc_bias[slide_d])
             mujoco.mj_step(model,data)
             # Read actual solver contacts BEFORE any mj_forward.
             force_f,depth_f=contact_force(model,data,set(bottle),set(fixed))
@@ -321,7 +374,7 @@ def run(args):
                 # prior to the FIRST mocap displacement next timestep.
                 lift_started_at=float(data.time)
                 lift_object_z_initial=float(data.qpos[freeq+2])
-                lift_reference_base_z=float(data.mocap_pos[base_mocap_id,2])
+                lift_reference_base_z=float(data.xpos[base_id,2])
             object_z=float(data.qpos[freeq+2])
             object_rise_mm=(1000.*(object_z-lift_object_z_initial)
                             if lift_object_z_initial is not None else 0.)
@@ -333,7 +386,12 @@ def run(args):
                        else "lift_ramp" if t<lift_started_at+args.lift_ramp_s
                        else "lift_hold"),
               "arm_lift_command_mm":lift_motion_mm,
-              "arm_base_mocap_z_m":float(data.mocap_pos[base_mocap_id,2]),
+              "arm_base_mocap_z_m":(
+                  float(data.xpos[base_id,2]) if use_slide
+                  else float(data.mocap_pos[base_mocap_id,2])),
+              "arm_actual_rise_mm":(
+                  1000.*float(data.qpos[slide_q]) if use_slide
+                  else lift_motion_mm),
               "object_rise_from_bilateral_mm":object_rise_mm,
               "object_bottom_table_gap_approx_mm":bottom_gap_mm,
               "object_table_contact_force_n":table_force,
@@ -387,7 +445,11 @@ def run(args):
     observed_rise_mm=(rows[-1]["object_rise_from_bilateral_mm"] if rows else 0.)
     lift_complete=bool(
         lift_started_at is not None and lift_motion_mm>=args.lift_mm-.01)
-    lift_success=bool(lift_complete and observed_rise_mm>=args.lift_mm*.8
+    max_arm_actual_rise_mm=(
+        max((r["arm_actual_rise_mm"] for r in rows),default=0.))
+    lift_success=bool(lift_complete and
+                      max_arm_actual_rise_mm>=args.lift_mm*.8 and
+                      observed_rise_mm>=args.lift_mm*.8
                       and stable_hold
                       and rows[-1]["object_bottom_table_gap_approx_mm"]>=1.)
     summary.update(
@@ -395,6 +457,7 @@ def run(args):
       lift_start_time_s=lift_started_at,
       lift_initial_object_z_m=lift_object_z_initial,
       max_arm_command_lift_mm=max((r["arm_lift_command_mm"] for r in rows),default=0),
+      max_arm_actual_rise_mm=max_arm_actual_rise_mm,
       max_object_rise_mm=max((r["object_rise_from_bilateral_mm"] for r in rows),default=0),
       final_object_rise_mm=observed_rise_mm,
       final_object_table_gap_approx_mm=(rows[-1]["object_bottom_table_gap_approx_mm"] if rows else None),
@@ -425,6 +488,8 @@ def main():
     p.add_argument("--j5-deg",type=float,default=-90.)
     p.add_argument("--duration-s",type=float,default=5.5)
     p.add_argument("--lift-mm",type=float,default=5.)
+    p.add_argument("--lift-drive",choices=["mocap","slide"],default="mocap",
+                   help="mocap (historical, velocity-free) or physical base slide")
     p.add_argument("--lift-ramp-s",type=float,default=1.)
     p.add_argument("--bilateral-hold-steps",type=int,default=150)
     p.add_argument("--bilateral-force-min-n",type=float,default=.02)
