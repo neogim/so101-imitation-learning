@@ -47,6 +47,14 @@ def run(args: argparse.Namespace) -> None:
         a.forcerange[:] = [-args.max_torque_nm, args.max_torque_nm]
 
     model = spec.compile()
+    # Phase6A has no workcell or grasp object. The original full-mesh
+    # URDF starts with 12 robot/robot collision candidates at this pose.
+    # Keep those intact in the historical mode for an A/B comparison;
+    # isolate servo dynamics by disabling ONLY collision detection in the
+    # object-free baseline (inertia, gravity, limits and PD stay active).
+    if args.self_collision == "off":
+        model.geom_contype[:] = 0
+        model.geom_conaffinity[:] = 0
     model.opt.timestep = args.dt
     data = mujoco.MjData(model)
     mujoco.mj_resetData(model, data)
@@ -147,6 +155,7 @@ def run(args: argparse.Namespace) -> None:
         "physics_steps_requested":steps,
         "physics_steps_completed":len(rows),
         "initial_contacts_count":initial_contacts,
+        "self_collision_mode":args.self_collision,
         "kp_nm_per_rad":args.kp,
         "kd_nms_per_rad":args.kd,
         "actuator_torque_cap_nm":args.max_torque_nm,
@@ -167,7 +176,8 @@ def run(args: argparse.Namespace) -> None:
             "PD gains and torque caps are initial simulation assumptions, not calibrated servos.",
             "A run that completes is not automatically stable; inspect CSV angular errors and oscillation.",
             "This is NOT a 5mm TCP movement or a physical grasp test.",
-            "No wrist rendering changes and no camera calibration performed."
+            "No wrist rendering changes and no camera calibration performed.",
+            "Self-collision off isolates joint servo from overlapping full-mesh robot contacts, and does not validate later grasp collisions."
         ]
     }
     (args.out/"summary.json").write_text(
@@ -193,6 +203,8 @@ def main()->None:
     p.add_argument("--kp",type=float,default=18.)
     p.add_argument("--kd",type=float,default=1.8)
     p.add_argument("--max-torque-nm",type=float,default=3.)
+    p.add_argument("--self-collision",choices=("off","on"),default="off",
+                   help="off: object-free actuator benchmark (default); on: old full-mesh contact behavior")
     args=p.parse_args()
     if not(.5<=args.duration_s<=10. and .001<=args.dt<=.01
            and 0<args.kp<=100 and 0<=args.kd<=20
