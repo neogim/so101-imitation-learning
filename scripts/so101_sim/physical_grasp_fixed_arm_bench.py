@@ -531,7 +531,7 @@ def main():
     p.add_argument("--render-every",type=int,default=25)
     p.add_argument("--fps",type=int,default=20)
     a=p.parse_args()
-    if not(.01<=a.j6_max_torque_nm<=.24 and
+    if not(.01<=a.j6_max_torque_nm<=.36 and
            0<a.lift_mm<=10 and .2<=a.lift_ramp_s<=3.
            and 10<=a.bilateral_hold_steps<=1000 and
            0<a.bilateral_force_min_n<=2. and
