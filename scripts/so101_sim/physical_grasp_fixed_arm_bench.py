@@ -284,6 +284,33 @@ def run(args):
     for n in (*cameras,*jaw_detail_names):
         if mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,n)<0:
             raise ValueError("Missing mandatory wrist camera "+n)
+    # Check the REAL simulated wrist optical axes using the actual compiled
+    # geometry of this scene. The previous-branch renderer alone cannot fix a
+    # geometric FOV miss at the new fixed-arm grasp pose.
+    framing={}
+    bottle_center=np.asarray(data.qpos[freeq:freeq+3],dtype=float)
+    for cam_name in cameras:
+        cid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,cam_name)
+        origin=np.asarray(data.cam_xpos[cid],dtype=float)
+        rot=np.asarray(data.cam_xmat[cid]).reshape(3,3)
+        fy=math.tan(math.radians(float(model.cam_fovy[cid]))/2.)
+        visible={}
+        for label,indices in (("fixed_jaw",fixed),("moving_jaw",moving)):
+            nearest=min(indices,key=lambda g:float(np.linalg.norm(
+                np.asarray(data.geom_xpos[g])-bottle_center)))
+            xyz=np.asarray(data.geom_xpos[nearest],dtype=float)
+            local=rot.T@(xyz-origin)
+            depth=-float(local[2])
+            nx=float(local[0]/(depth*fy*(480/360))) if depth>1e-6 else None
+            ny=float(local[1]/(depth*fy)) if depth>1e-6 else None
+            visible[label]={
+                "nearest_geom_id":int(nearest),
+                "depth_m":depth,
+                "normalized_xy":[nx,ny],
+                "in_nominal_fov":bool(nx is not None and
+                                      abs(nx)<=1 and abs(ny)<=1)}
+        framing[cam_name]=visible
+    summary["mounted_wrist_camera_framing_at_start"]=framing
     sides=[]
     # Legacy 0.34m distance aimed at the bottle cut off most of the robot.
     # Show full detailed SO-101 arm and the workcell simultaneously.
