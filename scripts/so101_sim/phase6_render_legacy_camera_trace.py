@@ -25,6 +25,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 import real_to_sim as r2s
+import demo_real2sim_muhi_cup_reach as scene
 import wrist_camera_sim as wrist
 from render_wrist_camera_rollout import jaw_centers_in_wrist_view
 
@@ -79,26 +80,48 @@ def render(args):
     # changing model physics, visual-only floor or virtual jaw camera.
     count=0
     report=[]
+    # This is the exact overview camera factory used in the 2026-11-14
+    # DLS/SAC 2x2 recording. The phase6A model has no Muhi/cup, so the
+    # overview lookat is anchored on the INITIAL gripper-link XYZ instead
+    # of the saved Episode-4 object midpoint.
+    data.qpos[ids]=[math.radians(float(rows[0][k])) for k in keys]
+    mujoco.mj_forward(model,data)
+    gripper_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"gripper_link")
+    if gripper_id<0:
+        raise RuntimeError("Original gripper_link not compiled")
+    anchor=np.asarray(data.xpos[gripper_id],dtype=float).copy()
+    overview=scene.camera_for(model,{"muhi":anchor,"cup":anchor},False,"phase6_legacy_side")
+    reference=np.array([math.radians(float(rows[0][n+"_target_deg"])) for n in NAMES])
+    if not np.isfinite(reference).all():
+        raise ValueError("Non-finite reference target")
+    # Historic compare_dls_sac_table_guard.make_video() arrangement:
+    # each column is a condition, top row overview, bottom row mounted wrist.
+    # Here REF is the fixed joint target and ACTUAL is the physics CSV.
+    # Same MuJoCo model, same renderer, same two camera objects, 2x2.
+    from PIL import ImageDraw
     with mujoco.Renderer(model,width=args.width,height=args.height) as renderer:
         for row_idx in range(0,len(rows),args.stride):
             row=rows[row_idx]
             positions=np.array([math.radians(float(row[k])) for k in keys])
             if not np.isfinite(positions).all():
                 raise ValueError("Non-finite recorded pose")
+            canvas=Image.new("RGB",(2*args.width,2*(args.height+48)),(20,29,39))
+            draw=ImageDraw.Draw(canvas)
+            for col,(column_label,q) in enumerate((
+                    ("REFERENCE TARGET",reference),("PHYSICAL ACTUAL CSV",positions))):
+                data.qpos[ids]=q
+                mujoco.mj_forward(model,data)
+                for rr,(cam,view_label) in enumerate((
+                        (overview,"OVERVIEW"),(wrist.CAMERA,"WRIST"))):
+                    renderer.update_scene(data,camera=cam,scene_option=scene_option)
+                    im=Image.fromarray(renderer.render().copy())
+                    x,y=col*args.width,rr*(args.height+48)
+                    canvas.paste(im,(x,y+48))
+                    draw.text((x+8,y+10),column_label+" | "+view_label,fill="white")
+                    draw.text((x+8,y+28),f"t={float(row['time_s']):.3f}s",fill="white")
+            canvas.save(frame_dir/f"frame_{count:04d}.png")
             data.qpos[ids]=positions
             mujoco.mj_forward(model,data)
-            views=[]
-            for name in ("phase6_legacy_side",wrist.CAMERA,wrist.MOUNT_INSPECTION_CAMERA):
-                renderer.update_scene(data,camera=name,scene_option=scene_option)
-                views.append(Image.fromarray(renderer.render().copy()))
-            panel=Image.new("RGB",(3*args.width,args.height+30),(25,30,40))
-            for i,im in enumerate(views):
-                panel.paste(im,(i*args.width,30))
-            draw=ImageDraw.Draw(panel)
-            draw.text((8,8),f"SIDE (config example) | t={float(row['time_s']):.3f}s",fill="white")
-            draw.text((args.width+8,8),"WRIST (original mount optic)",fill="white")
-            draw.text((2*args.width+8,8),"WRIST RIG INSPECTION (old)",fill="white")
-            panel.save(frame_dir/f"frame_{count:04d}.png")
             jaw_fov=jaw_centers_in_wrist_view(model,data,args.width,args.height)
             report.append({"source_row":row_idx,"time_s":float(row["time_s"]),
                            "jaw_geom_centers_in_wrist_fov":len(jaw_fov)})
@@ -110,21 +133,24 @@ def render(args):
             cmd=[ffmpeg,"-hide_banner","-loglevel","error","-y",
                  "-framerate",str(args.fps),"-i",
                  str(frame_dir/"frame_%04d.png"),"-c:v","libx264",
-                 "-pix_fmt","yuv420p",str(args.out/"phase6_legacy_three_views.mp4")]
+                 "-pix_fmt","yuv420p",str(args.out/"phase6_dls_sac_style_four_views.mp4")]
             subprocess.run(cmd,check=True)
             video_status="created"
         else:
             video_status="ffmpeg_missing_png_frames_saved"
     metadata={"mode":"OFFLINE_VISUALIZATION_NOT_PHYSICS",
         "source_trace":str(source),"frames":count,"video_status":video_status,
+        "reference_render_source":"compare_dls_sac_table_guard.make_video (2026-11-14 experiment 16)",
+        "layout":"2 columns (target, physical actual) x 2 rows (overview, wrist)",
+        "overview_camera_source":"demo_real2sim_muhi_cup_reach.camera_for",
+        "overview_lookat_substitution":"initial gripper_link position, because Phase6A has no Muhi or cup",
         "wrist_camera_source":"wrist_camera_sim.install, original camera optics",
-        "inspection_camera_source":"wrist_camera_sim.MOUNT_INSPECTION_CAMERA",
         "side_camera_source":str(args.camera_config),
         "side_camera_is_calibrated":bool(config["calibrated"]),
         "bracket_profile":args.bracket_profile,
         "no_physical_control_or_scene_changes":True,
         "jaw_nominal_fov_diagnostics":report,
-        "limitation":"Joint CSV playback cannot establish mechanical stability, and original camera optics may not show the fingertips"}
+        "limitation":"Joint CSV playback cannot establish mechanical stability. DLS/SAC original scene/episode extrinsics were not loaded, so pixels may differ even with identical renderer and 2x2 layout"}
     (args.out/"render_summary.json").write_text(
         json.dumps(metadata,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     print(json.dumps({k:metadata[k] for k in (
@@ -141,8 +167,8 @@ def main():
                    default=Path(__file__).with_name("workcell.example.json"))
     p.add_argument("--bracket-profile",choices=("legacy","ruler_15_35_35"),
                    default="legacy")
-    p.add_argument("--width",type=int,default=480)
-    p.add_argument("--height",type=int,default=360)
+    p.add_argument("--width",type=int,default=640)
+    p.add_argument("--height",type=int,default=480)
     p.add_argument("--stride",type=int,default=100)
     p.add_argument("--fps",type=int,default=5)
     p.add_argument("--video",action="store_true")
