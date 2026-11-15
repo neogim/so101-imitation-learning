@@ -45,31 +45,44 @@ def render(args):
     if args.out.exists():
         raise FileExistsError(args.out)
 
-    spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
-    spec.compiler.discardvisual=False
-    # Historical Real-to-Sim wrist-camera scene construction; NOT a new
-    # camera replacing the mounted optic.
-    wrist.install(spec,bracket_profile=args.bracket_profile)
-    config=r2s.load_config(args.camera_config)
-    side=config["cameras"]["side"]
-    spec.worldbody.add_camera(
-        name="phase6_legacy_side",
-        pos=list(side["pos_m"]),
-        quat=list(side["quat_wxyz"]),
-        fovy=float(side["fovy_deg"]))
-    model=spec.compile()
+    if args.scene=="experiment16":
+        # Reuse the SAME saved visual scene as compare_dls_sac_table_guard.py:
+        # white follower, pale backdrop, studio light, table, Muhi, cup,
+        # measured side camera, original wrist camera.
+        args.physical_objects=False
+        args.wrist_camera=True
+        (model,data,_qids,_dids,_low,_high,_tcp,side_camera,goals,
+         *_extras)=scene.create_scene(args)
+        overview=scene.camera_for(model,goals,False,side_camera)
+        scene_source="experiment16: demo_real2sim_muhi_cup_reach.create_scene"
+        calibrated=True
+    else:
+        spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
+        spec.compiler.discardvisual=False
+        wrist.install(spec,bracket_profile=args.bracket_profile)
+        config=r2s.load_config(args.camera_config)
+        side=config["cameras"]["side"]
+        spec.worldbody.add_camera(
+            name="phase6_legacy_side",
+            pos=list(side["pos_m"]),
+            quat=list(side["quat_wxyz"]),
+            fovy=float(side["fovy_deg"]))
+        model=spec.compile()
+        data=mujoco.MjData(model)
+        scene_source="bare URDF (no workcell or lighting)"
+        calibrated=bool(config["calibrated"])
+        overview=None
     ids=[]
     for name in NAMES:
         jid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
         if jid<0:
             raise RuntimeError("Missing joint in rendered source URDF: "+name)
         ids.append(int(model.jnt_qposadr[jid]))
-    for cam in (wrist.CAMERA,wrist.MOUNT_INSPECTION_CAMERA,"phase6_legacy_side"):
+    for cam in ((wrist.CAMERA,) if args.scene=="experiment16" else (wrist.CAMERA,wrist.MOUNT_INSPECTION_CAMERA,"phase6_legacy_side")):
         if mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,cam)<0:
             raise RuntimeError("Missing old camera "+cam)
     model.vis.global_.offwidth=max(int(model.vis.global_.offwidth),args.width)
     model.vis.global_.offheight=max(int(model.vis.global_.offheight),args.height)
-    data=mujoco.MjData(model)
     args.out.mkdir(parents=True,exist_ok=False)
     frame_dir=args.out/"frames"
     frame_dir.mkdir()
@@ -80,17 +93,15 @@ def render(args):
     # changing model physics, visual-only floor or virtual jaw camera.
     count=0
     report=[]
-    # This is the exact overview camera factory used in the 2026-11-14
-    # DLS/SAC 2x2 recording. The phase6A model has no Muhi/cup, so the
-    # overview lookat is anchored on the INITIAL gripper-link XYZ instead
-    # of the saved Episode-4 object midpoint.
-    data.qpos[ids]=[math.radians(float(rows[0][k])) for k in keys]
-    mujoco.mj_forward(model,data)
-    gripper_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"gripper_link")
-    if gripper_id<0:
-        raise RuntimeError("Original gripper_link not compiled")
-    anchor=np.asarray(data.xpos[gripper_id],dtype=float).copy()
-    overview=scene.camera_for(model,{"muhi":anchor,"cup":anchor},False,"phase6_legacy_side")
+    if overview is None:
+        # Bare fallback only; the experiment16 mode uses its real saved targets.
+        data.qpos[ids]=[math.radians(float(rows[0][k])) for k in keys]
+        mujoco.mj_forward(model,data)
+        gripper_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"gripper_link")
+        if gripper_id<0:
+            raise RuntimeError("Original gripper_link not compiled")
+        anchor=np.asarray(data.xpos[gripper_id],dtype=float).copy()
+        overview=scene.camera_for(model,{"muhi":anchor,"cup":anchor},False,"phase6_legacy_side")
     reference=np.array([math.radians(float(rows[0][n+"_target_deg"])) for n in NAMES])
     if not np.isfinite(reference).all():
         raise ValueError("Non-finite reference target")
@@ -143,14 +154,16 @@ def render(args):
         "reference_render_source":"compare_dls_sac_table_guard.make_video (2026-11-14 experiment 16)",
         "layout":"2 columns (target, physical actual) x 2 rows (overview, wrist)",
         "overview_camera_source":"demo_real2sim_muhi_cup_reach.camera_for",
-        "overview_lookat_substitution":"initial gripper_link position, because Phase6A has no Muhi or cup",
+        "scene_source":scene_source,
+        "overview_lookat":"saved Episode-4 Muhi/cup goals" if args.scene=="experiment16" else "initial gripper_link",
         "wrist_camera_source":"wrist_camera_sim.install, original camera optics",
-        "side_camera_source":str(args.camera_config),
-        "side_camera_is_calibrated":bool(config["calibrated"]),
+        "side_camera_source":str(args.extrinsics) if args.scene=="experiment16" else str(args.camera_config),
+        "side_camera_is_calibrated":calibrated,
         "bracket_profile":args.bracket_profile,
-        "no_physical_control_or_scene_changes":True,
+        "no_physical_control_changes":True,
+        "visual_scene_from_original_experiment16":args.scene=="experiment16",
         "jaw_nominal_fov_diagnostics":report,
-        "limitation":"Joint CSV playback cannot establish mechanical stability. DLS/SAC original scene/episode extrinsics were not loaded, so pixels may differ even with identical renderer and 2x2 layout"}
+        "limitation":"CSV playback cannot establish mechanical stability. Saved Episode-4 workcell is visual context only and was not simulated during Phase6A physics."}
     (args.out/"render_summary.json").write_text(
         json.dumps(metadata,ensure_ascii=False,indent=2)+"\n",encoding="utf-8")
     print(json.dumps({k:metadata[k] for k in (
@@ -163,6 +176,20 @@ def main():
     p.add_argument("--trace",type=Path,required=True)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
+    p.add_argument("--scene",choices=("experiment16","bare"),default="experiment16")
+    p.add_argument("--dataset-root",type=Path,default=scene.DATASET)
+    p.add_argument("--episode",type=int,default=4)
+    p.add_argument("--object-layout-json",type=Path,default=scene.OBJECTS)
+    p.add_argument("--cup-pose-json",type=Path,default=scene.CUP_POSE)
+    p.add_argument("--extrinsics",type=Path,default=scene.EXTRINSICS)
+    p.add_argument("--intrinsics",type=Path,default=scene.INTRINSICS)
+    p.add_argument("--robot-joint-offsets-json",type=Path)
+    p.add_argument("--muhi-clearance-mm",type=float,default=75)
+    p.add_argument("--cup-clearance-mm",type=float,default=45)
+    p.add_argument("--wrist-mount-pos",type=float,nargs=3,default=wrist.DEFAULT_MOUNT_POS)
+    p.add_argument("--wrist-mount-rpy-deg",type=float,nargs=3,default=wrist.DEFAULT_MOUNT_RPY_DEG)
+    p.add_argument("--wrist-fovy",type=float,default=wrist.DEFAULT_FOVY_DEG)
+    p.add_argument("--wrist-look-at",type=float,nargs=3,default=wrist.DEFAULT_LOOK_AT)
     p.add_argument("--camera-config",type=Path,
                    default=Path(__file__).with_name("workcell.example.json"))
     p.add_argument("--bracket-profile",choices=("legacy","ruler_15_35_35"),
