@@ -252,7 +252,10 @@ def build_model(args):
                 type=mujoco.mjtEq.mjEQ_JOINT,
                 objtype=mujoco.mjtObj.mjOBJ_JOINT,
                 name1=name,
-                data=[0., 0., 0., 0., 0.],
+                # mjsEquality.data is a fixed 12-slot field (mjNEQDATA).
+                # Joint equality uses slots 0..4; the other 7 are unused.
+                # Passing only five fails on MuJoCo MjSpec Python bindings.
+                data=[0.] * 12,
                 active=False)
     model=spec.compile()
     # This is an opt-in temporary collision representation only.
