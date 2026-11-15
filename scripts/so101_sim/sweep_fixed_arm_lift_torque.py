@@ -86,7 +86,17 @@ def main():
     if any(not math.isfinite(t) or not(.01 <= t <= .24) for t in args.torques):
         parser.error("All torques must be finite and 0.01..0.24 Nm")
     args.out.mkdir(parents=True, exist_ok=False)
-    results = [one_run(args.out, t, args, video=False) for t in args.torques]
+    results = []
+    for torque in args.torques:
+        row = one_run(args.out, torque, args, video=False)
+        results.append(row)
+        # API/build errors before producing summary.json are shared across
+        # all torque values. Stop instead of repeating the same failure.
+        # Save the first error to the comparison report below.
+        if row["returncode"] != 0:
+            print("Stopping sweep: simulation setup failed. Fix this error before "
+                  "trying another torque.", file=sys.stderr, flush=True)
+            break
     valid = [row for row in results
              if row["returncode"] == 0 and
              row.get("status") not in ("SETUP_NOT_FOUND","INITIAL_GEOMETRY_NOT_CLEAR",
