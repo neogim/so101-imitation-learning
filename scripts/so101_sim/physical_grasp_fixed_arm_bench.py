@@ -59,7 +59,7 @@ def encode(directory,filename,fps):
 
 def run(args):
     if args.out.exists():raise FileExistsError(args.out)
-    if not(0<args.duration_s<=6 and args.render_every>=1 and args.fps>=1):
+    if not(0<args.duration_s<=10 and args.render_every>=1 and args.fps>=1):
         raise ValueError("Invalid duration/render rate")
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
     # URDF defaults to fusestatic=True. Once J1-J5 are removed,
@@ -95,9 +95,21 @@ def run(args):
     servo.ctrllimited=False;servo.forcelimited=True
     servo.forcerange[:]=[-.08,.08]
     frozen=freeze_arm(spec,args.j5_deg)
+    # A mocap base gives the *arm* a prescribed vertical lift trajectory.
+    # J1-J5 remain absent; J6 and the Muhi freejoint remain physically
+    # simulated. This is a contact-retention test, NOT servo-driven IK.
+    base_spec=spec.body("base_link")
+    if base_spec is None:
+        raise ValueError("Missing SO-101 base_link in URDF")
+    base_spec.mocap=True
     model=spec.compile()
     count=sum(mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n)>=0 for n in r2s.JOINTS)
     if count:raise AssertionError(f"{count} arm joints survived freeze")
+    base_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"base_link")
+    if base_id<0:raise RuntimeError("Compiled mocap base body is missing")
+    base_mocap_id=int(model.body_mocapid[base_id])
+    if base_mocap_id<0:
+        raise RuntimeError("base_link must remain a mocap body for physical Lift")
     # Assert the source link names remain addressable after compilation.
     # Without fusestatic=False the URDF compiler may merge gripper_link.
     for name in ("gripper_link", "moving_jaw_so101_v1_link"):
@@ -111,6 +123,7 @@ def run(args):
     model.dof_armature[jawd]=max(float(model.dof_armature[jawd]),.002)
     model.dof_damping[jawd]=max(float(model.dof_damping[jawd]),.06)
     data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
+    initial_base_mocap=np.asarray(data.mocap_pos[base_mocap_id],dtype=float).copy()
     opened=float(limits[1])-math.radians(1)
     closed=float(limits[0])
     servo_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_ACTUATOR,"fixed_arm_j6_position")
@@ -136,6 +149,11 @@ def run(args):
     summary={"status":"SETUP_NOT_FOUND","mode":"TRUE_FIXED_J1_J5_DYNAMIC_J6",
         "arm_joint_count":count,"frozen_angles_deg":frozen,
         "same_pregrasp_pose_as_previous_trial":False,
+        "lift_method":"kinematic vertical motion of mocap base; Muhi freejoint never overwritten",
+        "lift_goal_mm":float(args.lift_mm),
+        "lift_ramp_s":float(args.lift_ramp_s),
+        "lift_min_consecutive_bilateral_steps":int(args.bilateral_hold_steps),
+        "is_dynamic_j1_j5_joint_lift":False,
         "renderer_resolution_fix":"native wrist 480x390 and side 720x390; no image stretch",
         "target_initial_fixed_jaw_gap_mm":[1.,2.],
         "contact_sequence_intent":"J6 moving jaw touches and translates Muhi into stationary fixed jaw; no J1 collision approach",
@@ -144,12 +162,15 @@ def run(args):
         "collision_proxy_metadata":{"fixed":fixed_meta,"moving":moving_meta},
         "setup_search":search_diag,
         "warnings":["Separate fixed pose, not exact reproduction of previous 2.154s contact",
-                    "No physical arm motion/Lift; single J6/object/table contact only",
+                    "Base mocap lift is prescribed; does not validate J1-J5 actuators or IK",
+                    "Muhi translation and rotation are exclusively MuJoCo freejoint physics",
                     "50g Muhi properties and proxy geometry remain provisional"]}
     def save():
         (args.out/"summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2)+"\n")
         print(json.dumps({k:summary.get(k) for k in ("status","arm_joint_count","physics_steps",
-                        "peak_fixed_force_n","peak_moving_force_n","bilateral_frames","video_status")},indent=2))
+                        "peak_fixed_force_n","peak_moving_force_n","bilateral_frames",
+                        "lift_started","max_arm_command_lift_mm","max_object_rise_mm",
+                        "lift_success","video_status")},indent=2))
         print("Output:",args.out)
     if pose is None:save();return
     center,quat=pose[:2]
@@ -195,22 +216,61 @@ def run(args):
     for name in ("wrist_camera","wrist_shelf_camera","wrist_retracted_camera"):
         folder=args.out/(name+"_frames");folder.mkdir();wrist_dirs.append(folder)
     rows=[];images=0
+    bilateral_streak=0
+    lift_started_at=None
+    lift_object_z_initial=None
+    lift_reference_base_z=None
+    lift_motion_mm=0.
     try:
         steps=int(math.ceil(args.duration_s/model.opt.timestep))
         for step in range(steps):
             t=float(data.time)
             target=max(closed,opened-math.radians(args.j6_speed_deg_s)*t)
             data.ctrl[servo_id]=target
+            if lift_started_at is not None:
+                u=np.clip((t-lift_started_at)/args.lift_ramp_s,0.,1.)
+                # Smooth position/velocity at both ends of the ramp.
+                smooth=u*u*(3.-2.*u)
+                lift_motion_mm=float(args.lift_mm*smooth)
+                data.mocap_pos[base_mocap_id,:]=initial_base_mocap
+                data.mocap_pos[base_mocap_id,2]+=lift_motion_mm/1000.
             mujoco.mj_step(model,data)
-            # Read actual solver contact BEFORE mj_forward overwrites contacts.
+            # Read actual solver contacts BEFORE any mj_forward.
             force_f,depth_f=contact_force(model,data,set(bottle),set(fixed))
             force_m,depth_m=contact_force(model,data,set(bottle),set(moving))
+            table_force,table_depth=contact_force(model,data,set(bottle),{table})
+            bilateral=(force_f>=args.bilateral_force_min_n and
+                       force_m>=args.bilateral_force_min_n)
+            bilateral_streak=bilateral_streak+1 if bilateral else 0
+            if (lift_started_at is None and
+                bilateral_streak>=args.bilateral_hold_steps):
+                # Establish the baseline after sustained bilateral contact,
+                # prior to the FIRST mocap displacement next timestep.
+                lift_started_at=float(data.time)
+                lift_object_z_initial=float(data.qpos[freeq+2])
+                lift_reference_base_z=float(data.mocap_pos[base_mocap_id,2])
+            object_z=float(data.qpos[freeq+2])
+            object_rise_mm=(1000.*(object_z-lift_object_z_initial)
+                            if lift_object_z_initial is not None else 0.)
+            # Approximation for upright Muhi, not a full oriented-geometry gap.
+            bottom_gap_mm=1000.*(
+                object_z-prior.OBJECT_HALF_LENGTH_M-tabletop)
             rows.append({"step":step,"time_s":float(data.time),
+              "phase":("contact_closure" if lift_started_at is None
+                       else "lift_ramp" if t<lift_started_at+args.lift_ramp_s
+                       else "lift_hold"),
+              "arm_lift_command_mm":lift_motion_mm,
+              "arm_base_mocap_z_m":float(data.mocap_pos[base_mocap_id,2]),
+              "object_rise_from_bilateral_mm":object_rise_mm,
+              "object_bottom_table_gap_approx_mm":bottom_gap_mm,
+              "object_table_contact_force_n":table_force,
+              "bilateral_contact":bool(bilateral),
+              "bilateral_streak_steps":bilateral_streak,
               "j6_deg":math.degrees(float(data.qpos[jawq])),
               "j6_target_deg":math.degrees(target),
               "fixed_force_n":force_f,"moving_force_n":force_m,
               "fixed_penetration_mm":depth_f,"moving_penetration_mm":depth_m,
-              "object_z_m":float(data.qpos[freeq+2]),
+              "object_z_m":object_z,
               "object_speed_m_s":float(np.linalg.norm(data.qvel[freed:freed+3]))})
             if step%args.render_every==0 or step==steps-1:
                 mujoco.mj_forward(model,data)
@@ -225,8 +285,13 @@ def run(args):
                 for i in range(3):panel.paste(views[i],(480*i,0))
                 for i in range(2):panel.paste(views[3+i],(720*i,390))
                 draw=ImageDraw.Draw(panel)
-                draw.text((8,8),f"FIXED ARM | simulation {data.time:.3f}s",fill=(15,15,15))
-                draw.text((8,400),f"J6={math.degrees(data.qpos[jawq]):.2f}deg fixed={force_f:.2f}N moving={force_m:.2f}N",fill=(15,15,15))
+                draw.text((8,8),
+                    f"J6 FIRST / Lift | t={data.time:.3f}s / arm +{lift_motion_mm:.2f}mm",
+                    fill=(15,15,15))
+                draw.text((8,400),
+                    f"J6={math.degrees(data.qpos[jawq]):.2f}deg | fixed={force_f:.2f}N "
+                    f"moving={force_m:.2f}N | object +{object_rise_mm:.2f}mm",
+                    fill=(15,15,15))
                 panel.save(all_dir/f"frame_{images:04d}.png")
                 for i,folder in enumerate(wrist_dirs):views[i].save(folder/f"frame_{images:04d}.png")
                 images+=1
@@ -238,13 +303,38 @@ def run(args):
     if rows:
         with (args.out/"grasp_trace.csv").open("x",newline="") as file:
             writer=csv.DictWriter(file,fieldnames=rows[0]);writer.writeheader();writer.writerows(rows)
-    summary.update(physics_steps=len(rows),rendered_frames=images,
+    # Success requires genuine object lift and sustained contacts while
+    # physically detached from the table (not just arm-base motion).
+    final_hold=(rows[-max(1,int(.3/model.opt.timestep)):] if rows else [])
+    stable_hold=bool(final_hold and all(
+        r["bilateral_contact"] and r["object_table_contact_force_n"]<.01
+        for r in final_hold))
+    observed_rise_mm=(rows[-1]["object_rise_from_bilateral_mm"] if rows else 0.)
+    lift_complete=bool(
+        lift_started_at is not None and lift_motion_mm>=args.lift_mm-.01)
+    lift_success=bool(lift_complete and observed_rise_mm>=args.lift_mm*.8
+                      and stable_hold
+                      and rows[-1]["object_bottom_table_gap_approx_mm"]>=1.)
+    summary.update(
+      lift_started=lift_started_at is not None,
+      lift_start_time_s=lift_started_at,
+      lift_initial_object_z_m=lift_object_z_initial,
+      max_arm_command_lift_mm=max((r["arm_lift_command_mm"] for r in rows),default=0),
+      max_object_rise_mm=max((r["object_rise_from_bilateral_mm"] for r in rows),default=0),
+      final_object_rise_mm=observed_rise_mm,
+      final_object_table_gap_approx_mm=(rows[-1]["object_bottom_table_gap_approx_mm"] if rows else None),
+      final_bilateral_contact=bool(rows[-1]["bilateral_contact"]) if rows else False,
+      lift_success=lift_success,
+      lift_success_criteria=">=80% of commanded 5mm real object rise, >=1mm approximate tabletop gap, bilateral contact and no table contact for final 0.3s",
+      physics_steps=len(rows),rendered_frames=images,
       peak_fixed_force_n=max((r["fixed_force_n"] for r in rows),default=0),
       peak_moving_force_n=max((r["moving_force_n"] for r in rows),default=0),
       bilateral_frames=sum(r["fixed_force_n"]>.02 and r["moving_force_n"]>.02 for r in rows),
       max_object_speed_m_s=max((r["object_speed_m_s"] for r in rows),default=0))
     if summary["status"]!="NUMERICAL_DIVERGENCE":
-        summary["status"]="CONTACT_TEST_COMPLETED_NOT_GRASP_PROOF"
+        summary["status"]=("PHYSICAL_5MM_LIFT_OBSERVED" if lift_success
+                           else "LIFT_NOT_CONFIRMED" if lift_started_at is not None
+                           else "NO_SUSTAINED_BILATERAL_CONTACT")
     if images:
         summary["video_status"]=encode(all_dir,args.out/"table_contact_views.mp4",args.fps)
         for folder,name in zip(wrist_dirs,("wrist_camera","wrist_shelf_camera","wrist_retracted_camera")):
@@ -256,9 +346,19 @@ def main():
     p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
     p.add_argument("--out",type=Path,required=True)
     p.add_argument("--j5-deg",type=float,default=-90.)
-    p.add_argument("--duration-s",type=float,default=4.)
+    p.add_argument("--duration-s",type=float,default=5.5)
+    p.add_argument("--lift-mm",type=float,default=5.)
+    p.add_argument("--lift-ramp-s",type=float,default=1.)
+    p.add_argument("--bilateral-hold-steps",type=int,default=150)
+    p.add_argument("--bilateral-force-min-n",type=float,default=.02)
     p.add_argument("--j6-speed-deg-s",type=float,default=35.)
     p.add_argument("--render-every",type=int,default=25)
     p.add_argument("--fps",type=int,default=20)
-    run(p.parse_args())
+    a=p.parse_args()
+    if not(0<a.lift_mm<=10 and .2<=a.lift_ramp_s<=3.
+           and 10<=a.bilateral_hold_steps<=1000 and
+           0<a.bilateral_force_min_n<=2. and
+           a.duration_s>a.lift_ramp_s+.3):
+        p.error("Invalid lift parameters")
+    run(a)
 if __name__=="__main__":main()
