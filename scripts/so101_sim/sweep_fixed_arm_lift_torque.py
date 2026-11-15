@@ -83,8 +83,8 @@ def main():
         parser.error("Specify between 1 and 12 torques")
     if len(set(args.torques)) != len(args.torques):
         parser.error("Torque values must be unique")
-    if any(not math.isfinite(t) or not(.01 <= t <= .24) for t in args.torques):
-        parser.error("All torques must be finite and 0.01..0.24 Nm")
+    if any(not math.isfinite(t) or not(.01 <= t <= .36) for t in args.torques):
+        parser.error("All torques must be finite and 0.01..0.36 Nm")
     args.out.mkdir(parents=True, exist_ok=False)
     results = []
     for torque in args.torques:
