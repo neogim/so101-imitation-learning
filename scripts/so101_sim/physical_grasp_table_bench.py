@@ -1524,6 +1524,16 @@ def execute(args):
             # post-step mj_forward overwrote the contact-force snapshot.
             if jaw_self_contact_force_n>args.jaw_force_spike_abort_n:
                 contact_abort_reason="J6_ACTUAL_JAW_SELF_CONTACT_FORCE"
+            if (physical_arm_hold_active and
+                max(abs(math.degrees(float(data.qpos[q]-armhome[k])))
+                    for k,q in enumerate(qids)) >
+                    args.arm_hold_max_deviation_deg):
+                # In the 2026-11-15 Mac run, the arm moved 2.06deg in
+                # the first 2ms after switching from kinematic fixture
+                # to dynamic hold; the very next step hit Muhi at 445N.
+                # Stop at the FIRST invalid state, rather than letting
+                # an unstable arm move through the object.
+                contact_abort_reason="PHYSICAL_ARM_HOLD_UNSTABLE"
             if contact_abort_reason:
                 contact_abort_step=i
                 break
@@ -1826,6 +1836,9 @@ def execute(args):
             "the same mj_step solver snapshot as mj_contactForce; "
             "velocity uses MuJoCo constraint coordinates"),
         "physical_arm_hold_enabled":bool(args.physical_arm_hold),
+        "physical_arm_hold_abort_deviation_deg":(
+            args.arm_hold_max_deviation_deg
+            if args.physical_arm_hold else None),
         "physical_arm_hold_control":(
             "J1-J5 physical torque PD + gravity/bias compensation "
             "during closure; no qpos/qvel teleport; before closure "
@@ -2033,6 +2046,9 @@ def main():
                    help="J1-J5 sim-only PD damping Nm*s/rad")
     p.add_argument("--arm-hold-max-torque",type=float,default=8.,
                    help="J1-J5 sim-only torque cap Nm (NOT STS3215 rated)")
+    p.add_argument("--arm-hold-max-deviation-deg",type=float,default=.5,
+                   help="Abort physical arm-hold immediately if any J1-J5 "
+                        "deviates more than 0.5deg from prescribed target")
     p.add_argument("--gentle-jaw-contact",action="store_true",
                    help="Study-only: reduce J6 setpoint lead and actuator "
                         "force near Muhi; never override contact physics")
@@ -2141,6 +2157,8 @@ def main():
         p.error("--j6-actual-speed-limit-deg-s must be 5--60 deg/s")
     if args.physical_arm_hold and not args.simple_grasp:
         p.error("--physical-arm-hold requires --simple-grasp")
+    if not (0.05<=args.arm_hold_max_deviation_deg<=1.):
+        p.error("--arm-hold-max-deviation-deg must be 0.05--1.0")
     if (args.arm_hold_kp<=0 or args.arm_hold_kd<0 or
             args.arm_hold_max_torque<=0):
         p.error("J1-J5 arm-hold gains and torque cap must be valid")
