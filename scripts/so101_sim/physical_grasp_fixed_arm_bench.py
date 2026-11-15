@@ -103,14 +103,15 @@ def run(args):
     gripper_body.add_site(name=prior.TIP_SITE,
         pos=list(prior.GRIPPER_FRAME_LOCAL_POS),
         size=[.002,.002,.002],rgba=[.1,.9,.8,1.])
-    # Visual-only studio floor; explicitly non-colliding. Earlier views
-    # showed a featureless black void; this restores 3D depth cues without
-    # adding physical support or changing the grasp.
-    spec.worldbody.add_geom(
-        name="fixed_arm_preview_floor",type=mujoco.mjtGeom.mjGEOM_PLANE,
-        pos=[0.,0.,-.16],size=[0.,0.,.01],
-        rgba=[.70,.74,.79,1.],contype=0,conaffinity=0,group=0)
-    preview.add_simple_studio_light(spec)
+    # Visual-only wrist backdrop from the previously working
+    # physical_grasp_table_bench.py, group 4 (hidden from side views).
+    # Do not insert a floor plane into the camera; it hid the fingertips.
+    backdrop_body=spec.worldbody.add_body(
+        name="fixed_arm_wrist_backdrop_mocap",mocap=True,pos=[0.,0.,-10.])
+    backdrop_body.add_geom(
+        name="fixed_arm_wrist_backdrop",type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[3.,3.,.01],pos=[0.,0.,0.],
+        rgba=[.73,.76,.79,1.],contype=0,conaffinity=0,group=4)
     table_body=spec.worldbody.add_body(name="fixed_arm_table_mocap",mocap=True,pos=[0,0,-10])
     table_body.add_geom(name=TABLE,type=mujoco.mjtGeom.mjGEOM_BOX,
         size=[.08,.08,prior.TABLE_HALF_THICKNESS_M],rgba=[.47,.51,.56,1.],
@@ -151,9 +152,8 @@ def run(args):
     model.opt.timestep=.002
     # Reduced blown-out white highlights so the original detailed STL,
     # motors and wrist fixture have readable contrast.
-    model.vis.headlight.ambient[:]=[.25,.25,.25]
-    model.vis.headlight.diffuse[:]=[.70,.70,.70]
-    model.vis.headlight.specular[:]=[.16,.16,.16]
+    # Keep imported model lighting, as in prior working renderer.
+    # Do not override headlight/mesh materials with ad-hoc settings.
     # The source STL meshes remain exactly as imported. Do not replace
     # detailed mesh visuals with coarse collision proxy geometry.
     jawq,jawd,limits=search.joint_addr(model,"gripper")
@@ -189,10 +189,10 @@ def run(args):
         "lift_method":"kinematic vertical motion of mocap base; Muhi freejoint never overwritten",
         "lift_goal_mm":float(args.lift_mm),
         "j6_max_torque_nm":float(args.j6_max_torque_nm),
-        "render_restore":"wide side views; native wrist MP4s unchanged; virtual jaw close-up explicitly labeled in combined panel",
+        "render_restore":"original physical_grasp_table_bench five-view 480x360 renderer, side 55/150, geomgroup masks, wrist visual backdrop",
         "virtual_jaw_detail_cameras":list(jaw_detail_names),
         "virtual_jaw_detail_is_real_wrist_optic":False,
-        "combined_lower_row":"3 actual mounted wrist optics restored (TCP/shelf/retracted), small separately labeled virtual detail inset",
+        "combined_lower_row":"3 originally mounted wrist camera streams, no virtual inset",
         "original_wrist_camera_mp4s_preserved":True,
         "lift_ramp_s":float(args.lift_ramp_s),
         "lift_min_consecutive_bilateral_steps":int(args.bilateral_hold_steps),
@@ -245,20 +245,36 @@ def run(args):
     # Show full detailed SO-101 arm and the workcell simultaneously.
     base_xyz=np.asarray(data.xpos[base_id],float).copy()
     full_arm_lookat=.55*np.asarray(center)+.45*base_xyz
-    for az in (45.,135.):
+    for az in (55.,150.):
         cam=mujoco.MjvCamera()
         cam.type=mujoco.mjtCamera.mjCAMERA_FREE
-        cam.lookat[:]=full_arm_lookat
-        cam.distance=.56
-        cam.azimuth=az;cam.elevation=-25.
+        cam.lookat[:]=np.asarray(center)
+        cam.distance=.32
+        cam.azimuth=az;cam.elevation=-20.
         sides.append(cam)
-    # Preserve final panel pixels: previous 480x360 renders were stretched
-    # to 480x390 wrist and 720x390 side, visibly degrading proportions.
-    # Two render targets match the final aspect ratios with no resampling.
-    model.vis.global_.offwidth=max(int(model.vis.global_.offwidth),720)
-    model.vis.global_.offheight=max(int(model.vis.global_.offheight),390)
-    wrist_renderer=mujoco.Renderer(model,width=480,height=390)
-    side_renderer=mujoco.Renderer(model,width=720,height=390)
+    # Reuse the original 480x360 five-view renderer and geom visibility
+    # from physical_grasp_table_bench.py. Collision proxy meshes are
+    # hidden: the source visual STL remains visible in group 0.
+    model.vis.global_.offwidth=max(int(model.vis.global_.offwidth),480)
+    model.vis.global_.offheight=max(int(model.vis.global_.offheight),360)
+    render=mujoco.Renderer(model,width=480,height=360)
+    side_option=mujoco.MjvOption()
+    side_option.geomgroup[3]=0
+    side_option.geomgroup[4]=0
+    side_option.geomgroup[5]=0
+    wrist_option=mujoco.MjvOption()
+    wrist_option.geomgroup[3]=0
+    wrist_option.geomgroup[4]=1
+    wrist_option.geomgroup[5]=0
+    backdrop_id=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_BODY,"fixed_arm_wrist_backdrop_mocap")
+    backdrop_mocap=int(model.body_mocapid[backdrop_id])
+    wrist_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
+    wrist_pos=np.asarray(data.cam_xpos[wrist_id]).copy()
+    wrist_back=np.asarray(data.cam_xmat[wrist_id]).reshape(3,3)[:,2]
+    data.mocap_pos[backdrop_mocap]=wrist_pos-1.5*wrist_back
+    data.mocap_quat[backdrop_mocap]=data.mocap_quat[base_mocap_id]
+    mujoco.mj_forward(model,data)
     all_dir=args.out/"combined_frames";all_dir.mkdir()
     wrist_dirs=[]
     for name in ("wrist_camera","wrist_shelf_camera","wrist_retracted_camera"):
@@ -322,46 +338,33 @@ def run(args):
               "object_speed_m_s":float(np.linalg.norm(data.qvel[freed:freed+3]))})
             if step%args.render_every==0 or step==steps-1:
                 mujoco.mj_forward(model,data)
+                # Original 5-view compositing, copied from the previously
+                # working physical_grasp_table_bench.py render path.
+                side_images=[]
+                for cam in sides:
+                    render.update_scene(data,camera=cam,scene_option=side_option)
+                    side_images.append(Image.fromarray(render.render().copy()))
                 views=[]
                 for cam in cameras:
-                    wrist_renderer.update_scene(data,camera=cam)
-                    views.append(Image.fromarray(wrist_renderer.render().copy()))
-                for cam in sides:
-                    side_renderer.update_scene(data,camera=cam)
-                    views.append(Image.fromarray(side_renderer.render().copy()))
-                jaw_inspection=[]
-                for name in jaw_detail_names:
-                    wrist_renderer.update_scene(data,camera=name)
-                    jaw_inspection.append(
-                        Image.fromarray(wrist_renderer.render().copy()))
-                # RESTORE the previous 2-side + 3-mounted-wrist layout.
-                # Never substitute virtual cameras for the three user-
-                # requested wrist optical streams in the combined MP4.
-                # The small separate gripper detail below is explicitly
-                # a virtual *overlay inset*, not the wrist-camera image.
-                panel=Image.new("RGB",(1440,780),(28,34,44))
-                for i in range(2):panel.paste(views[3+i],(720*i,0))
-                for i in range(3):panel.paste(views[i],(480*i,390))
-                jaw_inset=jaw_inspection[1].resize((190,150))
-                panel.paste(jaw_inset,(1250,600))
+                    render.update_scene(data,camera=cam,scene_option=wrist_option)
+                    views.append(Image.fromarray(render.render().copy()))
+                panel=Image.new("RGB",(1440,780),(20,24,30))
+                panel.paste(side_images[0],(240,30))
+                panel.paste(side_images[1],(720,30))
+                for i in range(3):panel.paste(views[i],(480*i,420))
                 draw=ImageDraw.Draw(panel)
-                draw.rectangle((0,0,1439,26),fill=(32,40,52))
-                draw.rectangle((0,390,1439,416),fill=(32,40,52))
-                draw.rectangle((1248,579,1439,600),fill=(32,40,52))
-                draw.text((12,7),f"SIDE A | t={data.time:.3f}s | arm +{lift_motion_mm:.2f}mm",fill=(255,255,255))
-                draw.text((730,7),f"SIDE B | object +{object_rise_mm:.2f}mm | table {table_force:.2f}N",fill=(255,255,255))
-                draw.text((12,397),"WRIST | TCP AIM | MOUNTED",fill=(255,255,255))
-                draw.text((490,397),"WRIST | SHELF AXIS | MOUNTED",fill=(255,255,255))
-                draw.text((970,397),f"WRIST | RETRACTED 5mm | J6 {math.degrees(data.qpos[jawq]):.1f}deg",fill=(255,255,255))
-                draw.text((1253,584),"VIRTUAL DETAIL INSET",fill=(255,255,255))
+                draw.text((248,8),f"SIDE A | t={data.time:.2f}s | arm +{lift_motion_mm:.2f}mm",fill="white")
+                draw.text((728,8),f"SIDE B | object +{object_rise_mm:.2f}mm",fill="white")
+                draw.text((8,398),"WRIST | TCP AIM",fill="white")
+                draw.text((488,398),"WRIST | SHELF AXIS",fill="white")
+                draw.text((968,398),"WRIST | RETRACTED 5mm",fill="white")
                 panel.save(all_dir/f"frame_{images:04d}.png")
                 for i,folder in enumerate(wrist_dirs):views[i].save(folder/f"frame_{images:04d}.png")
                 images+=1
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 summary["status"]="NUMERICAL_DIVERGENCE";break
     finally:
-        wrist_renderer.close()
-        side_renderer.close()
+        render.close()
     if rows:
         with (args.out/"grasp_trace.csv").open("x",newline="") as file:
             writer=csv.DictWriter(file,fieldnames=rows[0]);writer.writeheader();writer.writerows(rows)
