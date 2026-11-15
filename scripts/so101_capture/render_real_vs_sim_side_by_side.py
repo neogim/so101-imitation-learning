@@ -66,8 +66,9 @@ def brighten_sim(model, *, ambient: float):
     model.vis.headlight.ambient[:] = (ambient, ambient, ambient)
     model.vis.headlight.diffuse[:] = (0.95, 0.95, 0.95)
     model.vis.headlight.specular[:] = (0.25, 0.25, 0.25)
-    # The old comparison had a solid black world background.
-    model.vis.rgba.skybox[:] = (0.87, 0.89, 0.92, 1.0)
+    # Do not assign model.vis.rgba.skybox: this field does not exist on
+    # mjVisual/Rgba in some supported MuJoCo Python bindings. Background
+    # configuration is intentionally unchanged; headlight brightens the arm.
 
 
 def panel(real, sim, title: str, fovy: float) -> Image.Image:
