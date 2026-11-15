@@ -62,3 +62,6 @@ executed*.ipynb
 
 # Local ML model weights
 /models/
+
+# MuJoCo runtime log
+MUJOCO_LOG.TXT
