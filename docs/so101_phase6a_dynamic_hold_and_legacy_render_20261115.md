@@ -3,7 +3,7 @@
 ## What is implemented
 
 - `scripts/so101_sim/phase6_dynamic_joint_hold.py` — **object-free dynamic** J1–J5 PD position-hold from physics step one; J6 held as auxiliary. It records raw physical `joint_trace.csv` and `summary.json`, without camera or geometry proxy logic. It does not alter the source URDF or use robot hardware.
-- `scripts/so101_sim/phase6_render_legacy_camera_trace.py` — **OFFLINE visual playback** reading that recorded CSV. It imports and calls the old `wrist_camera_sim.install`, old `render_wrist_camera_rollout.jaw_centers_in_wrist_view`, and the existing original `mujoco.Renderer.update_scene` sequence. It renders (1) side example from `workcell.example.json`, (2) mounted wrist optic from original `wrist_camera_sim`, and (3) the existing wrist bracket inspection optic. It does NOT invent a replacement camera that impersonates wrist footage.
+- `scripts/so101_sim/phase6_render_legacy_camera_trace.py` — **OFFLINE visual playback** reading that recorded CSV. It imports and calls the old `wrist_camera_sim.install`, old `render_wrist_camera_rollout.jaw_centers_in_wrist_view`, and the existing original `mujoco.Renderer.update_scene` sequence. It reproduces the **2x2 panel layout of Experiment 16**: top row overview; bottom row real mounted wrist; left column constant reference target; right column recorded physical actual. The exact prior renderer is `compare_dls_sac_table_guard.make_video()` (2026-11-14, `dls_sac_table_guard_side_wrist.mp4`), not the older 3-horizontal camera demonstration. It calls that experiment's original `demo_real2sim_muhi_cup_reach.camera_for` overview factory, and `wrist_camera_sim.install` for wrist mounting. It does NOT invent a replacement camera that impersonates wrist footage.
 
 The first physics simulation and the rendering are deliberately **separate processes/models**; in the rendering replay it is appropriate to set saved `qpos` frame-by-frame and call `mj_forward`. **The physics simulation never overwrites `qpos/qvel` after initialization.**
 
@@ -45,10 +45,10 @@ python scripts/so101_sim/phase6_render_legacy_camera_trace.py \
   --stride 100 \
   --fps 5 \
   --video
-open "$VIS/phase6_legacy_three_views.mp4"
+open "$VIS/phase6_dls_sac_style_four_views.mp4"
 ```
 
-This renderer is optional. A playback frame does not prove dynamic physical correctness; the CSV does. The side camera is a sample, **NOT** the measured physical camera extrinsic. The render does not repair or replace unresolved wrist FOV issues from Phase5.
+This renderer is optional. A playback frame does not prove dynamic physical correctness; the CSV does. The historical overview camera is centered on the initial gripper in Phase6A because there is no Muhi/cup; it retains the original azimuth/elevation/distance. This is not the exact calibrated Episode4 object-layout camera. The render does not repair or replace unresolved wrist FOV issues from Phase5.
 
 ## Next gates
 
