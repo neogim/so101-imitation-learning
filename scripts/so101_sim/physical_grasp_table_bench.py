@@ -2276,8 +2276,12 @@ def main():
         # Explicit, speed-limited position target with torque-limited
         # dynamic PD tracking (never teleport J6 during closure).
         args.close_s=max(args.close_s,3.5)
+        # Ensure strict inequality against the parser's subsequent
+        # settle+prealign+approach+close >= duration validation.
+        # The previous 1.5s margin was used as both an exact minimum and
+        # the tail duration; equality made the default command invalid.
         args.duration_s=max(args.duration_s,
-            args.settle_s+args.j234_s+args.approach_s+args.close_s+1.5)
+            args.settle_s+args.j234_s+args.approach_s+args.close_s+1.55)
         args.kp=1.5
         args.kd=.12
         args.j6_precontact_max_torque=.8
