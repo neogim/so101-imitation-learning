@@ -79,6 +79,14 @@ def run(args):
     gripper_body.add_site(name=prior.TIP_SITE,
         pos=list(prior.GRIPPER_FRAME_LOCAL_POS),
         size=[.002,.002,.002],rgba=[.1,.9,.8,1.])
+    # Visual-only studio floor; explicitly non-colliding. Earlier views
+    # showed a featureless black void; this restores 3D depth cues without
+    # adding physical support or changing the grasp.
+    spec.worldbody.add_geom(
+        name="fixed_arm_preview_floor",type=mujoco.mjtGeom.mjGEOM_PLANE,
+        pos=[0.,0.,-.16],size=[0.,0.,.01],
+        rgba=[.70,.74,.79,1.],contype=0,conaffinity=0,group=0)
+    preview.add_simple_studio_light(spec)
     table_body=spec.worldbody.add_body(name="fixed_arm_table_mocap",mocap=True,pos=[0,0,-10])
     table_body.add_geom(name=TABLE,type=mujoco.mjtGeom.mjGEOM_BOX,
         size=[.08,.08,prior.TABLE_HALF_THICKNESS_M],rgba=[.47,.51,.56,1.],
@@ -93,7 +101,7 @@ def run(args):
     servo.gainprm[0]=1.5
     servo.biasprm[1]=-1.5;servo.biasprm[2]=-.12
     servo.ctrllimited=False;servo.forcelimited=True
-    servo.forcerange[:]=[-.08,.08]
+    servo.forcerange[:]=[-args.j6_max_torque_nm,args.j6_max_torque_nm]
     frozen=freeze_arm(spec,args.j5_deg)
     # A mocap base gives the *arm* a prescribed vertical lift trajectory.
     # J1-J5 remain absent; J6 and the Muhi freejoint remain physically
@@ -117,8 +125,11 @@ def run(args):
             raise RuntimeError(f"Compiled body missing despite fusestatic=False: {name}")
     preview.apply_white_follower_preview(model)
     model.opt.timestep=.002
-    model.vis.headlight.ambient[:]=[.7,.7,.7]
-    model.vis.headlight.diffuse[:]=[.9,.9,.9]
+    # Reduced blown-out white highlights so the original detailed STL,
+    # motors and wrist fixture have readable contrast.
+    model.vis.headlight.ambient[:]=[.25,.25,.25]
+    model.vis.headlight.diffuse[:]=[.70,.70,.70]
+    model.vis.headlight.specular[:]=[.16,.16,.16]
     jawq,jawd,limits=search.joint_addr(model,"gripper")
     model.dof_armature[jawd]=max(float(model.dof_armature[jawd]),.002)
     model.dof_damping[jawd]=max(float(model.dof_damping[jawd]),.06)
@@ -151,6 +162,8 @@ def run(args):
         "same_pregrasp_pose_as_previous_trial":False,
         "lift_method":"kinematic vertical motion of mocap base; Muhi freejoint never overwritten",
         "lift_goal_mm":float(args.lift_mm),
+        "j6_max_torque_nm":float(args.j6_max_torque_nm),
+        "render_restore":"wide side views show entire robot; original detailed STL retained, neutral noncontact floor and moderate light; wrist cameras retained",
         "lift_ramp_s":float(args.lift_ramp_s),
         "lift_min_consecutive_bilateral_steps":int(args.bilateral_hold_steps),
         "is_dynamic_j1_j5_joint_lift":False,
@@ -198,10 +211,15 @@ def run(args):
         if mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,n)<0:
             raise ValueError("Missing mandatory wrist camera "+n)
     sides=[]
+    # Legacy 0.34m distance aimed at the bottle cut off most of the robot.
+    # Show full detailed SO-101 arm and the workcell simultaneously.
+    base_xyz=np.asarray(data.xpos[base_id],float).copy()
+    full_arm_lookat=.55*np.asarray(center)+.45*base_xyz
     for az in (45.,135.):
         cam=mujoco.MjvCamera()
         cam.type=mujoco.mjtCamera.mjCAMERA_FREE
-        cam.lookat[:]=np.asarray(center);cam.distance=.34
+        cam.lookat[:]=full_arm_lookat
+        cam.distance=.56
         cam.azimuth=az;cam.elevation=-25.
         sides.append(cam)
     # Preserve final panel pixels: previous 480x360 renders were stretched
@@ -281,17 +299,20 @@ def run(args):
                 for cam in sides:
                     side_renderer.update_scene(data,camera=cam)
                     views.append(Image.fromarray(side_renderer.render().copy()))
-                panel=Image.new("RGB",(1440,780),(224,228,232))
-                for i in range(3):panel.paste(views[i],(480*i,0))
-                for i in range(2):panel.paste(views[3+i],(720*i,390))
+                # Two full-robot side views ON TOP, three original wrist
+                # cameras below; match the established 1440x780 diagnostic
+                # composition rather than the abbreviated layout.
+                panel=Image.new("RGB",(1440,780),(28,34,44))
+                for i in range(2):panel.paste(views[3+i],(720*i,0))
+                for i in range(3):panel.paste(views[i],(480*i,390))
                 draw=ImageDraw.Draw(panel)
-                draw.text((8,8),
-                    f"J6 FIRST / Lift | t={data.time:.3f}s / arm +{lift_motion_mm:.2f}mm",
-                    fill=(15,15,15))
-                draw.text((8,400),
-                    f"J6={math.degrees(data.qpos[jawq]):.2f}deg | fixed={force_f:.2f}N "
-                    f"moving={force_m:.2f}N | object +{object_rise_mm:.2f}mm",
-                    fill=(15,15,15))
+                draw.rectangle((0,0,1439,26),fill=(32,40,52))
+                draw.rectangle((0,390,1439,416),fill=(32,40,52))
+                draw.text((12,7),f"SIDE A | t={data.time:.3f}s | arm +{lift_motion_mm:.2f}mm",fill=(255,255,255))
+                draw.text((730,7),f"SIDE B | object +{object_rise_mm:.2f}mm | table {table_force:.2f}N",fill=(255,255,255))
+                draw.text((12,397),"WRIST | TCP AIM",fill=(255,255,255))
+                draw.text((490,397),"WRIST | SHELF",fill=(255,255,255))
+                draw.text((970,397),f"WRIST | RETRACTED | J6 {math.degrees(data.qpos[jawq]):.1f}deg",fill=(255,255,255))
                 panel.save(all_dir/f"frame_{images:04d}.png")
                 for i,folder in enumerate(wrist_dirs):views[i].save(folder/f"frame_{images:04d}.png")
                 images+=1
@@ -352,10 +373,13 @@ def main():
     p.add_argument("--bilateral-hold-steps",type=int,default=150)
     p.add_argument("--bilateral-force-min-n",type=float,default=.02)
     p.add_argument("--j6-speed-deg-s",type=float,default=35.)
+    p.add_argument("--j6-max-torque-nm",type=float,default=.08,
+                   help="J6 actuator force limit in Nm; baseline .08, optional modest test .10")
     p.add_argument("--render-every",type=int,default=25)
     p.add_argument("--fps",type=int,default=20)
     a=p.parse_args()
-    if not(0<a.lift_mm<=10 and .2<=a.lift_ramp_s<=3.
+    if not(.01<=a.j6_max_torque_nm<=.12 and
+           0<a.lift_mm<=10 and .2<=a.lift_ramp_s<=3.
            and 10<=a.bilateral_hold_steps<=1000 and
            0<a.bilateral_force_min_n<=2. and
            a.duration_s>a.lift_ramp_s+.3):
