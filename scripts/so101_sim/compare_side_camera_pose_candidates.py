@@ -161,8 +161,8 @@ def main():
         p.error("--max-candidates must be 1..30")
     intr = json.loads(a.intrinsics.read_text(encoding="utf-8"))
     iw, ih = int(intr["width"]), int(intr["height"])
-    if (iw, ih) != (640, 480):
-        p.error(f"Intrinsic dimensions must match recorded video 640x480; got {iw}x{ih}")
+    if iw <= 0 or ih <= 0:
+        p.error("Invalid calibration image dimensions")
     for k in ("fx", "fy", "cx", "cy"):
         if not np.isfinite(float(intr[k])):
             p.error(f"Invalid {k}")
@@ -181,6 +181,23 @@ def main():
     ep = r2s.read_episode(dataset, a.episode, stride=1, max_frames=100000)
     frames = {int(r["frame_index"]): r for r in ep["rows"]}
     cap, video_start, video_path = recorded_video(dataset, a.episode)
+    video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if video_width <= 0 or video_height <= 0:
+        cap.release()
+        raise ValueError("Cannot read side video dimensions")
+    # A uniform video resize preserves focal field of view. Different aspect
+    # ratio may signal crop/pad/OBS transformation and must not be guessed.
+    ratio_x = video_width / iw
+    ratio_y = video_height / ih
+    if not np.isclose(ratio_x, ratio_y, rtol=0.002, atol=0.002):
+        cap.release()
+        raise ValueError(f"Side video {video_width}x{video_height} is not a uniform resize of "
+                         f"intrinsics {iw}x{ih}; crop/OBS geometry must be checked")
+    native_intr = dict(intr)
+    native_intr.update(width=video_width, height=video_height,
+                       fx=float(intr["fx"])*ratio_x, fy=float(intr["fy"])*ratio_y,
+                       cx=float(intr["cx"])*ratio_x, cy=float(intr["cy"])*ratio_y)
     try:
         real = {}
         for frame in a.frames:
@@ -191,8 +208,8 @@ def main():
             if not ok:
                 raise ValueError(f"Failed to decode side frame {frame}")
             real[frame] = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            if real[frame].shape[:2] != (ih, iw):
-                raise ValueError(f"Side video frame {frame} is not {iw}x{ih}")
+            if real[frame].shape[:2] != (video_height, video_width):
+                raise ValueError(f"Unexpected side video frame shape {real[frame].shape[:2]}")
     finally:
         cap.release()
     out = a.output.resolve()
@@ -201,9 +218,13 @@ def main():
                "episode": a.episode, "frames": a.frames,
                "source_video": str(video_path),
                "intrinsics": str(a.intrinsics),
+               "calibration_resolution": [iw, ih],
+               "video_resolution": [video_width, video_height],
+               "effective_intrinsics_at_video_resolution": {k: native_intr[k] for k in ("fx", "fy", "cx", "cy")},
                "warnings": [
                    "These candidates have no verified same-session relationship to the October 25 recording.",
-                   "Only vertical FOV is derived from fy. MuJoCo projection does not model principal-point offsets or lens distortion in this preview.",
+                   "Only uniform resize of intrinsics is supported; OBS cropping must be separately checked.",
+                   "Only vertical FOV is derived from scaled fy. MuJoCo projection does not model principal-point offsets or lens distortion in this preview.",
                    "Camera candidates from other sessions may not match the October 25 capture.",
                    "Real joint state mapping and model workcell objects are not validated.",
                    "Never infer J1 sign or cup-placement height before camera matching."
@@ -213,12 +234,16 @@ def main():
         writer=csv.writer(f)
         writer.writerow(["candidate", "path", "fovy_deg", "pos_x", "pos_y", "pos_z"])
         for idx, (path, pose) in enumerate(candidates):
-            model, cfg, fovy = make_camera_model(urdf, base_config, pose, intr)
+            model, cfg, fovy = make_camera_model(urdf, base_config, pose, native_intr)
             data = mujoco.MjData(model)
             panels=[]
             for frame in a.frames:
                 r2s.set_pose(model, data, frames[frame]["state"], cfg)
-                sim = r2s.render_image(model, data, SIDE, iw, ih)
+                # Render at calibration resolution, then resample uniformly to the
+                # recorded-video resolution; do not stretch or crop.
+                sim_cal = r2s.render_image(model, data, SIDE, iw, ih)
+                sim = np.asarray(Image.fromarray(sim_cal).resize(
+                    (video_width, video_height), Image.Resampling.LANCZOS))
                 im = side_by_side(real[frame], sim, f"Candidate {idx+1} / frame {frame} / {path.name}", fovy)
                 im.save(out/f"candidate_{idx+1:02d}_frame_{frame:04d}.png")
                 panels.append(im)
