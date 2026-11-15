@@ -349,6 +349,14 @@ def run(args):
                                       abs(nx)<=1 and abs(ny)<=1)}
         framing[cam_name]=visible
     summary["mounted_wrist_camera_framing_at_start"]=framing
+    summary["all_three_wrist_camera_jaw_proxy_centers_in_nominal_fov"]=all(
+        info["fixed_jaw"]["in_nominal_fov"] and
+        info["moving_jaw"]["in_nominal_fov"]
+        for info in framing.values())
+    if not summary["all_three_wrist_camera_jaw_proxy_centers_in_nominal_fov"]:
+        print("WARNING: at least one jaw proxy center remains outside a wrist camera "
+              "nominal FOV. Check summary.json; do not claim wrist rendering fixed.",
+              flush=True)
     sides=[]
     # Legacy 0.34m distance aimed at the bottle cut off most of the robot.
     # Show full detailed SO-101 arm and the workcell simultaneously.
