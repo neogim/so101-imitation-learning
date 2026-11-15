@@ -9,7 +9,7 @@ The first physics simulation and the rendering are deliberately **separate proce
 
 ## Important scope
 
-The original legacy wrist mount profile and original optical orientation are used by default, with no ad-hoc aim-at-TCP. The side view comes from an explicitly **uncalibrated example JSON**; exact reproduction of the user's earlier calibrated Episode0 video would require the correct experiment's camera extrinsics and scene configuration. Hence this is *reuse of the historical renderer implementation*, not a claim of identical pixels. Static Muhi is not added because Phase 6A is specifically no-object.
+**2026-11-15 visual-scene correction:** By default (`--scene experiment16`) the playback now calls the **same** `demo_real2sim_muhi_cup_reach.create_scene()` as `compare_dls_sac_table_guard.py`. This restores the saved Episode-4 visual workcell (table, Muhi, cup), calibrated side camera, pale backdrop, fixed studio light, white follower styling, and original mounted wrist. The physical Phase6A run **still contains no objects**. Thus Muhi/table/cup in the video are ONLY historical visual references, not simulated collisions or measured Phase6 contact. It needs the locally saved Episode-4 dataset and calibration/layout JSON used by the old experiment16. If they are unavailable, `--scene bare` preserves the previous empty/dark single-URDF render. The `--bracket-profile` option affects the bare fallback only; the experiment16 wrist mount uses the old original builder defaults.
 
 No prior branch is mutated. Work is only on `feature/so101-dynamic-arm-control`.
 
@@ -41,14 +41,14 @@ VIS="${OUT}-legacy-render"
 python scripts/so101_sim/phase6_render_legacy_camera_trace.py \
   --trace "$OUT/joint_trace.csv" \
   --out "$VIS" \
-  --bracket-profile legacy \
+  --scene experiment16 \
   --stride 100 \
   --fps 5 \
   --video
 open "$VIS/phase6_dls_sac_style_four_views.mp4"
 ```
 
-This renderer is optional. A playback frame does not prove dynamic physical correctness; the CSV does. The historical overview camera is centered on the initial gripper in Phase6A because there is no Muhi/cup; it retains the original azimuth/elevation/distance. This is not the exact calibrated Episode4 object-layout camera. The render does not repair or replace unresolved wrist FOV issues from Phase5.
+This renderer is optional. A playback frame does not prove dynamic physical correctness; the CSV does. The historical overview camera in `experiment16` mode uses the saved Episode-4 Muhi/cup targets, azimuth/elevation/distance and lighting. `bare` mode instead points at the initial gripper and has no table/background. The render does not repair or replace unresolved wrist FOV issues from Phase5.
 
 ## Next gates
 
@@ -57,3 +57,5 @@ This renderer is optional. A playback frame does not prove dynamic physical corr
 3. Only then integrate Phase4 J6-first grasp for Phase6C, checking actual hold/slip rather than a peak-only rise.
 
 **Verification:** all code is committed, but no MuJoCo Mac run has been performed from this tool session.
+
+**Important:** The `--out` path must be new for each render; do not overwrite the original ZIP or frame directory. Code modification is committed but this updated visual scene has not been run on the user's Mac yet.
