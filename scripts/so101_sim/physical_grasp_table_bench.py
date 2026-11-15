@@ -241,6 +241,22 @@ def build_model(args):
         servo.ctrllimited=False
         servo.forcelimited=True
         servo.forcerange[:]=[-args.max_torque,args.max_torque]
+    # Study-only: MuJoCo equality constraints, rather than an abrupt
+    # switch to physical PD or post-step joint-state overwrites.
+    # Leave inactive throughout kinematic PREGRASP; activate at closure
+    # with reference angles equal to the actual current arm pose.
+    if args.constraint_arm_hold:
+        for name in r2s.JOINTS:
+            spec.add_equality(
+                name="grasp_fixture_"+name,
+                type=mujoco.mjtEq.mjEQ_JOINT,
+                objtype=mujoco.mjtObj.mjOBJ_JOINT,
+                name1=name,
+                # mjsEquality.data is a fixed 12-slot field (mjNEQDATA).
+                # Joint equality uses slots 0..4; the other 7 are unused.
+                # Passing only five fails on MuJoCo MjSpec Python bindings.
+                data=[0.] * 12,
+                active=False)
     model=spec.compile()
     # This is an opt-in temporary collision representation only.
     # Geometry source STL is still compiled for visual display.
@@ -530,6 +546,17 @@ def execute(args):
     data.mocap_quat[backdrop_mid]=wrist_quat
     mujoco.mj_forward(model,data)
     armhome=data.qpos[list(qids)].copy()
+    fixture_ids=[]
+    if args.constraint_arm_hold:
+        for name in r2s.JOINTS:
+            eqid=mujoco.mj_name2id(
+                model,mujoco.mjtObj.mjOBJ_EQUALITY,
+                "grasp_fixture_"+name)
+            if eqid < 0:
+                raise RuntimeError("Missing arm fixture equality: "+name)
+            fixture_ids.append(int(eqid))
+            data.eq_active[eqid]=0
+    fixture_engaged=False
     # Avoid starting exactly at a soft upper limit. One degree is inside
     # the URDF range; this is INITIALIZATION before the physics run,
     # never a qpos overwrite during dynamic closure.
@@ -864,7 +891,11 @@ def execute(args):
                         t>=j1_force_seek_start and
                         j1_precontact_reached and
                         not j1_precontact_exceeded_tilt)
-            if physical_arm_hold_active:
+            if fixture_engaged:
+                # Equality constraints hold the joint in the solver; keep
+                # its integrated qpos/qvel. No forced state reset.
+                pass
+            elif physical_arm_hold_active:
                 # Unlike the legacy fixture, DO NOT overwrite the dynamic
                 # arm pose or velocity. The solver must be allowed to
                 # resolve object/jaw contact against the same moving arm
@@ -1006,8 +1037,8 @@ def execute(args):
                     oldq=armhome.copy()
                     trial=armhome.copy()
                     trial[:4]=np.clip(trial[:4]+dq,lows[:4],highs[:4])
-                    if args.physical_arm_hold:
-                        # Physical arm hold moves only the TARGET; never
+                    if args.physical_arm_hold or args.constraint_arm_hold:
+                        # Both physical modes move only their TARGET; never
                         # teleport the actual arm during the lift.
                         armhome=trial
                     else:
@@ -1027,6 +1058,34 @@ def execute(args):
             # Switch back to dynamic torque control during J6 closure.
             preclose=stage in ("settle","j234_prealign","j1_precontact",
                                 "j1_force_seek","j1_precontact_failed")
+            if args.constraint_arm_hold and not preclose:
+                # Engage only after pregrasp at the EXACT present pose.
+                # A large initial constraint residual causes impulses,
+                # so do not silently allow a target mismatch.
+                if not fixture_engaged:
+                    if np.max(np.abs(
+                        data.qpos[list(qids)]-armhome))>1.e-6:
+                        raise RuntimeError(
+                            "Arm fixture activation pose mismatch")
+                    for k,eqid in enumerate(fixture_ids):
+                        jid=mujoco.mj_name2id(
+                            model,mujoco.mjtObj.mjOBJ_JOINT,
+                            r2s.JOINTS[k])
+                        model.eq_data[eqid,0]=float(
+                            armhome[k]-model.qpos0[
+                                int(model.jnt_qposadr[jid])])
+                        data.eq_active[eqid]=1
+                    fixture_engaged=True
+                else:
+                    # Allow planned 5mm lift by moving equality targets,
+                    # without directly writing dynamic arm joint state.
+                    for k,eqid in enumerate(fixture_ids):
+                        jid=mujoco.mj_name2id(
+                            model,mujoco.mjtObj.mjOBJ_JOINT,
+                            r2s.JOINTS[k])
+                        model.eq_data[eqid,0]=float(
+                            armhome[k]-model.qpos0[
+                                int(model.jnt_qposadr[jid])])
             if args.physical_arm_hold and not preclose:
                 physical_arm_hold_active=True
                 # Unlike geometric kinematic assignment, physical PD
@@ -1191,7 +1250,10 @@ def execute(args):
                     c["grasp_depth_from_tcp_mm"]=None
                     c["in_target_depth_band"]=False
                 c["solver_time_s"]=float(data.time-model.opt.timestep)
-            if physical_arm_hold_active:
+            if fixture_engaged:
+                # Preserve MuJoCo solver-integrated state.
+                pass
+            elif physical_arm_hold_active:
                 # Allow the integrated arm state to persist. Overwriting
                 # these qpos/qvel values invalidates the collision solver.
                 pass
@@ -1857,6 +1919,9 @@ def execute(args):
         "study_observe_through_contact":bool(
             args.study_observe_through_contact),
         "study_observed_warnings":study_observed_warnings[:100],
+        "constraint_arm_hold_enabled":bool(args.constraint_arm_hold),
+        "constraint_arm_hold_engaged":bool(fixture_engaged),
+        "constraint_arm_hold_method":"MuJoCo equality joint targets; no post-step arm qpos reset" if args.constraint_arm_hold else None,
         "physical_arm_hold_enabled":bool(args.physical_arm_hold),
         "physical_arm_hold_abort_deviation_deg":(
             args.arm_hold_max_deviation_deg
@@ -2058,6 +2123,11 @@ def main():
     p.add_argument("--j6-actual-speed-limit-deg-s",type=float,default=35.,
                    help="Measured J6 speed threshold for active physical "
                         "braking in gentle-jaw-contact mode (deg/s)")
+    p.add_argument("--constraint-arm-hold",action="store_true",
+                   help="Study-only rebuild: hold J1-J5 through solver "
+                        "equality constraints after pregrasp, no PD mode "
+                        "switch or per-step qpos/qvel overwrite; wrist "
+                        "camera rig and all 5 video views retained")
     p.add_argument("--physical-arm-hold",action="store_true",
                    help="Study mode: hold J1-J5 via physical PD during "
                         "J6 closure, never teleport their qpos/qvel at "
@@ -2182,6 +2252,10 @@ def main():
         p.error("--moving-jaw-surface-proxy requires fixed jaw proxy")
     if not (5. <= args.j6_actual_speed_limit_deg_s <= 60.):
         p.error("--j6-actual-speed-limit-deg-s must be 5--60 deg/s")
+    if args.physical_arm_hold and args.constraint_arm_hold:
+        p.error("Choose constraint arm hold OR physical PD hold, never both")
+    if args.constraint_arm_hold and not args.simple_grasp:
+        p.error("--constraint-arm-hold requires --simple-grasp")
     if args.physical_arm_hold and not args.simple_grasp:
         p.error("--physical-arm-hold requires --simple-grasp")
     if not (0.05<=args.arm_hold_max_deviation_deg<=1.):
@@ -2205,8 +2279,12 @@ def main():
         # Explicit, speed-limited position target with torque-limited
         # dynamic PD tracking (never teleport J6 during closure).
         args.close_s=max(args.close_s,3.5)
+        # Ensure strict inequality against the parser's subsequent
+        # settle+prealign+approach+close >= duration validation.
+        # The previous 1.5s margin was used as both an exact minimum and
+        # the tail duration; equality made the default command invalid.
         args.duration_s=max(args.duration_s,
-            args.settle_s+args.j234_s+args.approach_s+args.close_s+1.5)
+            args.settle_s+args.j234_s+args.approach_s+args.close_s+1.55)
         args.kp=1.5
         args.kd=.12
         args.j6_precontact_max_torque=.8

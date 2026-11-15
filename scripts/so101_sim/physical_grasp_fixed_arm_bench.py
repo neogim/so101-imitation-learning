@@ -1,0 +1,589 @@
+#!/usr/bin/env python3
+"""Isolated MuJoCo SO-101: J1-J5 deleted, dynamic J6 / Muhi / table.
+
+This is a deliberately DIFFERENT setup from the previous moving-pregrasp
+equality-constraint trial. Intended to isolate solver contact from arm dynamics.
+No physical robot control. Original URDF/STL and photographed wrist rig retained.
+"""
+import argparse,csv,json,math,shutil,subprocess
+from pathlib import Path
+import mujoco,numpy as np
+from PIL import Image,ImageDraw
+import physical_grasp_j6_bench as search
+import physical_grasp_table_bench as prior
+import physical_workcell_sim as physical
+import real_to_sim as r2s
+import wrist_camera_sim as wrist
+import compare_id1_eye_to_hand as preview
+
+TABLE="fixed_arm_bench_table"
+
+def freeze_arm(spec,j5_deg):
+    frozen={}
+    for name in r2s.JOINTS:
+        joint=spec.joint(name)
+        if joint is None: raise ValueError(f"Missing arm joint {name}")
+        if np.linalg.norm(np.asarray(joint.pos,float))>1e-7:
+            raise ValueError(f"Cannot freeze {name}: joint pivot is not at body origin")
+        angle=math.radians(j5_deg) if name=="wrist_roll" else 0.
+        if angle:
+            axis=np.asarray(joint.axis,float);axis/=np.linalg.norm(axis)
+            local=np.r_[math.cos(angle/2),axis*math.sin(angle/2)]
+            body=joint.parent
+            if body is None:raise ValueError(f"No joint owner: {name}")
+            q=np.zeros(4)
+            mujoco.mju_mulQuat(q,np.asarray(body.quat),local)
+            body.quat[:]=q
+        frozen[name]=math.degrees(angle)
+        spec.delete(joint) # Official MjSpec method: remove DOF, not a spring.
+    return frozen
+
+def contact_force(model,data,objects,fingers):
+    total=0.;min_dist=0.
+    for i,c in enumerate(data.contact[:data.ncon]):
+        a,b=int(c.geom1),int(c.geom2)
+        if not((a in objects and b in fingers) or (b in objects and a in fingers)):continue
+        f=np.zeros(6);mujoco.mj_contactForce(model,data,i,f)
+        total+=max(0.,float(f[0]));min_dist=min(min_dist,float(c.dist))
+    return total,1000.*min_dist
+
+def encode(directory,filename,fps):
+    exe=shutil.which("ffmpeg")
+    if not exe:return "ffmpeg_missing_pngs_saved"
+    try:
+        subprocess.run([exe,"-hide_banner","-loglevel","error","-y",
+            "-framerate",str(fps),"-i",str(directory/"frame_%04d.png"),
+            "-c:v","libx264","-pix_fmt","yuv420p","-movflags","+faststart",str(filename)],check=True)
+        return "created"
+    except subprocess.CalledProcessError:return "ffmpeg_failed_pngs_saved"
+
+def run(args):
+    if args.out.exists():raise FileExistsError(args.out)
+    if not(0<args.duration_s<=10 and args.render_every>=1 and args.fps>=1):
+        raise ValueError("Invalid duration/render rate")
+    spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
+    # URDF defaults to fusestatic=True. Once J1-J5 are removed,
+    # gripper_link becomes a static child and can be merged into its parent,
+    # making named-body jaw lookup fail. Preserve body names/geometries
+    # in the isolated benchmark, including temporary proxy compilations.
+    spec.compiler.fusestatic=False
+    spec.compiler.discardvisual=False
+    physical.install_dynamic_muhi(spec)
+    target=tuple(prior.GRIPPER_FRAME_LOCAL_POS[i]-wrist.DEFAULT_MOUNT_POS[i] for i in range(3))
+    wrist.install(spec,bracket_profile="ruler_15_35_35",camera_aim_at=target,camera_retract_mm=5.)
+    # A SEPARATE engineering close-up lets us see fingers that the actual
+    # wrist optic cannot see: both fingers are below/behind its optical
+    # field. This virtual camera does not replace, move or recalibrate the
+    # real wrist camera/PCB/collision fixture. Keep original 3 wrist MP4s.
+    # Three virtual inspection views show both jaws from DIFFERENT angles.
+    # They do not replace the three actual wrist-camera simulation cameras,
+    # which are still captured and saved as individual MP4s unchanged.
+    jaw_detail_names=(
+        "j6_virtual_jaw_left",
+        "j6_virtual_jaw_detail",
+        "j6_virtual_jaw_right")
+    jaw_detail_body=spec.body("gripper_link")
+    if jaw_detail_body is None:
+        raise RuntimeError("Cannot attach diagnostic jaw cameras")
+    detail_target=tuple(prior.GRIPPER_FRAME_LOCAL_POS)
+    diagnostic_positions=(
+        (.155,-.105,-.105),
+        (.145,.145,-.100),
+        (-.145,.135,-.105))
+    for name,position in zip(jaw_detail_names,diagnostic_positions):
+        right,up,_=wrist.camera_axes(position,detail_target)
+        jaw_detail_body.add_camera(
+            name=name,pos=list(position),
+            xyaxes=list(right+up),fovy=55.)
+    # The existing fixed-jaw proxy generator compiles the spec temporarily
+    # and locates prior.TIP_SITE. Install it BEFORE generating proxies.
+    gripper_body=spec.body("gripper_link")
+    if gripper_body is None:
+        raise ValueError("Missing gripper_link: cannot define TCP site")
+    gripper_body.add_site(name=prior.TIP_SITE,
+        pos=list(prior.GRIPPER_FRAME_LOCAL_POS),
+        size=[.002,.002,.002],rgba=[.1,.9,.8,1.])
+    # Visual-only wrist backdrop from the previously working
+    # physical_grasp_table_bench.py, group 4 (hidden from side views).
+    # Do not insert a floor plane into the camera; it hid the fingertips.
+    backdrop_body=spec.worldbody.add_body(
+        name="fixed_arm_wrist_backdrop_mocap",mocap=True,pos=[0.,0.,-10.])
+    backdrop_body.add_geom(
+        name="fixed_arm_wrist_backdrop",type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[3.,3.,.01],pos=[0.,0.,0.],
+        rgba=[.73,.76,.79,1.],contype=0,conaffinity=0,group=4)
+    table_body=spec.worldbody.add_body(name="fixed_arm_table_mocap",mocap=True,pos=[0,0,-10])
+    table_body.add_geom(name=TABLE,type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=[.08,.08,prior.TABLE_HALF_THICKNESS_M],rgba=[.47,.51,.56,1.],
+        friction=[.9,.01,.001],contype=1,conaffinity=1)
+    fixed_meta=prior.install_fixed_surface_proxy_bench(spec,fine_mm=2.,coarse_mm=4.,max_boxes=3500)
+    moving_meta=prior.install_moving_surface_proxy_bench(spec,pitch_mm=2.,max_boxes=3500)
+    servo=spec.add_actuator(name="fixed_arm_j6_position",target="gripper")
+    servo.trntype=mujoco.mjtTrn.mjTRN_JOINT
+    servo.dyntype=mujoco.mjtDyn.mjDYN_NONE
+    servo.gaintype=mujoco.mjtGain.mjGAIN_FIXED
+    servo.biastype=mujoco.mjtBias.mjBIAS_AFFINE
+    servo.gainprm[0]=1.5
+    servo.biasprm[1]=-1.5;servo.biasprm[2]=-.12
+    servo.ctrllimited=False;servo.forcelimited=True
+    servo.forcerange[:]=[-args.j6_max_torque_nm,args.j6_max_torque_nm]
+    frozen=freeze_arm(spec,args.j5_deg)
+    # A mocap base gives the *arm* a prescribed vertical lift trajectory.
+    # J1-J5 remain absent; J6 and the Muhi freejoint remain physically
+    # simulated. This is a contact-retention test, NOT servo-driven IK.
+    base_spec=spec.body("base_link")
+    if base_spec is None:
+        raise ValueError("Missing SO-101 base_link in URDF")
+    use_slide=(args.lift_drive=="slide")
+    if use_slide:
+        # A real 1-DOF dynamic slide is needed for tangential friction to
+        # perceive arm velocity. Direct mocap_pos updates have ZERO velocity
+        # in MuJoCo's contact solver (official modeling docs).
+        slide=base_spec.add_joint(name="r2s_lift_slide",
+            type=mujoco.mjtJoint.mjJNT_SLIDE,axis=[0.,0.,1.],
+            range=[0.,.006],limited=True)
+        lift_act=spec.add_actuator(name="r2s_lift_position",
+                                  target="r2s_lift_slide")
+        lift_act.trntype=mujoco.mjtTrn.mjTRN_JOINT
+        lift_act.dyntype=mujoco.mjtDyn.mjDYN_NONE
+        lift_act.gaintype=mujoco.mjtGain.mjGAIN_FIXED
+        lift_act.biastype=mujoco.mjtBias.mjBIAS_AFFINE
+        lift_act.gainprm[0]=5000.
+        lift_act.biasprm[1]=-5000.
+        lift_act.biasprm[2]=-80.
+        lift_act.forcelimited=True
+        lift_act.forcerange[:]=[-100.,100.]
+    else:
+        base_spec.mocap=True
+    model=spec.compile()
+    count=sum(mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n)>=0 for n in r2s.JOINTS)
+    if count:raise AssertionError(f"{count} arm joints survived freeze")
+    base_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"base_link")
+    if base_id<0:raise RuntimeError("Compiled base body is missing")
+    base_mocap_id=int(model.body_mocapid[base_id])
+    slide_q=None
+    slide_d=None
+    lift_actuator_id=None
+    if use_slide:
+        joint_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,
+                                   "r2s_lift_slide")
+        lift_actuator_id=mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_ACTUATOR,"r2s_lift_position")
+        if min(joint_id,lift_actuator_id)<0 or base_mocap_id>=0:
+            raise RuntimeError("Compiled slide actuator/DOF setup failed")
+        slide_q=int(model.jnt_qposadr[joint_id])
+        slide_d=int(model.jnt_dofadr[joint_id])
+        # On this MuJoCo MjSpec binding, MjsJoint.damping expects a
+        # fixed-size array, not a scalar. Damping belongs to the compiled
+        # DOF in MjModel and can be assigned as a scalar here.
+        model.dof_damping[slide_d]=15.
+    elif base_mocap_id<0:
+        raise RuntimeError("base_link must be a mocap body in mocap mode")
+    # Assert the source link names remain addressable after compilation.
+    # Without fusestatic=False the URDF compiler may merge gripper_link.
+    for name in ("gripper_link", "moving_jaw_so101_v1_link"):
+        if mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,name)<0:
+            raise RuntimeError(f"Compiled body missing despite fusestatic=False: {name}")
+    preview.apply_white_follower_preview(model)
+    model.opt.timestep=.002
+    # Reduced blown-out white highlights so the original detailed STL,
+    # motors and wrist fixture have readable contrast.
+    # Keep imported model lighting, as in prior working renderer.
+    # Do not override headlight/mesh materials with ad-hoc settings.
+    # The source STL meshes remain exactly as imported. Do not replace
+    # detailed mesh visuals with coarse collision proxy geometry.
+    jawq,jawd,limits=search.joint_addr(model,"gripper")
+    model.dof_armature[jawd]=max(float(model.dof_armature[jawd]),.002)
+    model.dof_damping[jawd]=max(float(model.dof_damping[jawd]),.06)
+    data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
+    initial_base_mocap=(
+        np.asarray(data.mocap_pos[base_mocap_id],dtype=float).copy()
+        if not use_slide else None)
+    if use_slide:
+        data.qpos[slide_q]=0.
+        data.qvel[slide_d]=0.
+        data.ctrl[lift_actuator_id]=0.
+    opened=float(limits[1])-math.radians(1)
+    closed=float(limits[0])
+    servo_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_ACTUATOR,"fixed_arm_j6_position")
+    data.qpos[jawq]=opened;data.ctrl[servo_id]=opened
+    mujoco.mj_forward(model,data)
+    fixed=search.owned_collision_geoms(model,search.FINGER_BODY)
+    moving=search.owned_collision_geoms(model,search.MOVING_BODY)
+    bottle=tuple(physical.geom_id(model,n) for n in physical.DYNAMIC_GEOMS)
+    table=physical.geom_id(model,TABLE)
+    freejoint=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
+    freeq=int(model.jnt_qposadr[freejoint]);freed=int(model.jnt_dofadr[freejoint])
+    tbid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"fixed_arm_table_mocap")
+    mocapid=int(model.body_mocapid[tbid])
+    if mocapid<0:raise RuntimeError("Table mocap id missing")
+    pose,search_diag=search.select_bench_pose(
+        model,data,freeq,opened,closed,jawq,fixed,moving,bottle,
+        # Deliberately leave 1-2 mm at the fixed finger, while J6's
+        # swept collision path must contact the bottle first.
+        min_fixed_gap_m=.001,max_fixed_gap_m=.002,prefer_small_moving_gap=True,
+        candidate_local_z_range_m=(prior.GRIPPER_FRAME_LOCAL_POS[2]+.008,
+                                   prior.GRIPPER_FRAME_LOCAL_POS[2]+.020))
+    args.out.mkdir(parents=True,exist_ok=False)
+    summary={"status":"SETUP_NOT_FOUND","mode":"TRUE_FIXED_J1_J5_DYNAMIC_J6",
+        "arm_joint_count":count,"frozen_angles_deg":frozen,
+        "same_pregrasp_pose_as_previous_trial":False,
+        "lift_method":(
+            "physical slide joint with position actuator; Muhi freejoint never overwritten"
+            if use_slide else
+            "mocap kinematic base displacement, no solver body velocity"),
+        "lift_drive":args.lift_drive,
+        "lift_goal_mm":float(args.lift_mm),
+        "j6_max_torque_nm":float(args.j6_max_torque_nm),
+        "render_restore":"original physical_grasp_table_bench five-view 480x360 renderer, side 55/150, geomgroup masks, wrist visual backdrop",
+        "virtual_jaw_detail_cameras":list(jaw_detail_names),
+        "virtual_jaw_detail_is_real_wrist_optic":False,
+        "combined_lower_row":"3 originally mounted wrist camera streams, no virtual inset",
+        "original_wrist_camera_mp4s_preserved":True,
+        "lift_ramp_s":float(args.lift_ramp_s),
+        "lift_min_consecutive_bilateral_steps":int(args.bilateral_hold_steps),
+        "is_dynamic_j1_j5_joint_lift":False,
+        "slide_max_actuator_force_n":100. if use_slide else None,
+        "renderer_resolution_fix":"native wrist 480x390 and side 720x390; no image stretch",
+        "target_initial_fixed_jaw_gap_mm":[1.,2.],
+        "contact_sequence_intent":"J6 moving jaw touches and translates Muhi into stationary fixed jaw; no J1 collision approach",
+        "source_urdf_stl_unmodified":True,
+        "wrist_rig":"ruler_15_35_35",
+        "collision_proxy_metadata":{"fixed":fixed_meta,"moving":moving_meta},
+        "setup_search":search_diag,
+        "warnings":["Separate fixed pose, not exact reproduction of previous 2.154s contact",
+                    "Lift is one slide DOF at robot base; not J1-J5 IK or real SO-101 servo motion",
+                    "Muhi translation and rotation are exclusively MuJoCo freejoint physics",
+                    "50g Muhi properties and proxy geometry remain provisional"]}
+    def save():
+        (args.out/"summary.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2)+"\n")
+        print(json.dumps({k:summary.get(k) for k in ("status","arm_joint_count","physics_steps",
+                        "peak_fixed_force_n","peak_moving_force_n","bilateral_frames",
+                        "lift_started","max_arm_command_lift_mm","max_object_rise_mm",
+                        "lift_success","video_status")},indent=2))
+        print("Output:",args.out)
+    if pose is None:save();return
+    center,quat=pose[:2]
+    if abs(float(quat[0])-1)>1e-5:raise ValueError("Tabletop requires upright Muhi")
+    tabletop=float(center[2])-prior.OBJECT_HALF_LENGTH_M-.0005
+    data.mocap_pos[mocapid]=[float(center[0]),float(center[1]),
+                              tabletop-prior.TABLE_HALF_THICKNESS_M]
+    data.qpos[freeq:freeq+3]=center
+    data.qpos[freeq+3:freeq+7]=quat
+    data.qpos[jawq]=opened;data.qvel[:]=0.
+    mujoco.mj_forward(model,data)
+    excluded={0,tbid,int(model.geom_bodyid[bottle[0]])}
+    robot=[i for i in range(model.ngeom)
+           if int(model.geom_bodyid[i]) not in excluded and
+              (model.geom_contype[i] or model.geom_conaffinity[i])]
+    robot_gap=min((search.signed_pair_gap(model,data,g,table) for g in robot),default=float("inf"))
+    fg=search.geometry_gaps(model,data,bottle,fixed)
+    mg=search.geometry_gaps(model,data,bottle,moving)
+    summary.update(initial_fixed_gap_mm=fg*1000,initial_moving_gap_mm=mg*1000,
+                   initial_robot_table_gap_mm=robot_gap*1000)
+    if min(fg,mg)<.0005 or robot_gap<.001:
+        summary["status"]="INITIAL_GEOMETRY_NOT_CLEAR";save();return
+    cameras=(wrist.CAMERA,wrist.SHELF_DIAGNOSTIC_CAMERA,wrist.RETRACTED_DIAGNOSTIC_CAMERA)
+    for n in (*cameras,*jaw_detail_names):
+        if mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,n)<0:
+            raise ValueError("Missing mandatory wrist camera "+n)
+    # Check the REAL simulated wrist optical axes using the actual compiled
+    # geometry of this scene. The previous-branch renderer alone cannot fix a
+    # geometric FOV miss at the new fixed-arm grasp pose.
+    framing={}
+    bottle_center=np.asarray(data.qpos[freeq:freeq+3],dtype=float)
+    # Derive the actual grasp-region geometry after the full arm is frozen
+    # and the bottle pose has been chosen. The prior camera_aim_at=TCP
+    # predates this placement search and missed the moving jaw.
+    fixed_near=min(fixed,key=lambda g:float(np.linalg.norm(
+        np.asarray(data.geom_xpos[g])-bottle_center)))
+    moving_near=min(moving,key=lambda g:float(np.linalg.norm(
+        np.asarray(data.geom_xpos[g])-bottle_center)))
+    aim_world=0.5*(np.asarray(data.geom_xpos[fixed_near])+
+                   np.asarray(data.geom_xpos[moving_near]))
+    wrist_aim_adjustments={}
+    if args.wrist_aim_mode=="grasp":
+        for cam_name in cameras:
+            cid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,cam_name)
+            body_id=int(model.cam_bodyid[cid])
+            origin=np.asarray(data.cam_xpos[cid],dtype=float).copy()
+            old_q=np.asarray(model.cam_quat[cid],dtype=float).copy()
+            cam_right,cam_up,cam_back=wrist.camera_axes(
+                tuple(origin),tuple(aim_world))
+            # mju_mat2Quat takes row-major 3x3. Cam local axes in world
+            # must be transformed into the mounting BODY local frame.
+            world_axes=np.column_stack((cam_right,cam_up,cam_back))
+            body_axes=np.asarray(data.xmat[body_id]).reshape(3,3)
+            new_local=body_axes.T@world_axes
+            new_q=np.zeros(4,dtype=float)
+            mujoco.mju_mat2Quat(new_q,new_local.reshape(9))
+            model.cam_quat[cid]=new_q
+            wrist_aim_adjustments[cam_name]={
+                "camera_position_unchanged":True,
+                "source_quat_wxyz":old_q.tolist(),
+                "sim_grasp_aim_quat_wxyz":new_q.tolist(),
+                "target_world_m":aim_world.tolist(),
+                "is_real_camera_calibration":False}
+        mujoco.mj_forward(model,data)
+    summary["wrist_optical_adjustment"]=wrist_aim_adjustments
+    summary["wrist_camera_aim_mode"]=args.wrist_aim_mode
+    for cam_name in cameras:
+        cid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,cam_name)
+        origin=np.asarray(data.cam_xpos[cid],dtype=float)
+        rot=np.asarray(data.cam_xmat[cid]).reshape(3,3)
+        fy=math.tan(math.radians(float(model.cam_fovy[cid]))/2.)
+        visible={}
+        for label,indices in (("fixed_jaw",fixed),("moving_jaw",moving)):
+            nearest=min(indices,key=lambda g:float(np.linalg.norm(
+                np.asarray(data.geom_xpos[g])-bottle_center)))
+            xyz=np.asarray(data.geom_xpos[nearest],dtype=float)
+            local=rot.T@(xyz-origin)
+            depth=-float(local[2])
+            nx=float(local[0]/(depth*fy*(480/360))) if depth>1e-6 else None
+            ny=float(local[1]/(depth*fy)) if depth>1e-6 else None
+            visible[label]={
+                "nearest_geom_id":int(nearest),
+                "depth_m":depth,
+                "normalized_xy":[nx,ny],
+                "in_nominal_fov":bool(nx is not None and
+                                      abs(nx)<=1 and abs(ny)<=1)}
+        framing[cam_name]=visible
+    summary["mounted_wrist_camera_framing_at_start"]=framing
+    summary["all_three_wrist_camera_jaw_proxy_centers_in_nominal_fov"]=all(
+        info["fixed_jaw"]["in_nominal_fov"] and
+        info["moving_jaw"]["in_nominal_fov"]
+        for info in framing.values())
+    if not summary["all_three_wrist_camera_jaw_proxy_centers_in_nominal_fov"]:
+        print("WARNING: at least one jaw proxy center remains outside a wrist camera "
+              "nominal FOV. Check summary.json; do not claim wrist rendering fixed.",
+              flush=True)
+    sides=[]
+    # Legacy 0.34m distance aimed at the bottle cut off most of the robot.
+    # Show full detailed SO-101 arm and the workcell simultaneously.
+    base_xyz=np.asarray(data.xpos[base_id],float).copy()
+    full_arm_lookat=.55*np.asarray(center)+.45*base_xyz
+    for az in (55.,150.):
+        cam=mujoco.MjvCamera()
+        cam.type=mujoco.mjtCamera.mjCAMERA_FREE
+        cam.lookat[:]=np.asarray(center)
+        cam.distance=.32
+        cam.azimuth=az;cam.elevation=-20.
+        sides.append(cam)
+    # Reuse the original 480x360 five-view renderer and geom visibility
+    # from physical_grasp_table_bench.py. Collision proxy meshes are
+    # hidden: the source visual STL remains visible in group 0.
+    model.vis.global_.offwidth=max(int(model.vis.global_.offwidth),480)
+    model.vis.global_.offheight=max(int(model.vis.global_.offheight),360)
+    render=(None if args.no_video else
+            mujoco.Renderer(model,width=480,height=360))
+    side_option=mujoco.MjvOption()
+    side_option.geomgroup[3]=0
+    side_option.geomgroup[4]=0
+    side_option.geomgroup[5]=0
+    wrist_option=mujoco.MjvOption()
+    wrist_option.geomgroup[3]=0
+    wrist_option.geomgroup[4]=1
+    wrist_option.geomgroup[5]=0
+    backdrop_id=mujoco.mj_name2id(
+        model,mujoco.mjtObj.mjOBJ_BODY,"fixed_arm_wrist_backdrop_mocap")
+    backdrop_mocap=int(model.body_mocapid[backdrop_id])
+    wrist_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,wrist.CAMERA)
+    # Exact history-backed visual backdrop transform from the older
+    # physical_grasp_table_bench.py: 1.8m along optical -Z and oriented
+    # perpendicular to the wrist optical axis (not base orientation).
+    wrist_R=np.asarray(data.cam_xmat[wrist_id]).reshape(3,3)
+    data.mocap_pos[backdrop_mocap]=(
+        np.asarray(data.cam_xpos[wrist_id])-1.8*wrist_R[:,2])
+    wrist_quat=np.zeros(4,dtype=float)
+    mujoco.mju_mat2Quat(wrist_quat,wrist_R.reshape(9))
+    data.mocap_quat[backdrop_mocap]=wrist_quat
+    mujoco.mj_forward(model,data)
+    all_dir=args.out/"combined_frames"
+    wrist_dirs=[]
+    if not args.no_video:
+        all_dir.mkdir()
+        for name in ("wrist_camera","wrist_shelf_camera","wrist_retracted_camera"):
+            folder=args.out/(name+"_frames");folder.mkdir()
+            wrist_dirs.append(folder)
+    rows=[];images=0
+    bilateral_streak=0
+    lift_started_at=None
+    lift_object_z_initial=None
+    lift_reference_base_z=None
+    lift_motion_mm=0.
+    initial_base_world_z=float(data.xpos[base_id,2])
+    try:
+        steps=int(math.ceil(args.duration_s/model.opt.timestep))
+        for step in range(steps):
+            t=float(data.time)
+            target=max(closed,opened-math.radians(args.j6_speed_deg_s)*t)
+            data.ctrl[servo_id]=target
+            if lift_started_at is not None:
+                u=np.clip((t-lift_started_at)/args.lift_ramp_s,0.,1.)
+                # Smooth position/velocity at both ends of the ramp.
+                smooth=u*u*(3.-2.*u)
+                lift_motion_mm=float(args.lift_mm*smooth)
+                if use_slide:
+                    data.ctrl[lift_actuator_id]=lift_motion_mm/1000.
+                else:
+                    data.mocap_pos[base_mocap_id,:]=initial_base_mocap
+                    data.mocap_pos[base_mocap_id,2]+=lift_motion_mm/1000.
+            if use_slide:
+                # Gravity bias on the actuated base DOF avoids a static
+                # weight-dependent servo error, without applying any
+                # external forces to the Muhi.
+                data.qfrc_applied[slide_d]=float(data.qfrc_bias[slide_d])
+            mujoco.mj_step(model,data)
+            # Read actual solver contacts BEFORE any mj_forward.
+            force_f,depth_f=contact_force(model,data,set(bottle),set(fixed))
+            force_m,depth_m=contact_force(model,data,set(bottle),set(moving))
+            table_force,table_depth=contact_force(model,data,set(bottle),{table})
+            bilateral=(force_f>=args.bilateral_force_min_n and
+                       force_m>=args.bilateral_force_min_n)
+            bilateral_streak=bilateral_streak+1 if bilateral else 0
+            if (lift_started_at is None and
+                bilateral_streak>=args.bilateral_hold_steps):
+                # Establish the baseline after sustained bilateral contact,
+                # prior to the FIRST mocap displacement next timestep.
+                lift_started_at=float(data.time)
+                lift_object_z_initial=float(data.qpos[freeq+2])
+                lift_reference_base_z=float(data.xpos[base_id,2])
+            object_z=float(data.qpos[freeq+2])
+            object_rise_mm=(1000.*(object_z-lift_object_z_initial)
+                            if lift_object_z_initial is not None else 0.)
+            # Approximation for upright Muhi, not a full oriented-geometry gap.
+            bottom_gap_mm=1000.*(
+                object_z-prior.OBJECT_HALF_LENGTH_M-tabletop)
+            rows.append({"step":step,"time_s":float(data.time),
+              "phase":("contact_closure" if lift_started_at is None
+                       else "lift_ramp" if t<lift_started_at+args.lift_ramp_s
+                       else "lift_hold"),
+              "arm_lift_command_mm":lift_motion_mm,
+              "arm_base_mocap_z_m":(
+                  float(data.xpos[base_id,2]) if use_slide
+                  else float(data.mocap_pos[base_mocap_id,2])),
+              "arm_actual_rise_mm":(
+                  1000.*float(data.qpos[slide_q]) if use_slide
+                  else lift_motion_mm),
+              "object_rise_from_bilateral_mm":object_rise_mm,
+              "object_bottom_table_gap_approx_mm":bottom_gap_mm,
+              "object_table_contact_force_n":table_force,
+              "bilateral_contact":bool(bilateral),
+              "bilateral_streak_steps":bilateral_streak,
+              "j6_deg":math.degrees(float(data.qpos[jawq])),
+              "j6_target_deg":math.degrees(target),
+              "fixed_force_n":force_f,"moving_force_n":force_m,
+              "fixed_penetration_mm":depth_f,"moving_penetration_mm":depth_m,
+              "object_z_m":object_z,
+              "object_speed_m_s":float(np.linalg.norm(data.qvel[freed:freed+3]))})
+            if render is not None and (step%args.render_every==0 or step==steps-1):
+                mujoco.mj_forward(model,data)
+                # Original 5-view compositing, copied from the previously
+                # working physical_grasp_table_bench.py render path.
+                side_images=[]
+                for cam in sides:
+                    render.update_scene(data,camera=cam,scene_option=side_option)
+                    side_images.append(Image.fromarray(render.render().copy()))
+                views=[]
+                for cam in cameras:
+                    render.update_scene(data,camera=cam,scene_option=wrist_option)
+                    views.append(Image.fromarray(render.render().copy()))
+                panel=Image.new("RGB",(1440,780),(20,24,30))
+                panel.paste(side_images[0],(240,30))
+                panel.paste(side_images[1],(720,30))
+                for i in range(3):panel.paste(views[i],(480*i,420))
+                draw=ImageDraw.Draw(panel)
+                draw.text((248,8),f"SIDE A | t={data.time:.2f}s | arm +{lift_motion_mm:.2f}mm",fill="white")
+                draw.text((728,8),f"SIDE B | object +{object_rise_mm:.2f}mm",fill="white")
+                label_suffix=("SIM GRASP-AIM (NOT CALIBRATED)"
+                              if args.wrist_aim_mode=="grasp" else "ORIGINAL OPTIC")
+                draw.text((8,398),"MOUNTED WRIST 1 | "+label_suffix,fill="white")
+                draw.text((488,398),"MOUNTED WRIST 2 | "+label_suffix,fill="white")
+                draw.text((968,398),"MOUNTED WRIST 3 | "+label_suffix,fill="white")
+                panel.save(all_dir/f"frame_{images:04d}.png")
+                for i,folder in enumerate(wrist_dirs):views[i].save(folder/f"frame_{images:04d}.png")
+                images+=1
+            if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
+                summary["status"]="NUMERICAL_DIVERGENCE";break
+    finally:
+        if render is not None:
+            render.close()
+    if rows:
+        with (args.out/"grasp_trace.csv").open("x",newline="") as file:
+            writer=csv.DictWriter(file,fieldnames=rows[0]);writer.writeheader();writer.writerows(rows)
+    # Success requires genuine object lift and sustained contacts while
+    # physically detached from the table (not just arm-base motion).
+    final_hold=(rows[-max(1,int(.3/model.opt.timestep)):] if rows else [])
+    stable_hold=bool(final_hold and all(
+        r["bilateral_contact"] and r["object_table_contact_force_n"]<.01
+        for r in final_hold))
+    observed_rise_mm=(rows[-1]["object_rise_from_bilateral_mm"] if rows else 0.)
+    lift_complete=bool(
+        lift_started_at is not None and lift_motion_mm>=args.lift_mm-.01)
+    max_arm_actual_rise_mm=(
+        max((r["arm_actual_rise_mm"] for r in rows),default=0.))
+    lift_success=bool(lift_complete and
+                      max_arm_actual_rise_mm>=args.lift_mm*.8 and
+                      observed_rise_mm>=args.lift_mm*.8
+                      and stable_hold
+                      and rows[-1]["object_bottom_table_gap_approx_mm"]>=1.)
+    summary.update(
+      lift_started=lift_started_at is not None,
+      lift_start_time_s=lift_started_at,
+      lift_initial_object_z_m=lift_object_z_initial,
+      max_arm_command_lift_mm=max((r["arm_lift_command_mm"] for r in rows),default=0),
+      max_arm_actual_rise_mm=max_arm_actual_rise_mm,
+      max_object_rise_mm=max((r["object_rise_from_bilateral_mm"] for r in rows),default=0),
+      final_object_rise_mm=observed_rise_mm,
+      final_object_table_gap_approx_mm=(rows[-1]["object_bottom_table_gap_approx_mm"] if rows else None),
+      final_bilateral_contact=bool(rows[-1]["bilateral_contact"]) if rows else False,
+      lift_success=lift_success,
+      lift_success_criteria=">=80% of commanded 5mm real object rise, >=1mm approximate tabletop gap, bilateral contact and no table contact for final 0.3s",
+      physics_steps=len(rows),rendered_frames=images,
+      peak_fixed_force_n=max((r["fixed_force_n"] for r in rows),default=0),
+      peak_moving_force_n=max((r["moving_force_n"] for r in rows),default=0),
+      bilateral_frames=sum(r["fixed_force_n"]>.02 and r["moving_force_n"]>.02 for r in rows),
+      max_object_speed_m_s=max((r["object_speed_m_s"] for r in rows),default=0))
+    if summary["status"]!="NUMERICAL_DIVERGENCE":
+        summary["status"]=("PHYSICAL_5MM_LIFT_OBSERVED" if lift_success
+                           else "LIFT_NOT_CONFIRMED" if lift_started_at is not None
+                           else "NO_SUSTAINED_BILATERAL_CONTACT")
+    if args.no_video:
+        summary["video_status"]="skipped_for_batch"
+    if images:
+        summary["video_status"]=encode(all_dir,args.out/"table_contact_views.mp4",args.fps)
+        for folder,name in zip(wrist_dirs,("wrist_camera","wrist_shelf_camera","wrist_retracted_camera")):
+            summary[name+"_video_status"]=encode(folder,args.out/(name+".mp4"),args.fps)
+    save()
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--urdf",type=Path,default=r2s.DEFAULT_URDF)
+    p.add_argument("--out",type=Path,required=True)
+    p.add_argument("--j5-deg",type=float,default=-90.)
+    p.add_argument("--duration-s",type=float,default=5.5)
+    p.add_argument("--lift-mm",type=float,default=5.)
+    p.add_argument("--lift-drive",choices=["mocap","slide"],default="mocap",
+                   help="mocap (historical, velocity-free) or physical base slide")
+    p.add_argument("--lift-ramp-s",type=float,default=1.)
+    p.add_argument("--bilateral-hold-steps",type=int,default=150)
+    p.add_argument("--bilateral-force-min-n",type=float,default=.02)
+    p.add_argument("--wrist-aim-mode",choices=["grasp","original"],
+                   default="grasp",
+                   help="grasp: rotate only simulated lens optics to both jaw contact regions; original: historical optical axes")
+    p.add_argument("--j6-speed-deg-s",type=float,default=35.)
+    p.add_argument("--j6-max-torque-nm",type=float,default=.08,
+                   help="J6 actuator force limit in Nm; baseline .08, optional modest test .10")
+    p.add_argument("--no-video",action="store_true",
+                   help="Skip MuJoCo Renderer, PNGs and MP4: CSV/JSON batch only")
+    p.add_argument("--render-every",type=int,default=25)
+    p.add_argument("--fps",type=int,default=20)
+    a=p.parse_args()
+    if not(.01<=a.j6_max_torque_nm<=.36 and
+           0<a.lift_mm<=10 and .2<=a.lift_ramp_s<=3.
+           and 10<=a.bilateral_hold_steps<=1000 and
+           0<a.bilateral_force_min_n<=2. and
+           a.duration_s>a.lift_ramp_s+.3):
+        p.error("Invalid lift parameters")
+    run(a)
+if __name__=="__main__":main()
