@@ -56,6 +56,10 @@ def run(args: argparse.Namespace) -> None:
         model.geom_contype[:] = 0
         model.geom_conaffinity[:] = 0
     model.opt.timestep = args.dt
+    model.opt.integrator = {
+        "euler": mujoco.mjtIntegrator.mjINT_EULER,
+        "implicitfast": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    }[args.integrator]
     data = mujoco.MjData(model)
     mujoco.mj_resetData(model, data)
 
@@ -151,6 +155,7 @@ def run(args: argparse.Namespace) -> None:
         "no_kinematic_state_overwrite_during_loop":True,
         "no_midrun_controller_switch":True,
         "dt_s":args.dt,
+        "integrator":args.integrator,
         "duration_requested_s":args.duration_s,
         "physics_steps_requested":steps,
         "physics_steps_completed":len(rows),
@@ -200,13 +205,15 @@ def main()->None:
     p.add_argument("--j6-deg",type=float,default=60.)
     p.add_argument("--duration-s",type=float,default=4.)
     p.add_argument("--dt",type=float,default=.002)
+    p.add_argument("--integrator",choices=("euler","implicitfast"),default="euler",
+                   help="MuJoCo integration scheme for isolated joint-hold comparison")
     p.add_argument("--kp",type=float,default=18.)
     p.add_argument("--kd",type=float,default=1.8)
     p.add_argument("--max-torque-nm",type=float,default=3.)
     p.add_argument("--self-collision",choices=("off","on"),default="off",
                    help="off: object-free actuator benchmark (default); on: old full-mesh contact behavior")
     args=p.parse_args()
-    if not(.5<=args.duration_s<=10. and .001<=args.dt<=.01
+    if not(.5<=args.duration_s<=10. and .00025<=args.dt<=.01
            and 0<args.kp<=100 and 0<=args.kd<=20
            and 0<args.max_torque_nm<=10):
         p.error("Invalid physical hold parameters")
