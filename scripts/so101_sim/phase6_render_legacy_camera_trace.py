@@ -140,7 +140,7 @@ def main():
     p.add_argument("--camera-config",type=Path,
                    default=Path(__file__).with_name("workcell.example.json"))
     p.add_argument("--bracket-profile",choices=("legacy","ruler_15_35_35"),
-                   default="ruler_15_35_35")
+                   default="legacy")
     p.add_argument("--width",type=int,default=480)
     p.add_argument("--height",type=int,default=360)
     p.add_argument("--stride",type=int,default=100)
