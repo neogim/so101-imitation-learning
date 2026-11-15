@@ -75,16 +75,26 @@ def run(args):
     # wrist optic cannot see: both fingers are below/behind its optical
     # field. This virtual camera does not replace, move or recalibrate the
     # real wrist camera/PCB/collision fixture. Keep original 3 wrist MP4s.
-    jaw_detail_name="j6_virtual_jaw_detail"
+    # Three virtual inspection views show both jaws from DIFFERENT angles.
+    # They do not replace the three actual wrist-camera simulation cameras,
+    # which are still captured and saved as individual MP4s unchanged.
+    jaw_detail_names=(
+        "j6_virtual_jaw_left",
+        "j6_virtual_jaw_detail",
+        "j6_virtual_jaw_right")
     jaw_detail_body=spec.body("gripper_link")
     if jaw_detail_body is None:
-        raise RuntimeError("Cannot attach diagnostic jaw camera")
-    detail_pos=(.145,.145,-.100)
+        raise RuntimeError("Cannot attach diagnostic jaw cameras")
     detail_target=tuple(prior.GRIPPER_FRAME_LOCAL_POS)
-    detail_right,detail_up,_=wrist.camera_axes(detail_pos,detail_target)
-    jaw_detail_body.add_camera(
-        name=jaw_detail_name,pos=list(detail_pos),
-        xyaxes=list(detail_right+detail_up),fovy=48.)
+    diagnostic_positions=(
+        (.155,-.105,-.105),
+        (.145,.145,-.100),
+        (-.145,.135,-.105))
+    for name,position in zip(jaw_detail_names,diagnostic_positions):
+        right,up,_=wrist.camera_axes(position,detail_target)
+        jaw_detail_body.add_camera(
+            name=name,pos=list(position),
+            xyaxes=list(right+up),fovy=55.)
     # The existing fixed-jaw proxy generator compiles the spec temporarily
     # and locates prior.TIP_SITE. Install it BEFORE generating proxies.
     gripper_body=spec.body("gripper_link")
@@ -180,8 +190,10 @@ def run(args):
         "lift_goal_mm":float(args.lift_mm),
         "j6_max_torque_nm":float(args.j6_max_torque_nm),
         "render_restore":"wide side views; native wrist MP4s unchanged; virtual jaw close-up explicitly labeled in combined panel",
-        "virtual_jaw_detail_camera":jaw_detail_name,
+        "virtual_jaw_detail_cameras":list(jaw_detail_names),
         "virtual_jaw_detail_is_real_wrist_optic":False,
+        "combined_lower_row":"3 clearly labeled virtual gripper inspection views (not physical wrist cameras)",
+        "original_wrist_camera_mp4s_preserved":True,
         "lift_ramp_s":float(args.lift_ramp_s),
         "lift_min_consecutive_bilateral_steps":int(args.bilateral_hold_steps),
         "is_dynamic_j1_j5_joint_lift":False,
@@ -225,7 +237,7 @@ def run(args):
     if min(fg,mg)<.0005 or robot_gap<.001:
         summary["status"]="INITIAL_GEOMETRY_NOT_CLEAR";save();return
     cameras=(wrist.CAMERA,wrist.SHELF_DIAGNOSTIC_CAMERA,wrist.RETRACTED_DIAGNOSTIC_CAMERA)
-    for n in (*cameras,jaw_detail_name):
+    for n in (*cameras,*jaw_detail_names):
         if mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,n)<0:
             raise ValueError("Missing mandatory wrist camera "+n)
     sides=[]
@@ -317,24 +329,27 @@ def run(args):
                 for cam in sides:
                     side_renderer.update_scene(data,camera=cam)
                     views.append(Image.fromarray(side_renderer.render().copy()))
-                wrist_renderer.update_scene(data,camera=jaw_detail_name)
-                jaw_detail=Image.fromarray(wrist_renderer.render().copy())
-                # Show genuine wrist optics in the left/right positions and
-                # an explicit *virtual* close-up in the middle. The shelf-axis
-                # optic is still saved to its individual MP4.
+                jaw_inspection=[]
+                for name in jaw_detail_names:
+                    wrist_renderer.update_scene(data,camera=name)
+                    jaw_inspection.append(
+                        Image.fromarray(wrist_renderer.render().copy()))
+                # Bottom row is dedicated to THREE clearly labeled virtual
+                # closeups, so the jaws remain inspectable from left/front/
+                # right. Physical wrist cameras retain their original
+                # unmodified individual output videos.
                 panel=Image.new("RGB",(1440,780),(28,34,44))
                 for i in range(2):panel.paste(views[3+i],(720*i,0))
-                panel.paste(views[0],(0,390))
-                panel.paste(jaw_detail,(480,390))
-                panel.paste(views[2],(960,390))
+                for i,img in enumerate(jaw_inspection):
+                    panel.paste(img,(480*i,390))
                 draw=ImageDraw.Draw(panel)
                 draw.rectangle((0,0,1439,26),fill=(32,40,52))
                 draw.rectangle((0,390,1439,416),fill=(32,40,52))
                 draw.text((12,7),f"SIDE A | t={data.time:.3f}s | arm +{lift_motion_mm:.2f}mm",fill=(255,255,255))
                 draw.text((730,7),f"SIDE B | object +{object_rise_mm:.2f}mm | table {table_force:.2f}N",fill=(255,255,255))
-                draw.text((12,397),"WRIST | TCP AIM",fill=(255,255,255))
-                draw.text((490,397),"VIRTUAL JAW DETAIL | NOT PHYSICAL WRIST",fill=(255,255,255))
-                draw.text((970,397),f"WRIST | RETRACTED | J6 {math.degrees(data.qpos[jawq]):.1f}deg",fill=(255,255,255))
+                draw.text((12,397),"VIRTUAL JAW | LEFT | NOT WRIST",fill=(255,255,255))
+                draw.text((490,397),"VIRTUAL JAW | CENTER | NOT WRIST",fill=(255,255,255))
+                draw.text((970,397),f"VIRTUAL JAW | RIGHT | J6 {math.degrees(data.qpos[jawq]):.1f}deg",fill=(255,255,255))
                 panel.save(all_dir/f"frame_{images:04d}.png")
                 for i,folder in enumerate(wrist_dirs):views[i].save(folder/f"frame_{images:04d}.png")
                 images+=1
