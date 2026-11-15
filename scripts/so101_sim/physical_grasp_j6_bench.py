@@ -205,7 +205,13 @@ def run(args):
     model=spec.compile()
     # Match the established white SO-101 preview; never recolor source URDF.
     preview.apply_white_follower_preview(model)
-    model.opt.timestep=.002
+    # Match Phase 6A stable hold integration while retaining the original grasp geometry.
+    if not math.isfinite(args.dt) or args.dt<=0:
+        raise ValueError("dt must be finite and positive")
+    model.opt.timestep=args.dt
+    model.opt.integrator=(mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+                          if args.integrator=='implicitfast'
+                          else mujoco.mjtIntegrator.mjINT_EULER)
     data=mujoco.MjData(model)
     mujoco.mj_resetData(model,data)
     # Isolated free-space bench (not saved Real-to-Sim tabletop). Hold arm
@@ -465,6 +471,9 @@ def main():
                         "reject if shift initially intersects jaws")
     p.add_argument("--fixture-s",type=float,default=1.6)
     p.add_argument("--duration-s",type=float,default=2.6)
+    p.add_argument("--integrator",choices=("euler","implicitfast"),default="implicitfast",
+                   help="Phase 6A stable-hold candidate; Euler remains A/B baseline")
+    p.add_argument("--dt",type=float,default=.002)
     p.add_argument("--kp",type=float,default=2.0)
     p.add_argument("--kd",type=float,default=.08)
     p.add_argument("--max-torque",type=float,default=.4)
