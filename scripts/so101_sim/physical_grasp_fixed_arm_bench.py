@@ -136,6 +136,7 @@ def run(args):
     summary={"status":"SETUP_NOT_FOUND","mode":"TRUE_FIXED_J1_J5_DYNAMIC_J6",
         "arm_joint_count":count,"frozen_angles_deg":frozen,
         "same_pregrasp_pose_as_previous_trial":False,
+        "renderer_resolution_fix":"native wrist 480x390 and side 720x390; no image stretch",
         "target_initial_fixed_jaw_gap_mm":[1.,2.],
         "contact_sequence_intent":"J6 moving jaw touches and translates Muhi into stationary fixed jaw; no J1 collision approach",
         "source_urdf_stl_unmodified":True,
@@ -182,9 +183,13 @@ def run(args):
         cam.lookat[:]=np.asarray(center);cam.distance=.34
         cam.azimuth=az;cam.elevation=-25.
         sides.append(cam)
-    model.vis.global_.offwidth=max(int(model.vis.global_.offwidth),480)
-    model.vis.global_.offheight=max(int(model.vis.global_.offheight),360)
-    renderer=mujoco.Renderer(model,width=480,height=360)
+    # Preserve final panel pixels: previous 480x360 renders were stretched
+    # to 480x390 wrist and 720x390 side, visibly degrading proportions.
+    # Two render targets match the final aspect ratios with no resampling.
+    model.vis.global_.offwidth=max(int(model.vis.global_.offwidth),720)
+    model.vis.global_.offheight=max(int(model.vis.global_.offheight),390)
+    wrist_renderer=mujoco.Renderer(model,width=480,height=390)
+    side_renderer=mujoco.Renderer(model,width=720,height=390)
     all_dir=args.out/"combined_frames";all_dir.mkdir()
     wrist_dirs=[]
     for name in ("wrist_camera","wrist_shelf_camera","wrist_retracted_camera"):
@@ -210,12 +215,15 @@ def run(args):
             if step%args.render_every==0 or step==steps-1:
                 mujoco.mj_forward(model,data)
                 views=[]
-                for cam in (*cameras,*sides):
-                    renderer.update_scene(data,camera=cam)
-                    views.append(Image.fromarray(renderer.render().copy()))
+                for cam in cameras:
+                    wrist_renderer.update_scene(data,camera=cam)
+                    views.append(Image.fromarray(wrist_renderer.render().copy()))
+                for cam in sides:
+                    side_renderer.update_scene(data,camera=cam)
+                    views.append(Image.fromarray(side_renderer.render().copy()))
                 panel=Image.new("RGB",(1440,780),(224,228,232))
-                for i in range(3):panel.paste(views[i].resize((480,390)),(480*i,0))
-                for i in range(2):panel.paste(views[3+i].resize((720,390)),(720*i,390))
+                for i in range(3):panel.paste(views[i],(480*i,0))
+                for i in range(2):panel.paste(views[3+i],(720*i,390))
                 draw=ImageDraw.Draw(panel)
                 draw.text((8,8),f"FIXED ARM | simulation {data.time:.3f}s",fill=(15,15,15))
                 draw.text((8,400),f"J6={math.degrees(data.qpos[jawq]):.2f}deg fixed={force_f:.2f}N moving={force_m:.2f}N",fill=(15,15,15))
@@ -224,7 +232,9 @@ def run(args):
                 images+=1
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 summary["status"]="NUMERICAL_DIVERGENCE";break
-    finally:renderer.close()
+    finally:
+        wrist_renderer.close()
+        side_renderer.close()
     if rows:
         with (args.out/"grasp_trace.csv").open("x",newline="") as file:
             writer=csv.DictWriter(file,fieldnames=rows[0]);writer.writeheader();writer.writerows(rows)
