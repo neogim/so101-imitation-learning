@@ -62,6 +62,11 @@ def run(args):
     if not(0<args.duration_s<=6 and args.render_every>=1 and args.fps>=1):
         raise ValueError("Invalid duration/render rate")
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
+    # URDF defaults to fusestatic=True. Once J1-J5 are removed,
+    # gripper_link becomes a static child and can be merged into its parent,
+    # making named-body jaw lookup fail. Preserve body names/geometries
+    # in the isolated benchmark, including temporary proxy compilations.
+    spec.compiler.fusestatic=False
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
     target=tuple(prior.GRIPPER_FRAME_LOCAL_POS[i]-wrist.DEFAULT_MOUNT_POS[i] for i in range(3))
@@ -93,6 +98,11 @@ def run(args):
     model=spec.compile()
     count=sum(mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n)>=0 for n in r2s.JOINTS)
     if count:raise AssertionError(f"{count} arm joints survived freeze")
+    # Assert the source link names remain addressable after compilation.
+    # Without fusestatic=False the URDF compiler may merge gripper_link.
+    for name in ("gripper_link", "moving_jaw_so101_v1_link"):
+        if mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,name)<0:
+            raise RuntimeError(f"Compiled body missing despite fusestatic=False: {name}")
     preview.apply_white_follower_preview(model)
     model.opt.timestep=.002
     model.vis.headlight.ambient[:]=[.7,.7,.7]
