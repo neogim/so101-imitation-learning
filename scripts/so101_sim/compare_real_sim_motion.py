@@ -65,7 +65,10 @@ def video_object_layout(T_base_cv, intrinsics, muhi_pixel=(255., 360.),
 
 
 def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
-                          table_extra_left_m=.04, table_extra_front_m=.05):
+                          table_extra_left_m=.04, table_extra_front_m=.05,
+                          *, physical_objects=False, wrist_camera=False, wrist_mount_pos=(0., .024, -.045),
+                          wrist_mount_rpy_deg=(0., 0., 0.), wrist_fovy=70.,
+                          wrist_look_at=(0.,-.024,-.112)):
     import mujoco
 
     position, quat = comparison.mujoco_camera_pose(extrinsics["T_base_camera"])
@@ -78,6 +81,15 @@ def make_calibrated_model(extrinsics, intrinsics, urdf, object_layout=None,
     comparison.add_approximate_workcell(spec, shift, extra, 15., **(object_layout or {}))
     comparison.add_backdrop(spec, extrinsics["T_base_camera"])
     comparison.add_simple_studio_light(spec)
+    if physical_objects:
+        import physical_workcell_sim
+        physical_workcell_sim.enable_static_contacts_in_spec(spec)
+        physical_workcell_sim.install_dynamic_muhi(spec)
+    if wrist_camera:
+        import wrist_camera_sim
+        wrist_camera_sim.install(
+            spec, pos=wrist_mount_pos, rpy_deg=wrist_mount_rpy_deg,
+            fovy=wrist_fovy, look_at=wrist_look_at)
     camera = "r2s_side_calibrated_candidate"
     spec.worldbody.add_camera(name=camera, pos=position, quat=quat, fovy=fovy)
     model = spec.compile()
