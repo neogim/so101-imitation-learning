@@ -66,6 +66,14 @@ def run(args):
     physical.install_dynamic_muhi(spec)
     target=tuple(prior.GRIPPER_FRAME_LOCAL_POS[i]-wrist.DEFAULT_MOUNT_POS[i] for i in range(3))
     wrist.install(spec,bracket_profile="ruler_15_35_35",camera_aim_at=target,camera_retract_mm=5.)
+    # The existing fixed-jaw proxy generator compiles the spec temporarily
+    # and locates prior.TIP_SITE. Install it BEFORE generating proxies.
+    gripper_body=spec.body("gripper_link")
+    if gripper_body is None:
+        raise ValueError("Missing gripper_link: cannot define TCP site")
+    gripper_body.add_site(name=prior.TIP_SITE,
+        pos=list(prior.GRIPPER_FRAME_LOCAL_POS),
+        size=[.002,.002,.002],rgba=[.1,.9,.8,1.])
     table_body=spec.worldbody.add_body(name="fixed_arm_table_mocap",mocap=True,pos=[0,0,-10])
     table_body.add_geom(name=TABLE,type=mujoco.mjtGeom.mjGEOM_BOX,
         size=[.08,.08,prior.TABLE_HALF_THICKNESS_M],rgba=[.47,.51,.56,1.],
@@ -109,13 +117,17 @@ def run(args):
     if mocapid<0:raise RuntimeError("Table mocap id missing")
     pose,search_diag=search.select_bench_pose(
         model,data,freeq,opened,closed,jawq,fixed,moving,bottle,
-        min_fixed_gap_m=.0005,max_fixed_gap_m=.025,prefer_small_moving_gap=True,
+        # Deliberately leave 1-2 mm at the fixed finger, while J6's
+        # swept collision path must contact the bottle first.
+        min_fixed_gap_m=.001,max_fixed_gap_m=.002,prefer_small_moving_gap=True,
         candidate_local_z_range_m=(prior.GRIPPER_FRAME_LOCAL_POS[2]+.008,
                                    prior.GRIPPER_FRAME_LOCAL_POS[2]+.020))
     args.out.mkdir(parents=True,exist_ok=False)
     summary={"status":"SETUP_NOT_FOUND","mode":"TRUE_FIXED_J1_J5_DYNAMIC_J6",
         "arm_joint_count":count,"frozen_angles_deg":frozen,
         "same_pregrasp_pose_as_previous_trial":False,
+        "target_initial_fixed_jaw_gap_mm":[1.,2.],
+        "contact_sequence_intent":"J6 moving jaw touches and translates Muhi into stationary fixed jaw; no J1 collision approach",
         "source_urdf_stl_unmodified":True,
         "wrist_rig":"ruler_15_35_35",
         "collision_proxy_metadata":{"fixed":fixed_meta,"moving":moving_meta},
