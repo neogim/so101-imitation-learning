@@ -169,6 +169,13 @@ def run(args):
     args.wrist_camera = True
     (model, data, qids, dids, low, high, tcp, side_camera, goals,
      _cup, _layout, _offset_path, _offset_cfg) = scene.create_scene(args)
+    # Phase 6A: allow the same implicit integrator used in the stable 6-joint hold trial.
+    # The default is deliberately the improved setting; Euler remains available
+    # for controlled A/B comparison with otherwise identical scene and gains.
+    model.opt.timestep = args.dt
+    model.opt.integrator = (mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+                            if args.integrator == 'implicitfast'
+                            else mujoco.mjtIntegrator.mjINT_EULER)
     enabled = prepare_environment(model)
     object_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, DYNAMIC_BODY)
     joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, DYNAMIC_JOINT)
@@ -331,6 +338,8 @@ def run(args):
         "object_mass_kg_provisional": .050,
         "wrist_mass_kg_provisional": .025,
         "model_timestep_s": float(model.opt.timestep),
+        "integrator": args.integrator,
+        "pd_gains": {"kp": args.kp, "kd": args.kd, "torque_nm": args.torque},
         "gravity_m_s2": model.opt.gravity.tolist(),
         "limits": [
             "No grasp mechanism or ACT inference; replay uses bounded PD targets, not SAC actions.",
@@ -364,8 +373,12 @@ def main():
     p.add_argument("--drop-height-mm", type=float, default=20)
     p.add_argument("--force-n", type=float, default=.8)
     p.add_argument("--force-steps", type=int, default=80)
-    p.add_argument("--kp", type=float, default=12.)
-    p.add_argument("--kd", type=float, default=1.1)
+    p.add_argument("--integrator", choices=("euler", "implicitfast"), default="implicitfast",
+                   help="MuJoCo integrator; implicitfast is Phase 6A stable-hold candidate")
+    p.add_argument("--dt", type=float, default=.002,
+                   help="Physics step in seconds; Phase 6A candidate is 0.002")
+    p.add_argument("--kp", type=float, default=18.)
+    p.add_argument("--kd", type=float, default=1.8)
     p.add_argument("--torque", type=float, default=3.)
     p.add_argument("--control-substeps", type=int, default=10)
     p.add_argument("--dataset-root", type=Path, default=scene.DATASET)
@@ -387,6 +400,8 @@ def main():
         p.error("Nonfinite physical parameters")
     if not np.isfinite(args.video_fps) or args.video_fps <= 0:
         p.error("--video-fps must be positive and finite")
+    if not np.isfinite(args.dt) or args.dt <= 0:
+        p.error("--dt must be finite and positive")
     if args.control_substeps < 1 or args.torque <= 0 or args.drop_height_mm < 0:
         p.error("Invalid physical parameters")
     run(args)
