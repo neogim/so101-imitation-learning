@@ -257,7 +257,8 @@ def run(args):
     # hidden: the source visual STL remains visible in group 0.
     model.vis.global_.offwidth=max(int(model.vis.global_.offwidth),480)
     model.vis.global_.offheight=max(int(model.vis.global_.offheight),360)
-    render=mujoco.Renderer(model,width=480,height=360)
+    render=(None if args.no_video else
+            mujoco.Renderer(model,width=480,height=360))
     side_option=mujoco.MjvOption()
     side_option.geomgroup[3]=0
     side_option.geomgroup[4]=0
@@ -275,10 +276,13 @@ def run(args):
     data.mocap_pos[backdrop_mocap]=wrist_pos-1.5*wrist_back
     data.mocap_quat[backdrop_mocap]=data.mocap_quat[base_mocap_id]
     mujoco.mj_forward(model,data)
-    all_dir=args.out/"combined_frames";all_dir.mkdir()
+    all_dir=args.out/"combined_frames"
     wrist_dirs=[]
-    for name in ("wrist_camera","wrist_shelf_camera","wrist_retracted_camera"):
-        folder=args.out/(name+"_frames");folder.mkdir();wrist_dirs.append(folder)
+    if not args.no_video:
+        all_dir.mkdir()
+        for name in ("wrist_camera","wrist_shelf_camera","wrist_retracted_camera"):
+            folder=args.out/(name+"_frames");folder.mkdir()
+            wrist_dirs.append(folder)
     rows=[];images=0
     bilateral_streak=0
     lift_started_at=None
@@ -336,7 +340,7 @@ def run(args):
               "fixed_penetration_mm":depth_f,"moving_penetration_mm":depth_m,
               "object_z_m":object_z,
               "object_speed_m_s":float(np.linalg.norm(data.qvel[freed:freed+3]))})
-            if step%args.render_every==0 or step==steps-1:
+            if render is not None and (step%args.render_every==0 or step==steps-1):
                 mujoco.mj_forward(model,data)
                 # Original 5-view compositing, copied from the previously
                 # working physical_grasp_table_bench.py render path.
@@ -364,7 +368,8 @@ def run(args):
             if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
                 summary["status"]="NUMERICAL_DIVERGENCE";break
     finally:
-        render.close()
+        if render is not None:
+            render.close()
     if rows:
         with (args.out/"grasp_trace.csv").open("x",newline="") as file:
             writer=csv.DictWriter(file,fieldnames=rows[0]);writer.writeheader();writer.writerows(rows)
@@ -400,6 +405,8 @@ def run(args):
         summary["status"]=("PHYSICAL_5MM_LIFT_OBSERVED" if lift_success
                            else "LIFT_NOT_CONFIRMED" if lift_started_at is not None
                            else "NO_SUSTAINED_BILATERAL_CONTACT")
+    if args.no_video:
+        summary["video_status"]="skipped_for_batch"
     if images:
         summary["video_status"]=encode(all_dir,args.out/"table_contact_views.mp4",args.fps)
         for folder,name in zip(wrist_dirs,("wrist_camera","wrist_shelf_camera","wrist_retracted_camera")):
@@ -419,10 +426,12 @@ def main():
     p.add_argument("--j6-speed-deg-s",type=float,default=35.)
     p.add_argument("--j6-max-torque-nm",type=float,default=.08,
                    help="J6 actuator force limit in Nm; baseline .08, optional modest test .10")
+    p.add_argument("--no-video",action="store_true",
+                   help="Skip MuJoCo Renderer, PNGs and MP4: CSV/JSON batch only")
     p.add_argument("--render-every",type=int,default=25)
     p.add_argument("--fps",type=int,default=20)
     a=p.parse_args()
-    if not(.01<=a.j6_max_torque_nm<=.12 and
+    if not(.01<=a.j6_max_torque_nm<=.24 and
            0<a.lift_mm<=10 and .2<=a.lift_ramp_s<=3.
            and 10<=a.bilateral_hold_steps<=1000 and
            0<a.bilateral_force_min_n<=2. and
