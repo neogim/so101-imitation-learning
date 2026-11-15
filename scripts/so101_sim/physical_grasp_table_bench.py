@@ -626,6 +626,7 @@ def execute(args):
     j6_blocking_contacts=[]
     jaw_contact_phase_records=[]
     physical_arm_hold_active=False
+    study_observed_warnings=[]
     no_table_support=False
     contact_overpenetration_abort=False
     contact_overpenetration_step=None
@@ -1535,17 +1536,35 @@ def execute(args):
                 # an unstable arm move through the object.
                 contact_abort_reason="PHYSICAL_ARM_HOLD_UNSTABLE"
             if contact_abort_reason:
-                contact_abort_step=i
-                break
+                if args.study_observe_through_contact:
+                    # Simulation-only investigation: retain the event but
+                    # do not abort on arbitrary geometry/force/pose cutoffs.
+                    # This does not disable actual MuJoCo collisions.
+                    if (not study_observed_warnings or
+                        study_observed_warnings[-1]["reason"]!=contact_abort_reason):
+                        study_observed_warnings.append({
+                            "step":i,"time_s":float(data.time),
+                            "reason":contact_abort_reason})
+                    contact_abort_reason=None
+                else:
+                    contact_abort_step=i
+                    break
             # Hard diagnostic stop: object-to-jaw deep overlap is a geometry
             # / contact solver failure, NOT progress toward grasp. Stop
             # rather than allow another 26mm interpenetration.
             jaw_depth=min((c["penetration_mm"] for c in contacts
                            if c["kind"] in ("fixed","moving")),default=0.)
             if jaw_depth < -args.abort_jaw_penetration_mm:
-                contact_overpenetration_abort=True
-                contact_overpenetration_step=i
-                break
+                if args.study_observe_through_contact:
+                    if (not study_observed_warnings or
+                        study_observed_warnings[-1]["reason"]!="JAW_OVERPENETRATION"):
+                        study_observed_warnings.append({
+                            "step":i,"time_s":float(data.time),
+                            "reason":"JAW_OVERPENETRATION"})
+                else:
+                    contact_overpenetration_abort=True
+                    contact_overpenetration_step=i
+                    break
             # The Muhi starts only 0.5mm above the table. If no contact
             # occurs by 0.15s and it has already dropped 5mm below the
             # nominal starting position, this is a broken table collision
@@ -1835,6 +1854,9 @@ def execute(args):
             "efc_reference_acceleration and efc_position come from "
             "the same mj_step solver snapshot as mj_contactForce; "
             "velocity uses MuJoCo constraint coordinates"),
+        "study_observe_through_contact":bool(
+            args.study_observe_through_contact),
+        "study_observed_warnings":study_observed_warnings[:100],
         "physical_arm_hold_enabled":bool(args.physical_arm_hold),
         "physical_arm_hold_abort_deviation_deg":(
             args.arm_hold_max_deviation_deg
@@ -2046,6 +2068,11 @@ def main():
                    help="J1-J5 sim-only PD damping Nm*s/rad")
     p.add_argument("--arm-hold-max-torque",type=float,default=8.,
                    help="J1-J5 sim-only torque cap Nm (NOT STS3215 rated)")
+    p.add_argument("--study-observe-through-contact",action="store_true",
+                   help="Simulation-only: record but do not early-abort "
+                        "on force spikes, jaw overlap, arm pose deviation "
+                        "or other heuristic contact thresholds. Keeps "
+                        "real collision physics and finite duration.")
     p.add_argument("--arm-hold-max-deviation-deg",type=float,default=.5,
                    help="Abort physical arm-hold immediately if any J1-J5 "
                         "deviates more than 0.5deg from prescribed target")
