@@ -142,7 +142,6 @@ def run(args):
         slide=base_spec.add_joint(name="r2s_lift_slide",
             type=mujoco.mjtJoint.mjJNT_SLIDE,axis=[0.,0.,1.],
             range=[0.,.006],limited=True)
-        slide.damping=15.
         lift_act=spec.add_actuator(name="r2s_lift_position",
                                   target="r2s_lift_slide")
         lift_act.trntype=mujoco.mjtTrn.mjTRN_JOINT
@@ -174,6 +173,10 @@ def run(args):
             raise RuntimeError("Compiled slide actuator/DOF setup failed")
         slide_q=int(model.jnt_qposadr[joint_id])
         slide_d=int(model.jnt_dofadr[joint_id])
+        # On this MuJoCo MjSpec binding, MjsJoint.damping expects a
+        # fixed-size array, not a scalar. Damping belongs to the compiled
+        # DOF in MjModel and can be assigned as a scalar here.
+        model.dof_damping[slide_d]=15.
     elif base_mocap_id<0:
         raise RuntimeError("base_link must be a mocap body in mocap mode")
     # Assert the source link names remain addressable after compilation.
