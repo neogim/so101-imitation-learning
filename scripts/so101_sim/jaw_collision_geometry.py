@@ -155,7 +155,7 @@ def build_split_jaw_urdf(original_urdf: Path, output_dir: Path, slabs: int = 12,
     mesh_dir.mkdir(exist_ok=True)
     tree = ET.parse(original_urdf)
     root = tree.getroot()
-    diagnostics = {'mode': 'axial_convex_slabs',
+    diagnostics = {'mode': ('axial_cross_convex_patches' if cross_bands > 1 else 'axial_convex_slabs'),
                    'source_urdf': str(original_urdf),
                    'visual_meshes_unchanged': True,
                    'jaw_collision_slabs_requested': slabs,
