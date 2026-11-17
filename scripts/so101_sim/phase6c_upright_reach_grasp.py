@@ -79,17 +79,18 @@ def emit(out, summary):
 
 def model_build(args):
     jaw_mode=getattr(args,'jaw_collision_mode','original')
-    if jaw_mode=='axial_convex_slabs':
+    if jaw_mode in ('axial_convex_slabs','axial_cross_convex_patches'):
         import jaw_collision_geometry
         original=args.urdf.resolve(strict=True)
         root=Path(getattr(args,'out',Path('/tmp/so101-jaw-collision'))) / 'collision_urdf'
         effective,diagnostics=jaw_collision_geometry.build_split_jaw_urdf(
-            original,root,slabs=int(getattr(args,'jaw_collision_slabs',12)))
-        print('Jaw collision: axial convex slabs; original visual STL unchanged; report:',root/'jaw_collision_build.json',flush=True)
+            original,root,slabs=int(getattr(args,'jaw_collision_slabs',12)),
+            cross_bands=(int(getattr(args,'jaw_collision_cross_bands',3)) if jaw_mode=='axial_cross_convex_patches' else 1))
+        print('Jaw collision:',jaw_mode,'; original visual STL unchanged; report:',root/'jaw_collision_build.json',flush=True)
     elif jaw_mode=='original':
         effective=args.urdf.resolve(strict=True)
     else:
-        raise ValueError('jaw_collision_mode must be original or axial_convex_slabs')
+        raise ValueError('jaw_collision_mode must be original, axial_convex_slabs or axial_cross_convex_patches')
     spec=mujoco.MjSpec.from_file(str(effective))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
@@ -130,6 +131,19 @@ def model_build(args):
     # simulated finger collision geometry. Original STL is retained in original mode;
     fixed=grasp.owned_collision_geoms(model,grasp.FINGER_BODY)
     moving=grasp.owned_collision_geoms(model,grasp.MOVING_BODY)
+    if jaw_mode!='original':
+        # Other geoms on gripper_link include the actuator housing, NOT the
+        # finger contact surface. Earlier 12-slab mode included one such geom.
+        # In the new mode only the named original-jaw-derived patches should
+        # touch Muhi; original mode remains available as an unchanged baseline.
+        fixed=tuple(g for g in fixed if (
+            (mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(g)) or '')
+            .startswith('gripper_link_collision_patch_')))
+        moving=tuple(g for g in moving if (
+            (mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(g)) or '')
+            .startswith('moving_jaw_so101_v1_link_collision_patch_')))
+        if not fixed or not moving:
+            raise ValueError('Generated jaw patches were not found after MuJoCo compile')
     bottle=tuple(physical.geom_id(model,n) for n in physical.DYNAMIC_GEOMS)
     floor=physical.geom_id(model,'phase6c_support')
     if not fixed or not moving:raise ValueError('Finger collision mesh not found')
