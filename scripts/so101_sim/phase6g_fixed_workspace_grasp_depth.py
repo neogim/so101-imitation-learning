@@ -19,6 +19,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation
 from PIL import Image, ImageDraw
 
@@ -98,6 +99,89 @@ def jaw_geometry(model,data,qadr,q,xyz,bq,fixed,moving,bottle,lo,hi):
             'closing_sweeps_bottle':bool(min(sweep)<-0.00035)}
 
 
+def audit_jaw_meshes(model,fixed,moving,out):
+    """Compare compiled jaw mesh surface/vertex cloud with its convex hull.
+
+    MuJoCo mesh collision operates on convex geometry. This shows where the
+    convex approximation differs, without claiming that a visual mesh is an
+    independent collision mesh or that a concavity necessarily caused ejection.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    out.mkdir(parents=True,exist_ok=True)
+    report=[]
+    geoms=[('fixed',g) for g in fixed]+[('moving',g) for g in moving]
+    eligible=[]
+    for role,gid in geoms:
+        meshid=int(model.geom_dataid[gid])
+        if int(model.geom_type[gid])!=int(mujoco.mjtGeom.mjGEOM_MESH) or meshid<0:
+            continue
+        st=int(model.mesh_vertadr[meshid]);num=int(model.mesh_vertnum[meshid])
+        verts=np.asarray(model.mesh_vert[st:st+num],dtype=float)
+        if len(verts)<4:continue
+        try:
+            hull=ConvexHull(verts)
+            volume=float(hull.volume)
+            vertex_fraction=float(len(np.unique(hull.simplices))/len(verts))
+            eligible.append((role,gid,verts,hull))
+            report.append({'role':role,'geom_id':int(gid),
+                'geom_name':mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(gid)),
+                'mesh_id':meshid,'vertices':len(verts),
+                'convex_hull_vertices':int(len(np.unique(hull.simplices))),
+                'hull_vertex_fraction':vertex_fraction,'hull_volume_m3':volume,
+                'note':'Mesh vertices are in compiled local mesh coordinates. Contact is evaluated on the convex representation; the hull includes concavities.'})
+        except Exception as exc:
+            report.append({'role':role,'geom_id':int(gid),'error':str(exc)})
+    if eligible:
+        fig=plt.figure(figsize=(7*len(eligible),6))
+        for i,(role,gid,verts,hull) in enumerate(eligible):
+            ax=fig.add_subplot(1,len(eligible),i+1,projection='3d')
+            sampled=verts[::max(1,len(verts)//2000)]
+            ax.scatter(sampled[:,0],sampled[:,1],sampled[:,2],s=0.35,alpha=.15,label='Compiled mesh vertices')
+            # Draw the hull's outer edges so gaps/concavities are apparent.
+            edges=set()
+            for tri in hull.simplices:
+                for j in range(3):
+                    edges.add(tuple(sorted((int(tri[j]),int(tri[(j+1)%3])))))
+            for a,b in edges:
+                ax.plot(verts[[a,b],0],verts[[a,b],1],verts[[a,b],2],linewidth=.3,alpha=.4,color='tab:red')
+            ax.set_title(f'{role}: geom {gid}\npoints=mesh, red=convex hull')
+            ax.set_xlabel('local X (m)');ax.set_ylabel('local Y (m)');ax.set_zlabel('local Z (m)')
+            span=np.ptp(verts,axis=0); center=np.mean([verts.min(axis=0),verts.max(axis=0)],axis=0)
+            radius=max(1e-5,float(max(span))/2)
+            ax.set_xlim(center[0]-radius,center[0]+radius)
+            ax.set_ylim(center[1]-radius,center[1]+radius)
+            ax.set_zlim(center[2]-radius,center[2]+radius)
+        fig.savefig(out/'jaw_mesh_vs_convex_hull.png',dpi=135,bbox_inches='tight')
+        plt.close(fig)
+    dump(out/'jaw_mesh_audit.json',{'geoms':report,
+         'interpretation':'A compiled mesh and its convex hull can differ at concavities. This visualization is local mesh coordinates, not a proof of which specific jaw surface pushed the object.'})
+    return report
+
+
+def plot_contact_push(rows,out):
+    """World-frame bottle motion and *signed* jaw-on-bottle force."""
+    if not rows:return
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    t=np.array([r['time_s'] for r in rows])
+    fig,axes=plt.subplots(2,1,figsize=(10,7),sharex=True,constrained_layout=True)
+    axes[0].plot(t,[1000*(r['bottle_x_m']-rows[0]['bottle_x_m']) for r in rows],label='Bottle delta world X')
+    axes[0].plot(t,[1000*(r['bottle_y_m']-rows[0]['bottle_y_m']) for r in rows],label='Bottle delta world Y')
+    axes[0].set_ylabel('Displacement (mm)');axes[0].legend()
+    axes[1].plot(t,[r['jaw_on_bottle_force_world_x_n'] for r in rows],label='Jaw force on bottle world X')
+    axes[1].plot(t,[r['jaw_on_bottle_force_world_y_n'] for r in rows],label='Jaw force on bottle world Y')
+    axes[1].set_ylabel('Net jaw force (N)');axes[1].set_xlabel('Simulation time (s)')
+    axes[1].legend()
+    for ax in axes:
+        ax.axvline(rows[0]['time_s'],color='gray',alpha=.2)
+        ax.grid(alpha=.25)
+    fig.suptitle('Phase 6G: bottle displacement and jaw contact force (world axes)')
+    fig.savefig(out/'jaw_push_direction.png',dpi=140);plt.close(fig)
+
+
 def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,out):
     d=mujoco.MjData(model);mujoco.mj_resetData(model,d)
     d.qpos[qadr[:5]]=q;d.qpos[qadr[5]]=hi[5]
@@ -116,6 +200,9 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
         model.vis.global_.offheight=max(model.vis.global_.offheight,460)
         try:renderer=mujoco.Renderer(model,width=640,height=460)
         except Exception as e:(out/'render_error.txt').write_text(repr(e))
+    scene_options=mujoco.MjvOption()
+    scene_options.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT]=True
+    scene_options.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE]=True
     camera=mujoco.MjvCamera();camera.type=mujoco.mjtCamera.mjCAMERA_FREE
     camera.lookat[:]=xyz;camera.distance=.56;camera.azimuth=110;camera.elevation=-20
     deep=False;bad=False;maxcontact=0
@@ -134,6 +221,8 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
             bilateral=int(fc>0 and mc>0)
             if depth is not None and depth<-0.003:deep=True
             fnew=[];mnew=[]
+            jaw_force_world=np.zeros(3)
+            contact_points_world=[]
             for ix,c in enumerate(d.contact[:d.ncon]):
                 geomids={int(c.geom1),int(c.geom2)}
                 if not geomids.intersection(bottle):continue
@@ -143,6 +232,14 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                 mujoco.mj_contactForce(model,d,ix,outforce)
                 # Contact normal is the first axis of MuJoCo contact frame.
                 normal=np.asarray(c.frame).reshape(3,3)[0].copy()
+                # Rows of c.frame are the world-space contact-frame axes.
+                # Positive local force acts from geom1 toward geom2.
+                force_on_bottle=(1 if int(c.geom2) in bottle else -1)*(np.asarray(c.frame).reshape(3,3).T@outforce[:3])
+                jaw_force_world+=force_on_bottle
+                contact_points_world.append({'role':role,
+                     'point_world_m':np.asarray(c.pos).tolist(),
+                     'force_on_bottle_world_n':force_on_bottle.tolist(),
+                     'normal_force_n':float(outforce[0])})
                 entry={'role':role,'point_xyz_m':np.asarray(c.pos).tolist(),
                        'normal_mj_frame_world':normal.tolist(),
                        'normal_force_n':float(outforce[0]),
@@ -156,6 +253,10 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                 return np.mean([a['point_xyz_m'] for a in entries],axis=0).tolist() if entries else None
             row={'time_s':float(d.time),'phase':phase,'fixed_contacts':fc,'moving_contacts':mc,
                  'bilateral':bilateral,'min_contact_dist_mm':None if depth is None else 1000*depth,
+                 'jaw_on_bottle_force_world_x_n':float(jaw_force_world[0]),
+                 'jaw_on_bottle_force_world_y_n':float(jaw_force_world[1]),
+                 'jaw_on_bottle_force_world_z_n':float(jaw_force_world[2]),
+                 'jaw_contact_points_world_json':json.dumps(contact_points_world),
                  'fixed_normal_force_n':metric(fnew,'normal_force_n'),
                  'moving_normal_force_n':metric(mnew,'normal_force_n'),
                  'fixed_tangent_force_n':metric(fnew,'tangent_force_n'),
@@ -172,10 +273,10 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                  'max_arm_error_deg':float(np.max(np.abs(np.rad2deg(q-d.qpos[qadr[:5]]))))}
             rows.append(row)
             if renderer is not None and (k%stride==0 or k==steps):
-                renderer.update_scene(d,camera=camera)
+                renderer.update_scene(d,camera=camera,scene_option=scene_options)
                 im=Image.fromarray(renderer.render().copy())
                 canvas=Image.new('RGB',(640,496),'#192532');canvas.paste(im,(0,30))
-                ImageDraw.Draw(canvas).text((10,9),f'Phase6G {out.name} | {phase} | {t:.2f}s | Jaws F{fc}/M{mc}',fill='white')
+                ImageDraw.Draw(canvas).text((10,9),f'{out.name} {phase} {t:.2f}s F{fc}/M{mc} | jaw->bottle Fxy=({jaw_force_world[0]:+.2f},{jaw_force_world[1]:+.2f})N',fill='white')
                 frames.append(canvas)
     finally:
         if renderer:renderer.close()
@@ -188,6 +289,8 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
         p=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y','-framerate',str(args.fps),'-i',str(fd/'%05d.png'),'-c:v','libx264','-pix_fmt','yuv420p',str(out/'grasp.mp4')],capture_output=True,text=True)
         if p.returncode:(out/'ffmpeg_error.txt').write_text(p.stderr[-2000:])
         shutil.rmtree(fd)
+    try:plot_contact_push(rows,out)
+    except Exception as exc:(out/'push_plot_error.txt').write_text(repr(exc))
     holdrows=[r for r in rows if r['phase']=='hold']
     bilateral=sum(r['bilateral'] for r in holdrows)
     initial_bottom=support_start
@@ -202,6 +305,8 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
        'maximum_arm_tracking_error_deg':max((r['max_arm_error_deg'] for r in rows),default=None),
        'max_normal_contact_force_n':max((r['fixed_normal_force_n']+r['moving_normal_force_n'] for r in rows),default=None),
        'video':'grasp.mp4' if (out/'grasp.mp4').exists() else None,
+       'contact_force_plot':'jaw_push_direction.png' if (out/'jaw_push_direction.png').exists() else None,
+       'force_frame':'world XYZ; signed force on bottle, excluding table support',
        'note':'Bilateral contact is NOT stable lift. World normal sign depends on contact geom ordering.'}
     dump(out/'physical_summary.json',summary)
     return summary
@@ -214,6 +319,10 @@ def run(args):
     if not np.isfinite(xyz).all():raise ValueError('Non-finite target')
     args.support_plane_z_m=float(args.table_z)
     model,qadr,vadr,aids,lo,hi,fixed,moving,bottle,floor=phase6c.model_build(args)
+    try: mesh_report=audit_jaw_meshes(model,fixed,moving,args.out)
+    except Exception as exc:
+        mesh_report=[]
+        (args.out/'jaw_mesh_audit_error.txt').write_text(repr(exc))
     bj=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,grasp.FINGER_BODY)
     fj=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     bq=int(model.jnt_qposadr[fj]);bd=int(model.jnt_dofadr[fj])
@@ -328,6 +437,8 @@ def run(args):
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
        'j2_raised_seed':raised_seed_details,
+       'jaw_mesh_audit':'jaw_mesh_audit.json' if (args.out/'jaw_mesh_audit.json').exists() else None,
+       'jaw_mesh_figure':'jaw_mesh_vs_convex_hull.png' if (args.out/'jaw_mesh_vs_convex_hull.png').exists() else None,
        'target_is_provisional_not_measured':True,
        'depth_local_z_provisional_not_actual_finger_arc_percent':True,
        'method':'5DoF soft IK per jaw-depth, stationary-arm J6 physical close and hold; no approach/lift',
