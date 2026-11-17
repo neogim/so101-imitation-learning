@@ -378,8 +378,9 @@ def run(args):
     print('J2 raised IK seed:',json.dumps(raised_seed_details,ensure_ascii=False),flush=True)
     results=[]
     root_gap_audit_status='NOT_RUN'
-    for i,(name,local_z) in enumerate(DEPTHS,1):
-        print(f'[{i}/3] {name}: same object xyz={np.round(xyz,4).tolist()}',flush=True)
+    depths=[d for d in DEPTHS if args.depth_only=='all' or d[0]==args.depth_only]
+    for i,(name,local_z) in enumerate(depths,1):
+        print(f'[{i}/{len(depths)}] {name}: same object xyz={np.round(xyz,4).tolist()}',flush=True)
         sub=args.out/name;sub.mkdir()
         anchor=np.array([REFERENCE_LOCAL_XY[0],REFERENCE_LOCAL_XY[1],local_z])
         data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
@@ -461,6 +462,7 @@ def run(args):
     summary={'schema':'phase6g_fixed_workcell_root_middle_tip_v1','simulation_only':True,
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
+       'depth_subset':args.depth_only,
        'jaw_collision_mode':args.jaw_collision_mode,
        'jaw_collision_slabs':args.jaw_collision_slabs if args.jaw_collision_mode!='original' else None,
        'jaw_collision_cross_bands':args.jaw_collision_cross_bands if args.jaw_collision_mode=='axial_cross_convex_patches' else 1,
@@ -492,6 +494,8 @@ def main():
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--max-ik-error-mm',type=float,default=20.)
+    p.add_argument('--depth-only',choices=('all','root','middle','tip'),default='all',
+                   help='Restrict physics and geometry to one depth; middle recommended for root-gap regression')
     p.add_argument('--jaw-collision-mode',choices=('original','axial_convex_slabs','axial_cross_convex_patches'),
                    default='axial_cross_convex_patches',
                    help='Simulation only: preserve authentic visual jaw meshes; split collision longitudinally and transversely to reduce filling of root aperture; original restores baseline')
