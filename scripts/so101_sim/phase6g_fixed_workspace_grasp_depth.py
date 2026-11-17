@@ -43,8 +43,10 @@ def fk(model, data, qadr, bid, q):
 
 
 def solve_ik(model,data,qadr,bid,lo,hi,xyz,anchor,bench):
-    bp,br = fk(model,data,qadr,bid,bench)
-    desired_origin = xyz-br@anchor
+    _,br = fk(model,data,qadr,bid,bench)
+    # Optimize the *actual* grasp anchor at every candidate configuration.
+    # The old fixed desired_origin used the bench rotation and ignored the
+    # change of the local anchor's world position when the wrist rotated.
     seeds=[bench.copy()]
     for delta in (-.65,.65):
         s=bench.copy();s[1]=np.clip(s[1]+delta,lo[1]+.0001,hi[1]-.0001)
@@ -55,8 +57,9 @@ def solve_ik(model,data,qadr,bid,lo,hi,xyz,anchor,bench):
     for seed in seeds:
         def residual(q):
             p,r=fk(model,data,qadr,bid,q)
+            anchor_world=p+r@anchor
             err_rot=Rotation.from_matrix(br@r.T).as_rotvec()
-            return np.r_[(p-desired_origin)/.008,err_rot/.4,
+            return np.r_[(anchor_world-xyz)/.008,err_rot/.4,
                          (q-bench)*.12, (q[3]-bench[3])*.25]
         try:
             sol=least_squares(residual, np.clip(seed,lo+1e-6,hi-1e-6),bounds=(lo,hi),max_nfev=180)
