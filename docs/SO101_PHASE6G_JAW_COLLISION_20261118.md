@@ -24,6 +24,6 @@ Branch `backup/phase6g-before-jaw-collision-20261118` points to commit `de856293
 
 ```bash
 git fetch origin feature/so101-dynamic-arm-control
-git tag -a so101-phase6g-jaw-collision-20261118 -m "SO-101 jaw collision compound convex milestone" origin/feature/so101-dynamic-arm-control
+git tag -a so101-phase6g-jaw-collision-20261118 -m "SO-101 jaw collision compound convex milestone" acd383d585cecdcdb4fa8b28b479d360a67fd2e5
 git push origin so101-phase6g-jaw-collision-20261118
 ```
