@@ -71,6 +71,8 @@ def solve_ik(model,data,qadr,bid,lo,hi,xyz,anchor,bench):
         rot_err=float(np.rad2deg(np.linalg.norm(Rotation.from_matrix(br@rot.T).as_rotvec())))
         solutions.append((pos_err + .15*rot_err,sol.x.copy(),{
             'solver_success':bool(sol.success),'nfev':int(sol.nfev),
+            'reference_j2_deg':float(np.rad2deg(bench[1])),
+            'solved_j2_deg':float(np.rad2deg(sol.x[1])),
             'anchor_error_mm':pos_err,'orientation_error_deg':rot_err,
             'grasp_reference_world_xyz_m':anchor_xyz.tolist(),
             'ik_angles_deg':dict(zip(JOINTS,np.rad2deg(sol.x).tolist()))
@@ -216,6 +218,43 @@ def run(args):
     fj=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     bq=int(model.jnt_qposadr[fj]);bd=int(model.jnt_dofadr[fj])
     bench=np.zeros(5);bench[4]=np.clip(-math.pi/2,lo[4],hi[4])
+    # The sign of J2 is URDF-dependent. Pick the candidate that physically
+    # raises the finger body in world Z, rather than guessing a motor sign.
+    reference_j2_deg=float(np.rad2deg(bench[1]))
+    reference_height_m=None
+    preferred_height_m=None
+    j2_raising_direction='none'
+    if args.j2_raise_deg > 0:
+        probe=mujoco.MjData(model)
+        mujoco.mj_resetData(model,probe)
+        reference_height_m=float(fk(model,probe,qadr,bj,bench)[0][2])
+        candidates=[]
+        delta=math.radians(args.j2_raise_deg)
+        for sign in (-1,1):
+            candidate=bench.copy()
+            candidate[1]=float(np.clip(bench[1]+sign*delta,lo[1]+1e-5,hi[1]-1e-5))
+            if abs(candidate[1]-bench[1])<1e-6:continue
+            height=float(fk(model,probe,qadr,bj,candidate)[0][2])
+            candidates.append((height,candidate,sign))
+        if candidates:
+            preferred_height_m,preferred,sign=max(candidates,key=lambda x:x[0])
+            if preferred_height_m > reference_height_m + 1e-5:
+                bench=preferred
+                j2_raising_direction='positive' if sign>0 else 'negative'
+            else:
+                preferred_height_m=reference_height_m
+    raised_seed_details={
+       'requested_j2_raise_deg':args.j2_raise_deg,
+       'original_reference_j2_deg':reference_j2_deg,
+       'preferred_j2_deg':float(np.rad2deg(bench[1])),
+       'j2_raising_direction':j2_raising_direction,
+       'original_finger_body_world_z_m':reference_height_m,
+       'preferred_finger_body_world_z_m':preferred_height_m,
+       'preferred_finger_body_raise_mm':None if reference_height_m is None else
+            1000*(preferred_height_m-reference_height_m),
+       'note':'J2-only FK rise is a seed diagnostic, not the final IK finger height or a measured successful pose.'
+    }
+    print('J2 raised IK seed:',json.dumps(raised_seed_details,ensure_ascii=False),flush=True)
     results=[]
     for i,(name,local_z) in enumerate(DEPTHS,1):
         print(f'[{i}/3] {name}: same object xyz={np.round(xyz,4).tolist()}',flush=True)
@@ -286,6 +325,7 @@ def run(args):
     summary={'schema':'phase6g_fixed_workcell_root_middle_tip_v1','simulation_only':True,
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
+       'j2_raised_seed':raised_seed_details,
        'target_is_provisional_not_measured':True,
        'depth_local_z_provisional_not_actual_finger_arc_percent':True,
        'method':'5DoF soft IK per jaw-depth, stationary-arm J6 physical close and hold; no approach/lift',
@@ -306,6 +346,8 @@ def main():
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--max-ik-error-mm',type=float,default=20.)
+    p.add_argument('--j2-raise-deg',type=float,default=15.,
+                   help='Prefer an IK seed raised at J2 by this angle (auto-select world-Z-positive sign); 0 disables')
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
     p.add_argument('--settle-s',type=float,default=.4)
@@ -318,7 +360,7 @@ def main():
     p.add_argument('--j6-kd',type=float,default=.08)
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
-    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0:p.error('Invalid args')
+    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0:p.error('Invalid args')
     run(args)
 
 if __name__=='__main__':main()
