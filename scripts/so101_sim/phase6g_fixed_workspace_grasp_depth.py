@@ -271,6 +271,8 @@ def run(args):
               'ik':ik,'jaw_geometry':geo,'physics':phys}
         dump(sub/'result.json',info)
         row={'depth':name,'local_z_mm':1000*local_z,
+             'j2_seed_deg':raised_seed_details['preferred_j2_deg'],
+             'j2_solved_deg':ik.get('solved_j2_deg'),
              'ik_error_mm':ik.get('anchor_error_mm'),'open_fixed_gap_mm':geo.get('open_fixed_gap_mm'),
              'open_moving_gap_mm':geo.get('open_moving_gap_mm'),
              'sweep_moving_min_gap_mm':geo.get('closing_moving_min_gap_mm'),
