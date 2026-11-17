@@ -134,26 +134,37 @@ def audit_jaw_meshes(model,fixed,moving,out):
         except Exception as exc:
             report.append({'role':role,'geom_id':int(gid),'error':str(exc)})
     if eligible:
-        fig=plt.figure(figsize=(7*len(eligible),6))
-        for i,(role,gid,verts,hull) in enumerate(eligible):
-            ax=fig.add_subplot(1,len(eligible),i+1,projection='3d')
-            sampled=verts[::max(1,len(verts)//2000)]
-            ax.scatter(sampled[:,0],sampled[:,1],sampled[:,2],s=0.35,alpha=.15,label='Compiled mesh vertices')
-            # Draw the hull's outer edges so gaps/concavities are apparent.
-            edges=set()
-            for tri in hull.simplices:
-                for j in range(3):
-                    edges.add(tuple(sorted((int(tri[j]),int(tri[(j+1)%3])))))
-            for a,b in edges:
-                ax.plot(verts[[a,b],0],verts[[a,b],1],verts[[a,b],2],linewidth=.3,alpha=.4,color='tab:red')
-            ax.set_title(f'{role}: geom {gid}\npoints=mesh, red=convex hull')
-            ax.set_xlabel('local X (m)');ax.set_ylabel('local Y (m)');ax.set_zlabel('local Z (m)')
-            span=np.ptp(verts,axis=0); center=np.mean([verts.min(axis=0),verts.max(axis=0)],axis=0)
+        # A compound collision model may contain dozens of convex slabs.
+        # Plot one panel per jaw ROLE, never one huge subplot per geom.
+        fig=plt.figure(figsize=(14,6))
+        for k,role in enumerate(('fixed','moving')):
+            shapes=[(gid,verts,hull) for label,gid,verts,hull in eligible if label==role]
+            if not shapes:continue
+            ax=fig.add_subplot(1,2,k+1,projection='3d')
+            total=sum(len(v) for _,v,_ in shapes)
+            for gid,verts,hull in shapes:
+                sampled=verts[::max(1,len(verts)//max(100,1800//len(shapes)))]
+                ax.scatter(sampled[:,0],sampled[:,1],sampled[:,2],s=.35,alpha=.13)
+                edges=set()
+                for tri in hull.simplices:
+                    for j in range(3):
+                        edges.add(tuple(sorted((int(tri[j]),int(tri[(j+1)%3])))))
+                # Edge budget controls plot complexity in segmented collision.
+                edge_list=sorted(edges)
+                for a,b in edge_list[::max(1,len(edge_list)//max(150,1500//len(shapes)))]:
+                    ax.plot(verts[[a,b],0],verts[[a,b],1],verts[[a,b],2],
+                            linewidth=.3,alpha=.4,color='tab:red')
+            allv=np.concatenate([v for _,v,_ in shapes],axis=0)
+            span=np.ptp(allv,axis=0)
+            center=(allv.min(axis=0)+allv.max(axis=0))/2
             radius=max(1e-5,float(max(span))/2)
             ax.set_xlim(center[0]-radius,center[0]+radius)
             ax.set_ylim(center[1]-radius,center[1]+radius)
             ax.set_zlim(center[2]-radius,center[2]+radius)
-        fig.savefig(out/'jaw_mesh_vs_convex_hull.png',dpi=135,bbox_inches='tight')
+            ax.set_title(f'{role} collision geoms: {len(shapes)} (vertices={total})')
+            ax.set_xlabel('local X (m)');ax.set_ylabel('local Y (m)');ax.set_zlabel('local Z (m)')
+        fig.suptitle('Compiled collision vertices and convex hulls (mesh-local frames)')
+        fig.savefig(out/'jaw_mesh_vs_convex_hull.png',dpi=125,bbox_inches='tight')
         plt.close(fig)
     dump(out/'jaw_mesh_audit.json',{'geoms':report,
          'interpretation':'A compiled mesh and its convex hull can differ at concavities. This visualization is local mesh coordinates, not a proof of which specific jaw surface pushed the object.'})
