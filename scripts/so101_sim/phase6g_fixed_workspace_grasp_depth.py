@@ -245,10 +245,39 @@ def run(args):
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        fig,axes=plt.subplots(2,1,figsize=(10,7),constrained_layout=True)
+        fig,axes=plt.subplots(2,1,figsize=(11,8),constrained_layout=True)
         labels=[r['depth'] for r in rows]
-        axes[0].bar(labels,[r['bilateral_hold_steps'] or 0 for r in rows]);axes[0].set_ylabel('Bilateral hold steps (more is not necessarily better)')
-        axes[1].bar(labels,[r['max_xy_displacement_mm'] or 0 for r in rows]);axes[1].set_ylabel('Max Muhi XY displacement (mm)')
+        ik_errors=[r['ik_error_mm'] if r['ik_error_mm'] is not None else float('nan') for r in rows]
+        axes[0].bar(labels,ik_errors,color='#4c78a8')
+        axes[0].axhline(args.max_ik_error_mm,color='#c44e52',linestyle='--',label=f'IK threshold: {args.max_ik_error_mm:g} mm')
+        axes[0].set_ylabel('IK grasp-anchor position error (mm)')
+        axes[0].set_title('Phase 6G geometric screening: physical runs are conditional')
+        axes[0].legend(loc='upper left')
+        axes[0].set_ylim(bottom=0)
+        for x,(v,row) in enumerate(zip(ik_errors,rows)):
+            label='No IK solution' if not np.isfinite(v) else f'{v:.1f} mm'
+            axes[0].annotate(label,(x,0 if not np.isfinite(v) else v),xytext=(0,6),textcoords='offset points',ha='center',fontsize=9)
+        status_text=[]
+        for row in rows:
+            status=row['status'] or 'NO_RESULT'
+            if status=='GEOMETRY_DIAGNOSTIC_ONLY':
+                status_text.append('SKIPPED (IK / jaw geometry)')
+            elif status=='DYNAMIC_TEST_COMPLETED':
+                status_text.append('PHYSICS RUN (not grasp success)')
+            else:
+                status_text.append(status)
+        axes[1].axis('off')
+        axes[1].set_title('Execution status and physical measurements',loc='left')
+        lines=['Position    Result                                   Bilateral steps    XY displacement (mm)']
+        for row,label in zip(rows,status_text):
+            steps=str(row['bilateral_hold_steps']) if row['status']=='DYNAMIC_TEST_COMPLETED' else 'N/A'
+            displ=row['max_xy_displacement_mm']
+            displ_text=f'{displ:.1f}' if displ is not None and np.isfinite(displ) and row['status']=='DYNAMIC_TEST_COMPLETED' else 'NOT MEASURED'
+            lines.append(f"{row['depth']:<11} {label:<40} {steps:<18} {displ_text}")
+        if not any(row['status']=='DYNAMIC_TEST_COMPLETED' for row in rows):
+            lines.extend(['', 'NO PHYSICS TEST WAS RUN.', 'Zero contact bars would be misleading: data is unavailable, not a measured failure.',
+                          'Review IK error and open-jaw geometry before choosing the next target pose.'])
+        axes[1].text(.01,.93,'\\n'.join(lines),va='top',ha='left',fontfamily='monospace',fontsize=10,transform=axes[1].transAxes)
         fig.savefig(args.out/'comparison.png',dpi=150);plt.close(fig)
     except Exception as e:(args.out/'plot_error.txt').write_text(repr(e))
     summary={'schema':'phase6g_fixed_workcell_root_middle_tip_v1','simulation_only':True,
