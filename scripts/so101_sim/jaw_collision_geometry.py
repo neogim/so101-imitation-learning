@@ -84,46 +84,67 @@ def write_hull_stl(path, points):
     return {'vertices': int(len(points)), 'volume_m3': float(hull.volume)}
 
 
-def split_convex_slabs(src: Path, dst_dir: Path, prefix: str, slabs: int):
+def split_convex_slabs(src: Path, dst_dir: Path, prefix: str,
+                       slabs: int, cross_bands: int = 1):
+    """Generate non-overlapping *axial and transverse* local convex patches.
+
+    An axial-only convex hull can span both walls of a concavity within one
+    slice, filling the real root aperture. Transverse segmentation reduces
+    that bridging without inventing a wider jaw gap or altering the visuals.
+    Triangle polygons are clipped to both local axes, not just assigned by
+    vertex position, so neighboring cells meet consistently.
+    """
     if not 2 <= slabs <= 32:
         raise ValueError('jaw slab count must be between 2 and 32')
+    if not 1 <= cross_bands <= 8:
+        raise ValueError('jaw transverse band count must be between 1 and 8')
     triangles = read_stl_triangles(src)
     all_vertices = triangles.reshape(-1, 3)
     unique = np.unique(np.round(all_vertices, 7), axis=0)
-    # PCA on unique points, rather than triangle frequency, avoids over-weighting
-    # a highly tessellated area. Along the main extension axis the whole-mesh
-    # convex hull otherwise fills the concave interior grip profile.
     _, _, vt = np.linalg.svd(unique - unique.mean(axis=0), full_matrices=False)
-    axis = vt[0]
-    projections = all_vertices @ axis
-    start, stop = float(projections.min()), float(projections.max())
-    edges = np.linspace(start, stop, slabs + 1)
-    records = []
+    primary, transverse = vt[0], vt[1]
+    longitudinal = all_vertices @ primary
+    crosswise = all_vertices @ transverse
+    axial_edges = np.linspace(float(longitudinal.min()),float(longitudinal.max()),slabs+1)
+    band_edges = np.linspace(float(crosswise.min()),float(crosswise.max()),cross_bands+1)
+    longitudinal_tri = triangles @ primary
+    crosswise_tri = triangles @ transverse
+    records=[]
     for i in range(slabs):
-        lo, hi = float(edges[i]), float(edges[i+1])
-        overlaps = (np.max(triangles @ axis, axis=1) >= lo-1e-10) & (
-            np.min(triangles @ axis, axis=1) <= hi+1e-10)
-        clipped = []
-        for tri in triangles[overlaps]:
-            poly = clip_polygon(tri, axis, lo, True)
-            poly = clip_polygon(poly, axis, hi, False)
-            clipped.extend(poly)
-        if not clipped:
-            continue
-        file = dst_dir / f'{prefix}_{i:02d}.stl'
-        try:
-            stats = write_hull_stl(file, np.asarray(clipped))
-        except (ValueError, QhullError):
-            # An empty or planar end-slab has no collision volume.
-            continue
-        records.append({'file': file.name, 'slab': i,
-                        'axial_range_mesh_units': [lo, hi], **stats})
-    if len(records) < 2:
-        raise RuntimeError(f'Cannot make compound jaw collision from {src}: {len(records)} valid slabs')
-    return records, axis.tolist()
+        lo,hi=float(axial_edges[i]),float(axial_edges[i+1])
+        ax_mask=(longitudinal_tri.max(axis=1)>=lo-1e-10)&(
+                 longitudinal_tri.min(axis=1)<=hi+1e-10)
+        for j in range(cross_bands):
+            blo,bhi=float(band_edges[j]),float(band_edges[j+1])
+            mask=ax_mask & (crosswise_tri.max(axis=1)>=blo-1e-10)&(
+                                crosswise_tri.min(axis=1)<=bhi+1e-10)
+            clipped=[]
+            for tri in triangles[mask]:
+                poly=clip_polygon(tri,primary,lo,True)
+                poly=clip_polygon(poly,primary,hi,False)
+                poly=clip_polygon(poly,transverse,blo,True)
+                poly=clip_polygon(poly,transverse,bhi,False)
+                clipped.extend(poly)
+            if len(clipped)<4:continue
+            file=dst_dir/f'{prefix}_{i:02d}_{j:02d}.stl'
+            try:
+                stats=write_hull_stl(file,np.asarray(clipped))
+            except (ValueError,QhullError):
+                continue
+            records.append({'file':file.name,'slab':i,'band':j,
+                            'axial_range_mesh_units':[lo,hi],
+                            'transverse_range_mesh_units':[blo,bhi],**stats})
+    if len(records)<2:
+        raise RuntimeError(f'Cannot make jaw collision patches from {src}')
+    # Label thicker end as root to support aperture checks; this is a heuristic,
+    # not a measured distance from the tip on a calibrated physical gripper.
+    volumes=[sum(p['volume_m3'] for p in records if p['slab']==k) for k in range(slabs)]
+    n=max(2,slabs//4)
+    root_side='low_index' if sum(volumes[:n])>sum(volumes[-n:]) else 'high_index'
+    return records, primary.tolist(), transverse.tolist(), root_side
 
 
-def build_split_jaw_urdf(original_urdf: Path, output_dir: Path, slabs: int = 12):
+def build_split_jaw_urdf(original_urdf: Path, output_dir: Path, slabs: int = 12, cross_bands: int = 1):
     """Emit isolated URDF + STLs. Preserve all original visuals/joints/inertias."""
     original_urdf = original_urdf.resolve(strict=True)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +159,8 @@ def build_split_jaw_urdf(original_urdf: Path, output_dir: Path, slabs: int = 12)
                    'source_urdf': str(original_urdf),
                    'visual_meshes_unchanged': True,
                    'jaw_collision_slabs_requested': slabs,
+                   'jaw_collision_cross_bands_requested': cross_bands,
+                   'root_label_method': 'heuristic: thicker end of original jaw STL; check real-jaw orientation',
                    'warning': 'Slab hulls are approximate; inspect contact normals and tooth/concavity fidelity before claiming real-world equivalence.',
                    'jaw_parts': {}}
     for link in root.findall('link'):
@@ -154,18 +177,21 @@ def build_split_jaw_urdf(original_urdf: Path, output_dir: Path, slabs: int = 12)
                 raise ValueError('Ambiguous duplicate jaw collision element: '+body_name)
             found = True
             source = (original_urdf.parent / mesh.get('filename')).resolve(strict=True)
-            parts, axis = split_convex_slabs(source, mesh_dir, body_name, slabs)
+            parts, axis, cross_axis, root_side = split_convex_slabs(source, mesh_dir, body_name, slabs, cross_bands)
             at = list(link).index(collision)
             link.remove(collision)
             for j, part in enumerate(parts):
                 item = copy.deepcopy(collision)
-                item.set('name', f'{body_name}_collision_slab_{j:02d}')
+                item.set('name', f'{body_name}_collision_patch_{j:03d}')
                 item.find('./geometry/mesh').set(
                     'filename', 'jaw_collision/'+part['file'])
                 link.insert(at+j, item)
             diagnostics['jaw_parts'][body_name] = {
                 'visual_stl': target, 'collision_mesh_count': len(parts),
-                'principal_axis_mesh_local': axis, 'parts': parts}
+                'principal_axis_mesh_local': axis,
+                'transverse_axis_mesh_local': cross_axis,
+                'root_side_heuristic':root_side,
+                'parts': parts}
         if not found:
             raise ValueError(f'Jaw collision mesh {target} not found in {body_name}')
     if set(diagnostics['jaw_parts']) != set(TARGETS):
