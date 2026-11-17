@@ -252,6 +252,32 @@ def run(args):
         diag['wrist_first_approach_clearance'] = clearance
         diag['legacy_episode4_approach_replayed'] = False
         (result_dir/'ik_diagnostics.json').write_text(json.dumps(diag,ensure_ascii=False,indent=2)+'\n')
+        # Save two kinematic inspection snapshots even for blocked candidates.
+        # These are explicitly NOT physics videos or proof of reachability.
+        try:
+            from PIL import Image
+            snap = mujoco.MjData(model)
+            mujoco.mj_resetData(model,snap)
+            snap.qpos[bq:bq+3] = xyz
+            snap.qpos[bq+3:bq+7] = [1,0,0,0]
+            snap.qpos[qadr[5]] = high[5]
+            camera = mujoco.MjvCamera()
+            camera.type = mujoco.mjtCamera.mjCAMERA_FREE
+            camera.lookat[:] = xyz
+            camera.distance = .65
+            camera.azimuth = 120
+            camera.elevation = -22
+            model.vis.global_.offwidth = max(model.vis.global_.offwidth,480)
+            model.vis.global_.offheight = max(model.vis.global_.offheight,360)
+            with mujoco.Renderer(model,width=480,height=360) as renderer:
+                wrist_idx = max(1,int(round(max(1.5,args.transition_s*.5)*20)))
+                for title,idx in [('wrist_ready',wrist_idx),('target_pregrasp',len(joints)-1)]:
+                    snap.qpos[qadr[:5]] = np.deg2rad(joints[idx])
+                    mujoco.mj_forward(model,snap)
+                    renderer.update_scene(snap,camera=camera)
+                    Image.fromarray(renderer.render().copy()).save(result_dir/(title+'.png'))
+        except Exception as exc:
+            (result_dir/'preview_error.txt').write_text(str(exc))
         # Do not run known object-striking paths, nor misaligned end poses.
         # A diagnostic status is a useful result; do not claim grasp success.
         reasons=[]
