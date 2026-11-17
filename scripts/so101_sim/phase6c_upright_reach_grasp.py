@@ -81,10 +81,13 @@ def model_build(args):
     spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
-    # A temporary horizontal SUPPORT plane below the upright bottle, whose
-    # height is set AFTER choosing the pose; this is NOT the measured workcell.
+    # Place support plane BEFORE MjSpec.compile(): moving a compiled static
+    # world geom can leave its collision acceleration structures stale.
+    support_z = getattr(args, 'support_plane_z_m', None)
+    support_z = float(support_z) if support_z is not None else 0.0
+    if not math.isfinite(support_z): raise ValueError('support_plane_z_m must be finite')
     spec.worldbody.add_geom(name='phase6c_support', type=mujoco.mjtGeom.mjGEOM_PLANE,
-                            pos=[0,0,0],size=[1,1,.1],rgba=[.64,.71,.76,1],
+                            pos=[0,0,support_z],size=[1,1,.1],rgba=[.64,.71,.76,1],
                             contype=1,conaffinity=1,friction=[.9,.01,.001])
     for n in NAMES:
         if spec.joint(n) is None: raise ValueError('Missing joint: '+n)
@@ -225,7 +228,15 @@ def run(args):
     if bottom_z < args.minimum_floor_z:
         meta.update(status='UPRIGHT_ALIGNMENT_NOT_FOUND',reason=f'Candidate bottle bottom z={bottom_z:.4f}m below allowed support plane minimum {args.minimum_floor_z:.4f}m; need IK target or corrected scene calibration.')
         emit(args.out,meta);return
-    model.geom_pos[floor,2]=bottom_z
+    if args.support_plane_z_m is None:
+        # Legacy callers: retain original run mode; new Phase6F always uses
+        # the compile-time support plane to avoid stale static broadphase.
+        model.geom_pos[floor,2]=bottom_z
+        meta['support_geometry_method']='legacy_runtime_repositioning'
+    else:
+        if abs(float(args.support_plane_z_m)-bottom_z)>0.00001:
+            raise ValueError(f'Compiled support plane {args.support_plane_z_m:.6f} != bottle bottom {bottom_z:.6f}')
+        meta['support_geometry_method']='compile_time_static_plane'
     meta['virtual_support_z_m']=bottom_z
     d.qpos[qadr]=target[0];d.qvel[:]=0
     d.qpos[bq:bq+3]=center;d.qpos[bq+3:bq+7]=quat
@@ -357,6 +368,7 @@ def main():
     p.add_argument('--approach-fraction',type=float,default=.8)
     p.add_argument('--arm-trajectory-npz',type=Path,default=None,help='IK target arrays: joints_deg [N,5], times_s [N]')
     p.add_argument('--fixed-bottle-xyz-m',type=float,nargs=3,default=None,help='World xyz in metres; identical across candidates')
+    p.add_argument('--support-plane-z-m',type=float,default=None,help='Compile static support at fixed world z, recommended for fixed bottle')
     p.add_argument('--profile-config',type=Path,default=DEFAULT_PROFILE_CONFIG)
     p.add_argument('--approach-profile',default='baseline',
                    help='Named J4/J5 endpoint adjustment; not a world-frame approach angle')
