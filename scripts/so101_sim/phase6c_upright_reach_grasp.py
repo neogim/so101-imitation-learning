@@ -133,8 +133,19 @@ def run(args):
     if args.out.exists():raise FileExistsError(args.out)
     if args.dt<=0 or args.approach_fraction<=0 or args.fps<1:raise ValueError('Invalid options')
     ep,joints,times,seg=phase6b.load_reference(args.dataset_root,args.episode,args.approach_fraction)
-    profile = load_approach_profile(args.profile_config, args.approach_profile)
-    joints = apply_endpoint_joint_offsets(joints, times, profile)
+    if args.arm_trajectory_npz is not None:
+        with np.load(args.arm_trajectory_npz.resolve(strict=True), allow_pickle=False) as bundle:
+            joints = np.asarray(bundle['joints_deg'], dtype=float)
+            times = np.asarray(bundle['times_s'], dtype=float)
+        if (joints.ndim != 2 or joints.shape[1] != 5 or len(times) != len(joints)
+                or len(times) < 2 or not np.isfinite(joints).all()
+                or not np.isfinite(times).all() or np.any(np.diff(times) <= 0)
+                or times[0] < -1e-9):
+            raise ValueError('Invalid external 5-DoF IK trajectory / time vector')
+        profile = {'name': 'external_IK', 'trajectory_source': str(args.arm_trajectory_npz)}
+    else:
+        profile = load_approach_profile(args.profile_config, args.approach_profile)
+        joints = apply_endpoint_joint_offsets(joints, times, profile)
     model,qadr,vadr,aids,low,high,fixed,moving,bottle,floor=model_build(args)
     gripper_open=high[-1]
     gripper_closed=low[-1]
@@ -145,7 +156,7 @@ def run(args):
           'status':'PREFLIGHT','stage':'geometry','simulation_only':True,
           'source_episode':args.episode,'approach_segment':seg,
           'approach_profile':profile,
-          'muhi_upright_world_Z':True,'muhi_placement':'fixed before first physics step, selected from final recorded jaw geometry',
+          'muhi_upright_world_Z':True,'muhi_placement':('fixed user-specified world pose' if args.fixed_bottle_xyz_m else 'selected from final recorded jaw geometry'),
           'object_model':'provisional 50g cylindrical Muhi; URDF finger collision meshes',
           'integrator':'implicitfast','dt_s':args.dt,
           'arm_pd':[args.arm_kp,args.arm_kd,args.arm_torque],
@@ -153,7 +164,7 @@ def run(args):
           'self_collision':'off','robot_floor_collision':'off', 'jaw_jaw_collision':'off',
           'bottle_floor_and_finger_contact':'on',
           'real_table_and_laying_episode4_layout':'not reused',
-          'joint_mapping':'raw recorded degrees; uncalibrated; optional J4/J5 endpoint offsets',
+          'joint_mapping':'raw recorded degrees; uncalibrated; optional J4/J5 endpoint offsets or IK trajectory',
           'limit_clipping_deg':dict(zip(NAMES,clip.tolist())),
           'assumptions':['The Episode4 approach target was recorded with a lying object, so this does not prove upright pre-grasp alignment.',
                          'World support plane is virtual, placed at bottle bottom after preflight.',
@@ -170,19 +181,45 @@ def run(args):
     mujoco.mj_forward(model,d)
     free_joint=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     bq=int(model.jnt_qposadr[free_joint]);bd=int(model.jnt_dofadr[free_joint])
-    candidate,diag=grasp.select_bench_pose(model,d,bq,gripper_open,gripper_closed,
-                                            qadr[-1],fixed,moving,bottle,
-                                            min_fixed_gap_m=.0005,max_fixed_gap_m=.007)
-    meta['endpoint_candidate_search']=diag
-    if candidate is None:
-        meta.update(status='UPRIGHT_ALIGNMENT_NOT_FOUND',reason='Recorded endpoint wrist/hand pose is not a compatible upright two-jaw grasp with current geometry. Needs an IK pregrasp pose, not arbitrary target teleport.')
-        emit(args.out,meta);return
-    center,quat,gf,gm,local,label,cross_angle,cross_gap=candidate
-    meta['candidate_world_xyz_m']=center.tolist()
-    meta['candidate_local_xyz_m']=list(local)
-    meta['candidate_world_quat_wxyz']=quat.tolist()
-    meta['candidate_open_jaw_gap_mm']={'fixed':gf*1000,'moving':gm*1000}
-    meta['predicted_contact_angle_deg']=math.degrees(cross_angle)
+    if args.fixed_bottle_xyz_m is not None:
+        # The object is fixed at the same WORLD position for every IK profile;
+        # do not search for a convenient new object pose per candidate.
+        center = np.asarray(args.fixed_bottle_xyz_m, dtype=float)
+        if not np.isfinite(center).all() or center.shape != (3,):
+            raise ValueError('Fixed bottle position requires finite xyz in metres')
+        quat = np.array([1., 0., 0., 0.])
+        d.qpos[bq:bq+3] = center
+        d.qpos[bq+3:bq+7] = quat
+        d.qpos[qadr[-1]] = gripper_open
+        mujoco.mj_forward(model, d)
+        gf = grasp.geometry_gaps(model, d, bottle, fixed)
+        gm = grasp.geometry_gaps(model, d, bottle, moving)
+        min_sweep_gap = float('inf')
+        for close_angle in np.linspace(gripper_open, gripper_closed, 13):
+            d.qpos[qadr[-1]] = close_angle
+            mujoco.mj_forward(model, d)
+            min_sweep_gap = min(min_sweep_gap, grasp.geometry_gaps(model, d, bottle, moving))
+        meta['fixed_target_preflight'] = {
+            'open_gap_fixed_mm': gf*1000., 'open_gap_moving_mm': gm*1000.,
+            'predicted_moving_sweep_min_gap_mm': min_sweep_gap*1000.,
+            'note': 'Diagnostic only: do not assume bilateral contact or successful grasp.'}
+        meta['candidate_world_xyz_m'] = center.tolist()
+        meta['candidate_world_quat_wxyz'] = quat.tolist()
+        meta['candidate_open_jaw_gap_mm'] = {'fixed': gf*1000., 'moving': gm*1000.}
+    else:
+        candidate,diag=grasp.select_bench_pose(model,d,bq,gripper_open,gripper_closed,
+                                                qadr[-1],fixed,moving,bottle,
+                                                min_fixed_gap_m=.0005,max_fixed_gap_m=.007)
+        meta['endpoint_candidate_search']=diag
+        if candidate is None:
+            meta.update(status='UPRIGHT_ALIGNMENT_NOT_FOUND',reason='Recorded endpoint wrist/hand pose is not a compatible upright two-jaw grasp with current geometry. Needs an IK pregrasp pose, not arbitrary target teleport.')
+            emit(args.out,meta);return
+        center,quat,gf,gm,local,label,cross_angle,cross_gap=candidate
+        meta['candidate_world_xyz_m']=center.tolist()
+        meta['candidate_local_xyz_m']=list(local)
+        meta['candidate_world_quat_wxyz']=quat.tolist()
+        meta['candidate_open_jaw_gap_mm']={'fixed':gf*1000,'moving':gm*1000}
+        meta['predicted_contact_angle_deg']=math.degrees(cross_angle)
     # 97 mm bottle: support plane under bottom of assembled two cylinders.
     bottom_z=float(center[2])-physical.MUHI_LENGTH/2.
     if bottom_z < args.minimum_floor_z:
@@ -318,6 +355,8 @@ def main():
     p.add_argument('--out',type=Path,required=True)
     p.add_argument('--episode',type=int,default=4)
     p.add_argument('--approach-fraction',type=float,default=.8)
+    p.add_argument('--arm-trajectory-npz',type=Path,default=None,help='IK target arrays: joints_deg [N,5], times_s [N]')
+    p.add_argument('--fixed-bottle-xyz-m',type=float,nargs=3,default=None,help='World xyz in metres; identical across candidates')
     p.add_argument('--profile-config',type=Path,default=DEFAULT_PROFILE_CONFIG)
     p.add_argument('--approach-profile',default='baseline',
                    help='Named J4/J5 endpoint adjustment; not a world-frame approach angle')
