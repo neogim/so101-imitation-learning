@@ -83,6 +83,95 @@ def solve_ik(model,data,qadr,bid,lo,hi,xyz,anchor,bench):
     return solutions[0][1],solutions[0][2]
 
 
+def search_nonreverse_contact_pose(model,qadr,bj,lo,hi,xyz,bq,
+                                   fixed,moving,bottle,bench,out,args):
+    """Search a physically meaningful gripper placement with J4 >= 0.
+
+    Prior version optimized only one arbitrary grasp-body anchor and ended
+    with both jaws about 20-27 mm from the bottle at fully open. Evaluate
+    actual jaw-to-cylinder distances at open and closed J6, while preserving
+    the bottle's fixed XYZ and the original collision/friction settings.
+    The tested offsets are *gripper-frame target points*, not target moves.
+    """
+    import itertools
+    low=lo[:5].copy()
+    low[3]=max(low[3],math.radians(args.j4_nonnegative_min_deg))
+    if low[3]>=hi[3]:
+        raise ValueError('J4 bound does not intersect the URDF range')
+    options=[]
+    pose_data=mujoco.MjData(model)
+    for x,y,z in itertools.product(
+            (.005,.030,.055),(.011,.036,.061),(-.070,-.090)):
+        anchor=np.array([x,y,z],dtype=float)
+        try:
+            mujoco.mj_resetData(model,pose_data)
+            q,ik=solve_ik(model,pose_data,qadr,bj,low,hi[:5],xyz,anchor,bench)
+            pose_data.qpos[qadr[:5]]=q
+            pose_data.qpos[bq:bq+3]=xyz
+            pose_data.qpos[bq+3:bq+7]=[1,0,0,0]
+            pose_data.qpos[qadr[5]]=hi[5]
+            mujoco.mj_forward(model,pose_data)
+            open_fixed=grasp.geometry_gaps(model,pose_data,bottle,fixed)
+            open_moving=grasp.geometry_gaps(model,pose_data,bottle,moving)
+            pose_data.qpos[qadr[5]]=lo[5]
+            mujoco.mj_forward(model,pose_data)
+            closed_fixed=grasp.geometry_gaps(model,pose_data,bottle,fixed)
+            closed_moving=grasp.geometry_gaps(model,pose_data,bottle,moving)
+            # Prefer pre-contact clearance of roughly 1 mm for the fixed
+            # jaw and a closing sweep that reaches the opposing jaw. Values
+            # are heuristic, not hard-coded as a physically proven fit.
+            # Penalize any initial overlap, excessive far-side gap,
+            # and arm-anchor IK error. Do not penalize all penetration as
+            # "missed": a small negative distance predicts contact.
+            score=(1000*abs(open_fixed-.0015) +
+                   1000*abs(closed_moving+.001) +
+                   2500*max(0.,-open_fixed-.00025) +
+                   2500*max(0.,-open_moving-.00025) +
+                   400*max(0.,.004-open_moving) +
+                   .4*ik['anchor_error_mm'] +
+                   .008*ik['orientation_error_deg'])
+            row={'local_x_mm':1000*x,'local_y_mm':1000*y,
+                 'local_z_mm':1000*z,
+                 'j2_deg':float(np.rad2deg(q[1])),
+                 'j4_deg':float(np.rad2deg(q[3])),
+                 'ik_error_mm':ik['anchor_error_mm'],
+                 'orientation_error_deg':ik['orientation_error_deg'],
+                 'open_fixed_gap_mm':1000*open_fixed,
+                 'open_moving_gap_mm':1000*open_moving,
+                 'closed_fixed_gap_mm':1000*closed_fixed,
+                 'closed_moving_gap_mm':1000*closed_moving,
+                 'score':float(score),
+                 'valid_open':bool(min(open_fixed,open_moving)>-.0005),
+                 'anchor':anchor.tolist(),
+                 'q':q,'ik':ik}
+            options.append(row)
+        except Exception as exc:
+            options.append({'local_x_mm':1000*x,'local_y_mm':1000*y,
+                            'local_z_mm':1000*z,'score':None,
+                            'error':repr(exc)})
+    fields=('local_x_mm','local_y_mm','local_z_mm','j2_deg','j4_deg',
+            'ik_error_mm','orientation_error_deg','open_fixed_gap_mm',
+            'open_moving_gap_mm','closed_fixed_gap_mm','closed_moving_gap_mm',
+            'score','valid_open','error')
+    with (out/'j4_nonnegative_contact_search.csv').open('w',newline='') as f:
+        writer=csv.DictWriter(f,fieldnames=fields,extrasaction='ignore')
+        writer.writeheader();writer.writerows(options)
+    # Do not silently select an overlapping open jaw, or an IK point far
+    # away from the user-provided fixed bottle location.
+    feasible=[r for r in options if r.get('score') is not None
+              and r['valid_open'] and r['ik_error_mm']<=args.max_ik_error_mm]
+    if not feasible:
+        raise RuntimeError('No nonreverse contact-aware J4 candidate passed geometry/IK preflight; review search CSV')
+    chosen=min(feasible,key=lambda r:r['score'])
+    short={k:v for k,v in chosen.items() if k not in ('q','ik')}
+    dump(out/'j4_nonnegative_selected_pose.json',
+         {'chosen':short,'feasible_count':len(feasible),
+          'candidate_count':len(options),
+          'method':'18 local finger-anchor placements scored on actual open/closed jaw-to-bottle distances; fixed bottle XYZ; no friction edits',
+          'caveat':'Geometric preflight; best score does not imply physical grasp success'})
+    return chosen['q'],chosen['ik'],np.asarray(chosen['anchor']),short
+
+
 def jaw_geometry(model,data,qadr,q,xyz,bq,fixed,moving,bottle,lo,hi):
     data.qpos[qadr[:5]]=q
     data.qpos[bq:bq+3]=xyz; data.qpos[bq+3:bq+7]=[1,0,0,0]
@@ -396,7 +485,13 @@ def run(args):
                 ik_lo[3]=max(ik_lo[3],math.radians(args.j4_nonnegative_min_deg))
                 if ik_lo[3]>=hi[3]:
                     raise ValueError('Requested nonnegative J4 minimum exceeds URDF joint limits')
-            q,ik=solve_ik(model,data,qadr,bj,ik_lo,hi[:5],xyz,anchor,bench)
+            if name=='middle_j4_nonnegative' and args.j4_contact_search:
+                q,ik,anchor,search_choice=search_nonreverse_contact_pose(
+                    model,qadr,bj,lo,hi,xyz,bq,fixed,moving,bottle,
+                    bench,args.out,args)
+                ik['contact_aware_search_selected']=search_choice
+            else:
+                q,ik=solve_ik(model,data,qadr,bj,ik_lo,hi[:5],xyz,anchor,bench)
             ik['j4_wrist_flex_deg']=float(np.rad2deg(q[3]))
             ik['j4_constraint']='J4 >= %.3f deg' % args.j4_nonnegative_min_deg if name=='middle_j4_nonnegative' else 'original URDF limits'
             if name=='middle':
@@ -479,6 +574,9 @@ def run(args):
        'target_reused_across_cases':True,
        'depth_subset':args.depth_only,
        'j4_sign_comparison_enabled':args.j4_compare,
+       'j4_contact_search_enabled':args.j4_contact_search,
+       'j4_contact_search_csv':'j4_nonnegative_contact_search.csv' if (args.out/'j4_nonnegative_contact_search.csv').exists() else None,
+       'j4_contact_selected_pose':'j4_nonnegative_selected_pose.json' if (args.out/'j4_nonnegative_selected_pose.json').exists() else None,
        'j4_nonnegative_min_deg':args.j4_nonnegative_min_deg,
        'j4_comparison_note':'middle and middle_j4_nonnegative share target, depth, jaw and physics parameters; J1-J5 are re-solved; this is a wrist-sign-constrained IK A/B, not isolated single-joint motion',
        'jaw_collision_mode':args.jaw_collision_mode,
@@ -514,6 +612,9 @@ def main():
     p.add_argument('--max-ik-error-mm',type=float,default=20.)
     p.add_argument('--depth-only',choices=('all','root','middle','tip'),default='all',
                    help='Restrict physics and geometry to one depth; middle recommended for root-gap regression')
+    p.add_argument('--no-j4-contact-search',dest='j4_contact_search',action='store_false',
+                   help='Restore old single-anchor IK for J4 nonnegative, for A/B comparison')
+    p.set_defaults(j4_contact_search=True)
     p.add_argument('--no-j4-compare',dest='j4_compare',action='store_false',
                    help='Disable automatic extra middle candidate with J4 constrained nonnegative')
     p.set_defaults(j4_compare=True)
