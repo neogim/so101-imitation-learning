@@ -379,13 +379,26 @@ def run(args):
     results=[]
     root_gap_audit_status='NOT_RUN'
     depths=[d for d in DEPTHS if args.depth_only=='all' or d[0]==args.depth_only]
+    if args.j4_compare and args.depth_only in ('all','middle'):
+        # Controlled wrist comparison: same Muhi XYZ, same finger depth, same
+        # collision and friction model. Only the allowable wrist-flex sign
+        # changes; all remaining arm joints may re-optimize through IK.
+        depths.append(('middle_j4_nonnegative',-.070))
     for i,(name,local_z) in enumerate(depths,1):
         print(f'[{i}/{len(depths)}] {name}: same object xyz={np.round(xyz,4).tolist()}',flush=True)
         sub=args.out/name;sub.mkdir()
         anchor=np.array([REFERENCE_LOCAL_XY[0],REFERENCE_LOCAL_XY[1],local_z])
         data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
         try:
-            q,ik=solve_ik(model,data,qadr,bj,lo[:5],hi[:5],xyz,anchor,bench)
+            ik_lo=lo[:5].copy()
+            if name=='middle_j4_nonnegative':
+                # 0 deg is included; cannot use the baseline ~-95 deg posture.
+                ik_lo[3]=max(ik_lo[3],math.radians(args.j4_nonnegative_min_deg))
+                if ik_lo[3]>=hi[3]:
+                    raise ValueError('Requested nonnegative J4 minimum exceeds URDF joint limits')
+            q,ik=solve_ik(model,data,qadr,bj,ik_lo,hi[:5],xyz,anchor,bench)
+            ik['j4_wrist_flex_deg']=float(np.rad2deg(q[3]))
+            ik['j4_constraint']='J4 >= %.3f deg' % args.j4_nonnegative_min_deg if name=='middle_j4_nonnegative' else 'original URDF limits'
             if name=='middle':
                 # Audit the physically relevant center-depth pose before any
                 # bottle physics, without changing any arm or object state.
@@ -408,6 +421,8 @@ def run(args):
         row={'depth':name,'local_z_mm':1000*local_z,
              'j2_seed_deg':raised_seed_details['preferred_j2_deg'],
              'j2_solved_deg':ik.get('solved_j2_deg'),
+             'j4_solved_deg':ik.get('j4_wrist_flex_deg'),
+             'j4_constraint':ik.get('j4_constraint'),
              'ik_error_mm':ik.get('anchor_error_mm'),'open_fixed_gap_mm':geo.get('open_fixed_gap_mm'),
              'open_moving_gap_mm':geo.get('open_moving_gap_mm'),
              'sweep_moving_min_gap_mm':geo.get('closing_moving_min_gap_mm'),
@@ -463,6 +478,9 @@ def run(args):
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
        'depth_subset':args.depth_only,
+       'j4_sign_comparison_enabled':args.j4_compare,
+       'j4_nonnegative_min_deg':args.j4_nonnegative_min_deg,
+       'j4_comparison_note':'middle and middle_j4_nonnegative share target, depth, jaw and physics parameters; J1-J5 are re-solved; this is a wrist-sign-constrained IK A/B, not isolated single-joint motion',
        'jaw_collision_mode':args.jaw_collision_mode,
        'jaw_collision_slabs':args.jaw_collision_slabs if args.jaw_collision_mode!='original' else None,
        'jaw_collision_cross_bands':args.jaw_collision_cross_bands if args.jaw_collision_mode=='axial_cross_convex_patches' else 1,
@@ -496,6 +514,11 @@ def main():
     p.add_argument('--max-ik-error-mm',type=float,default=20.)
     p.add_argument('--depth-only',choices=('all','root','middle','tip'),default='all',
                    help='Restrict physics and geometry to one depth; middle recommended for root-gap regression')
+    p.add_argument('--no-j4-compare',dest='j4_compare',action='store_false',
+                   help='Disable automatic extra middle candidate with J4 constrained nonnegative')
+    p.set_defaults(j4_compare=True)
+    p.add_argument('--j4-nonnegative-min-deg',type=float,default=0.,
+                   help='Lower bound in degrees for J4 in additional nonreverse middle IK candidate')
     p.add_argument('--jaw-collision-mode',choices=('original','axial_convex_slabs','axial_cross_convex_patches'),
                    default='axial_cross_convex_patches',
                    help='Simulation only: preserve authentic visual jaw meshes; split collision longitudinally and transversely to reduce filling of root aperture; original restores baseline')
@@ -517,7 +540,7 @@ def main():
     p.add_argument('--j6-kd',type=float,default=.08)
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
-    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32 or not 1<=args.jaw_collision_cross_bands<=8:p.error('Invalid args')
+    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32 or not 1<=args.jaw_collision_cross_bands<=8 or not 0<=args.j4_nonnegative_min_deg<=95:p.error('Invalid args')
     run(args)
 
 if __name__=='__main__':main()
