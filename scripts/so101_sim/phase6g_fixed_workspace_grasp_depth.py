@@ -277,7 +277,7 @@ def run(args):
         if not any(row['status']=='DYNAMIC_TEST_COMPLETED' for row in rows):
             lines.extend(['', 'NO PHYSICS TEST WAS RUN.', 'Zero contact bars would be misleading: data is unavailable, not a measured failure.',
                           'Review IK error and open-jaw geometry before choosing the next target pose.'])
-        axes[1].text(.01,.93,'\\n'.join(lines),va='top',ha='left',fontfamily='monospace',fontsize=10,transform=axes[1].transAxes)
+        axes[1].text(.01,.93,'\n'.join(lines),va='top',ha='left',fontfamily='monospace',fontsize=10,transform=axes[1].transAxes)
         fig.savefig(args.out/'comparison.png',dpi=150);plt.close(fig)
     except Exception as e:(args.out/'plot_error.txt').write_text(repr(e))
     summary={'schema':'phase6g_fixed_workcell_root_middle_tip_v1','simulation_only':True,
