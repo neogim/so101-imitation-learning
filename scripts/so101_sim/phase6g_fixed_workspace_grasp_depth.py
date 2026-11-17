@@ -377,6 +377,7 @@ def run(args):
     }
     print('J2 raised IK seed:',json.dumps(raised_seed_details,ensure_ascii=False),flush=True)
     results=[]
+    root_gap_audit_status='NOT_RUN'
     for i,(name,local_z) in enumerate(DEPTHS,1):
         print(f'[{i}/3] {name}: same object xyz={np.round(xyz,4).tolist()}',flush=True)
         sub=args.out/name;sub.mkdir()
@@ -384,6 +385,18 @@ def run(args):
         data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
         try:
             q,ik=solve_ik(model,data,qadr,bj,lo[:5],hi[:5],xyz,anchor,bench)
+            if name=='middle':
+                # Audit the physically relevant center-depth pose before any
+                # bottle physics, without changing any arm or object state.
+                try:
+                    import jaw_root_gap_diagnostics
+                    jaw_root_gap_diagnostics.audit(
+                        model,qadr,lo,hi,q,fixed,moving,args.out,
+                        collision_build if collision_build.exists() else None)
+                    root_gap_audit_status='COMPLETED'
+                except Exception as exc:
+                    root_gap_audit_status='ERROR: '+repr(exc)
+                    (args.out/'jaw_root_gap_error.txt').write_text(repr(exc))
             geo=jaw_geometry(model,data,qadr,q,xyz,bq,fixed,moving,bottle,lo,hi)
             phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if ik['anchor_error_mm']<=args.max_ik_error_mm and not geo['open_jaws_overlap'] else {'status':'GEOMETRY_DIAGNOSTIC_ONLY','reason':'IK error or initial open-jaw overlap','bilateral_hold_steps':0}
         except Exception as exc:
@@ -449,7 +462,12 @@ def run(args):
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
        'jaw_collision_mode':args.jaw_collision_mode,
-       'jaw_collision_slabs':args.jaw_collision_slabs if args.jaw_collision_mode=='axial_convex_slabs' else None,
+       'jaw_collision_slabs':args.jaw_collision_slabs if args.jaw_collision_mode!='original' else None,
+       'jaw_collision_cross_bands':args.jaw_collision_cross_bands if args.jaw_collision_mode=='axial_cross_convex_patches' else 1,
+       'root_gap_audit_status':root_gap_audit_status,
+       'root_gap_profile':'jaw_root_gap_profile.json' if (args.out/'jaw_root_gap_profile.json').exists() else None,
+       'root_gap_plot':'jaw_root_gap_profile.png' if (args.out/'jaw_root_gap_profile.png').exists() else None,
+       'root_section_plot':'jaw_root_section_comparison.png' if (args.out/'jaw_root_section_comparison.png').exists() else None,
        'jaw_collision_build_report':str(collision_build.relative_to(args.out)) if collision_build.is_file() else None,
        'j2_raised_seed':raised_seed_details,
        'jaw_mesh_audit':'jaw_mesh_audit.json' if (args.out/'jaw_mesh_audit.json').exists() else None,
@@ -474,11 +492,13 @@ def main():
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--max-ik-error-mm',type=float,default=20.)
-    p.add_argument('--jaw-collision-mode',choices=('original','axial_convex_slabs'),
-                   default='axial_convex_slabs',
-                   help='Simulation only: preserve authentic visual jaw meshes and replace their single convex collision hulls with segmented convex slabs; use original for A/B control')
+    p.add_argument('--jaw-collision-mode',choices=('original','axial_convex_slabs','axial_cross_convex_patches'),
+                   default='axial_cross_convex_patches',
+                   help='Simulation only: preserve authentic visual jaw meshes; split collision longitudinally and transversely to reduce filling of root aperture; original restores baseline')
     p.add_argument('--jaw-collision-slabs',type=int,default=12,
                    help='Number of axial convex slices per original jaw mesh (2..32)')
+    p.add_argument('--jaw-collision-cross-bands',type=int,default=3,
+                   help='Crosswise convex partitions per axial slab in axial_cross_convex_patches mode (1..8)')
     p.add_argument('--j2-raise-deg',type=float,default=15.,
                    help='Prefer an IK seed raised at J2 by this angle (auto-select world-Z-positive sign); 0 disables')
     p.add_argument('--dt',type=float,default=.002)
@@ -493,7 +513,7 @@ def main():
     p.add_argument('--j6-kd',type=float,default=.08)
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
-    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32:p.error('Invalid args')
+    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32 or not 1<=args.jaw_collision_cross_bands<=8:p.error('Invalid args')
     run(args)
 
 if __name__=='__main__':main()
