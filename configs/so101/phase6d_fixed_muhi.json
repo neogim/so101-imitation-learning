@@ -1,0 +1,9 @@
+{
+  "schema": "phase6d_fixed_muhi_v1",
+  "fixed_bottle_world_xyz_m": [0.19613925241022875, 0.12632188275932638, 0.036934499548313446],
+  "fixed_bottle_provenance": "Phase 6C baseline/summary.json, experiment phase6c-batch-20261117-113650: auto-selected upright bottle center at original recorded endpoint; NOT measured real-world placement",
+  "historical_reference_j4_deg": 0.0,
+  "historical_reference_j5_deg": -90.0,
+  "historical_reference_note": "Fixed-arm J6 contact tests 2026-11-15 used J4=0/J5=-90, but did not verify a retained grasp or Lift.",
+  "comparison": "All Phase 6D IK candidates target the SAME bottle xyz (world Z upright), unlike previous Phase 6C per-profile placements."
+}
