@@ -319,6 +319,7 @@ def run(args):
     if not np.isfinite(xyz).all():raise ValueError('Non-finite target')
     args.support_plane_z_m=float(args.table_z)
     model,qadr,vadr,aids,lo,hi,fixed,moving,bottle,floor=phase6c.model_build(args)
+    collision_build=args.out/'collision_urdf'/'jaw_collision_build.json'
     try: mesh_report=audit_jaw_meshes(model,fixed,moving,args.out)
     except Exception as exc:
         mesh_report=[]
@@ -436,6 +437,9 @@ def run(args):
     summary={'schema':'phase6g_fixed_workcell_root_middle_tip_v1','simulation_only':True,
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
+       'jaw_collision_mode':args.jaw_collision_mode,
+       'jaw_collision_slabs':args.jaw_collision_slabs if args.jaw_collision_mode=='axial_convex_slabs' else None,
+       'jaw_collision_build_report':str(collision_build.relative_to(args.out)) if collision_build.is_file() else None,
        'j2_raised_seed':raised_seed_details,
        'jaw_mesh_audit':'jaw_mesh_audit.json' if (args.out/'jaw_mesh_audit.json').exists() else None,
        'jaw_mesh_figure':'jaw_mesh_vs_convex_hull.png' if (args.out/'jaw_mesh_vs_convex_hull.png').exists() else None,
@@ -459,6 +463,11 @@ def main():
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--max-ik-error-mm',type=float,default=20.)
+    p.add_argument('--jaw-collision-mode',choices=('original','axial_convex_slabs'),
+                   default='axial_convex_slabs',
+                   help='Simulation only: preserve authentic visual jaw meshes and replace their single convex collision hulls with segmented convex slabs; use original for A/B control')
+    p.add_argument('--jaw-collision-slabs',type=int,default=12,
+                   help='Number of axial convex slices per original jaw mesh (2..32)')
     p.add_argument('--j2-raise-deg',type=float,default=15.,
                    help='Prefer an IK seed raised at J2 by this angle (auto-select world-Z-positive sign); 0 disables')
     p.add_argument('--dt',type=float,default=.002)
@@ -473,7 +482,7 @@ def main():
     p.add_argument('--j6-kd',type=float,default=.08)
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
-    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0:p.error('Invalid args')
+    if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32:p.error('Invalid args')
     run(args)
 
 if __name__=='__main__':main()
