@@ -78,7 +78,19 @@ def emit(out, summary):
 
 
 def model_build(args):
-    spec=mujoco.MjSpec.from_file(str(args.urdf.resolve(strict=True)))
+    jaw_mode=getattr(args,'jaw_collision_mode','original')
+    if jaw_mode=='axial_convex_slabs':
+        import jaw_collision_geometry
+        original=args.urdf.resolve(strict=True)
+        root=Path(getattr(args,'out',Path('/tmp/so101-jaw-collision'))) / 'collision_urdf'
+        effective,diagnostics=jaw_collision_geometry.build_split_jaw_urdf(
+            original,root,slabs=int(getattr(args,'jaw_collision_slabs',12)))
+        print('Jaw collision: axial convex slabs; original visual STL unchanged; report:',root/'jaw_collision_build.json',flush=True)
+    elif jaw_mode=='original':
+        effective=args.urdf.resolve(strict=True)
+    else:
+        raise ValueError('jaw_collision_mode must be original or axial_convex_slabs')
+    spec=mujoco.MjSpec.from_file(str(effective))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
     # Place support plane BEFORE MjSpec.compile(): moving a compiled static
@@ -115,7 +127,7 @@ def model_build(args):
         high.append(float(model.jnt_range[j,1])-.0001)
     qadr=np.array(qadr);vadr=np.array(vadr);aids=np.array(aids)
     # Isolate contacts: only finger->bottle and bottle->support. Preserve
-    # verified original finger collision geometry. No artificial proxy jaws.
+    # simulated finger collision geometry. Original STL is retained in original mode;
     fixed=grasp.owned_collision_geoms(model,grasp.FINGER_BODY)
     moving=grasp.owned_collision_geoms(model,grasp.MOVING_BODY)
     bottle=tuple(physical.geom_id(model,n) for n in physical.DYNAMIC_GEOMS)
