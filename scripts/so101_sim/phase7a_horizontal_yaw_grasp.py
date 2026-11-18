@@ -254,8 +254,11 @@ def contact_counts(model, data, fixed, moving, bottle):
 def save_video(frames, destination, fps):
     if not frames or shutil.which('ffmpeg') is None:
         return None
+    width, height = frames[0].size
+    if any(frame.size != (width, height) for frame in frames):
+        raise ValueError('Video frames must have identical dimensions')
     p=subprocess.Popen(['ffmpeg','-hide_banner','-loglevel','error','-y',
-                        '-f','rawvideo','-pix_fmt','rgb24','-s','640x460',
+                        '-f','rawvideo','-pix_fmt','rgb24','-s',f'{width}x{height}',
                         '-r',str(fps),'-i','-','-c:v','libx264','-pix_fmt','yuv420p',
                         str(destination)],stdin=subprocess.PIPE,stderr=subprocess.PIPE)
     for fr in frames:
@@ -280,13 +283,15 @@ def render_scene(model,data,camera,renderer,scene_options,label):
 
 def render_table_collision_diagnostic(model,qadr,bq,q,xyz,quat,lo,hi,
                                       floor,tool_geoms,args,out,bench,bid):
-    """Render visual evidence regardless of collision preflight failure.
+    """Synchronized 3-view MuJoCo geometry diagnostic, including invalid poses.
 
-    This is a STATIC pose/kinematic sweep, not a safe physics trajectory.
-    The target Muhi never moves; every frame is mj_forward + renderer.
+    Every movie frame shows the SAME robot/object state in 3 FIXED cameras:
+    side | opposite side | overhead. No camera switching in the movie.
+    This is mj_forward geometry, not a dynamically executed trajectory.
     """
-    model.vis.global_.offwidth=max(640,model.vis.global_.offwidth)
-    model.vis.global_.offheight=max(460,model.vis.global_.offheight)
+    view_w, view_h = 640, 460
+    model.vis.global_.offwidth=max(view_w,model.vis.global_.offwidth)
+    model.vis.global_.offheight=max(view_h,model.vis.global_.offheight)
     data=mujoco.MjData(model)
     camera=mujoco.MjvCamera()
     camera.type=mujoco.mjtCamera.mjCAMERA_FREE
@@ -294,15 +299,16 @@ def render_table_collision_diagnostic(model,qadr,bq,q,xyz,quat,lo,hi,
     camera.distance=.43
     scene_options=mujoco.MjvOption()
     original_colors=model.geom_rgba.copy()
-    renderer=None
     frames=[]
     rows=[]
+    renderer=None
     try:
-        renderer=mujoco.Renderer(model,width=640,height=460)
+        renderer=mujoco.Renderer(model,width=view_w,height=view_h)
         stages=[('home_open',bench,0.),('grasp_open',q,0.),
                 ('grasp_half',q,.5),('grasp_85pct',q,.85),
                 ('grasp_closed',q,1.)]
-        viewpoints=[('side',85.,-15.),('opposite_side',265.,-15.),
+        viewpoints=[('side',85.,-15.),
+                    ('opposite_side',265.,-15.),
                     ('overhead',120.,-75.)]
         for stage,posture,closing_fraction in stages:
             jaw_angle=hi[5]+closing_fraction*(lo[5]-hi[5])
@@ -324,6 +330,7 @@ def render_table_collision_diagnostic(model,qadr,bq,q,xyz,quat,lo,hi,
             model.geom_rgba[:]=original_colors
             if gap<args.min_table_clearance_mm/1000:
                 model.geom_rgba[gid]=[.95,.12,.14,1.]
+            panels=[]
             for view,azimuth,elevation in viewpoints:
                 camera.azimuth=azimuth
                 camera.elevation=elevation
@@ -333,19 +340,25 @@ def render_table_collision_diagnostic(model,qadr,bq,q,xyz,quat,lo,hi,
                 dr.rectangle((0,430,640,460),fill=(25,37,50))
                 dr.text((10,438),f'TABLE GAP {gap*1000:+.1f} mm | closest: {name}',
                         fill=(255,175,175) if gap<0 else (180,255,195))
-                # Hold each viewpoint long enough to inspect and pause.
-                frames.extend([frame]*4)
+                panels.append(frame)
                 frame.save(out/f'diagnostic_{stage}_{view}.png')
+            # All three viewpoints at precisely the same simulated pose.
+            canvas=Image.new('RGB',(view_w*len(panels),view_h))
+            for index,panel in enumerate(panels):
+                canvas.paste(panel,(view_w*index,0))
+            canvas.save(out/f'diagnostic_{stage}_3views.png')
+            # Hold this *single synchronized triptych* for one second.
+            frames.extend([canvas]*max(1,int(args.fps)))
         with (out/'table_collision_diagnostic.csv').open('w',newline='') as fp:
             wr=csv.DictWriter(fp,fieldnames=rows[0].keys())
-            wr.writeheader()
-            wr.writerows(rows)
+            wr.writeheader();wr.writerows(rows)
         video=save_video(frames,out/'table_collision_diagnostic.mp4',args.fps)
         return dict(status='RENDERED_KINEMATIC_DIAGNOSTIC',video=video,
+                    layout='synchronized_triptych_1920x460',
                     snapshots=len(stages)*len(viewpoints),
                     stages=len(stages),views=len(viewpoints),
                     minimum_gap_mm=min(r['min_tool_table_gap_mm'] for r in rows),
-                    note='Images are intentionally rendered even when collision preflight fails; no physics action or penetration resolution is implied.')
+                    note='All 3 camera angles shown simultaneously at identical pose; static MuJoCo geometry sweep, not dynamic contact.')
     finally:
         model.geom_rgba[:]=original_colors
         if renderer is not None:renderer.close()
