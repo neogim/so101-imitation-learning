@@ -75,9 +75,9 @@ def finger_axis_error(model,data,qadr,bid,q,finger_axis,object_axis):
     return float(np.degrees(np.arcsin(min(1.,abs(float(np.dot(r@finger_axis,object_axis))))))
 
 
-def tool_table_gap(model,data,qadr,bq,q,xyz,quat,hi,floor,tool_geoms):
+def tool_table_gap(model,data,qadr,bq,q,xyz,quat,hi,floor,tool_geoms,jaw_angle=None):
     data.qpos[qadr[:5]]=q
-    data.qpos[qadr[5]]=hi[5]
+    data.qpos[qadr[5]]=hi[5] if jaw_angle is None else jaw_angle
     data.qpos[bq:bq+3]=xyz
     data.qpos[bq+3:bq+7]=quat
     mujoco.mj_forward(model,data)
@@ -436,6 +436,17 @@ def run(args):
         if any(part in name for part in ('elbow','wrist','gripper','jaw')):
             tool_geoms.append(gid)
     if not tool_geoms:raise ValueError('No forearm/wrist/tool collision geoms found')
+    # The Phase6C baseline isolates jaw/bottle and bottle/table contacts.
+    # Phase7A additionally enables actual arm/tool/table response.
+    # Use a dedicated collision bit (8) for non-jaw tool links, and bit 4
+    # for the jaw patches. Avoid accidentally creating tool/bottle contacts.
+    jaw_geoms=set(fixed)|set(moving)
+    model.geom_conaffinity[floor] |= 8
+    for geom in tool_geoms:
+        if geom in jaw_geoms:
+            model.geom_conaffinity[geom] |= 4
+        else:
+            model.geom_contype[geom] |= 8
     outputs=[]
     for yaw in args.yaw_deg:
         args.current_yaw_deg=float(yaw)
@@ -457,8 +468,16 @@ def run(args):
                                      args,out,bench,floor,tool_geoms)
             # Keep a visual record even for failed geometry candidates.
             # Reject deeply intersecting jaws before running dynamics.
-            table_gap,nearest_table_geom=tool_table_gap(
-                model,data,qadr,bq,q,xyz,quat,hi,floor,tool_geoms)
+            table_gaps=[]
+            for frac in (0.,.5,.85,1.):
+                angle=hi[5]+frac*(lo[5]-hi[5])
+                gap,near=tool_table_gap(model,data,qadr,bq,q,xyz,quat,hi,floor,
+                                        tool_geoms,jaw_angle=angle)
+                table_gaps.append(dict(j6_closed_fraction=frac,
+                                       gap_mm=gap,nearest_geom=near))
+            shallowest=min(table_gaps,key=lambda x:x['gap_mm'])
+            table_gap=shallowest['gap_mm']
+            nearest_table_geom=shallowest['nearest_geom']
             preflight=(best['valid_open'] and
                        table_gap>=args.min_table_clearance_mm and
                        preview.get('table_preflight_ok',False))
@@ -473,6 +492,7 @@ def run(args):
                          j5_solved_deg=float(np.rad2deg(q[4])),
                          finger_perpendicular_error_deg=best['finger_perpendicular_error_deg'],
                          table_grasp_gap_mm=table_gap,
+                         table_grasp_sweep=table_gaps,
                          nearest_table_geom=nearest_table_geom,
                          joint_angles_deg=dict(zip(JOINT_NAMES,np.rad2deg(q).tolist())),
                          geometry=best['geometry'],
@@ -510,6 +530,8 @@ def run(args):
         finger_long_axis_local=faxis.tolist(),
         permitted_perpendicular_error_deg=35.0,
         table_preflight_min_clearance_mm=args.min_table_clearance_mm,
+        dynamic_tool_table_contact_enabled=True,
+        table_preflight_j6_samples=[0.0,0.5,0.85,1.0],
         act_dataset_ready=False,
         preview_is_kinematic_only=True,
         validation_note='Collision geometry optimization + stationary-arm J6 close/hold. Physical Home->Pregrasp->Grasp not yet validated. No lift.',
