@@ -477,9 +477,20 @@ def physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,fixed,moving,
             rows.append(row)
             if phase=='hold':hold_window.append(row)
             if renderer is not None and (k%stride==0 or k==steps):
-                frames.append(render_scene(model,d,camera,renderer,vis,
-                    f'Yaw {args.current_yaw_deg} {phase} | F{fc}/M{mc} '
-                    f'z={1000*(d.qpos[bq+2]-xyz[2]):+.1f}mm'))
+                # Same instant, three fixed cameras side by side. No jump cut.
+                view_panels=[]
+                for name,azimuth,elevation in (
+                        ('side',85.,-15.),('opposite',265.,-15.),
+                        ('overhead',120.,-75.)):
+                    camera.azimuth=azimuth
+                    camera.elevation=elevation
+                    view_panels.append(render_scene(model,d,camera,renderer,vis,
+                        f'Yaw {args.current_yaw_deg} {phase} {name} | F{fc}/M{mc} '
+                        f'z={1000*(d.qpos[bq+2]-xyz[2]):+.1f}mm'))
+                canvas=Image.new('RGB',(1920,460))
+                for ix,panel in enumerate(view_panels):
+                    canvas.paste(panel,(640*ix,0))
+                frames.append(canvas)
     finally:
         if renderer:renderer.close()
     if rows:
@@ -516,7 +527,7 @@ def physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,fixed,moving,
 
 
 def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
-                     args,out,bench,floor,tool_geoms):
+                     args,out,bench,floor,tool_geoms,pre_q=None):
     # Preview only: interpolation in configuration space, collision NOT checked
     # in the currently isolated (finger-bottle-only) model.
     probe=mujoco.MjData(model)
@@ -526,8 +537,9 @@ def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
     home=np.clip(bench,lo[:5]+1e-5,hi[:5]-1e-5)
     anchor=np.array([.03,.036,-.07],dtype=float)
     point=p+r@anchor
-    pre,_=ik_target(model,probe,qadr,bid,lo[:5],hi[:5],
-                    point+[0,0,.040],anchor,q,r,max_nfev=65)
+    pre=(pre_q.copy() if pre_q is not None else ik_target(
+         model,probe,qadr,bid,lo[:5],hi[:5],
+         point+[0,0,.040],anchor,q,r,max_nfev=65)[0])
     path=[]
     for phase,first,last,n in [('home_to_pregrasp',home,pre,24),
                                ('pregrasp_to_grasp',pre,q,24)]:
@@ -639,7 +651,7 @@ def run(args):
                                       error=repr(render_exc),video=None)
                 (out/'diagnostic_render_error.txt').write_text(repr(render_exc))
             preview=approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
-                                     args,out,bench,floor,tool_geoms)
+                                     args,out,bench,floor,tool_geoms,pre_q=pre_q)
             # Keep a visual record even for failed geometry candidates.
             # Reject deeply intersecting jaws before running dynamics.
             table_gaps=[]
@@ -652,7 +664,25 @@ def run(args):
             shallowest=min(table_gaps,key=lambda x:x['gap_mm'])
             table_gap=shallowest['gap_mm']
             nearest_table_geom=shallowest['nearest_geom']
+            # Check the ACTUAL dynamic approach and subsequent world-Z lift
+            # trajectories with jaw open/closed respectively.
+            trajectory_clearances=[]
+            for phase,first,last,angle in (
+                    ('approach',pre_q,q,hi[5]),
+                    ('lift',q,lift_q,lo[5])):
+                for step in range(21):
+                    alpha=step/20.
+                    posture=(1-alpha)*first+alpha*last
+                    mm,geom=tool_table_gap(model,data,qadr,bq,posture,xyz,quat,
+                                            hi,floor,tool_geoms,jaw_angle=angle)
+                    trajectory_clearances.append(dict(phase=phase,
+                        sample=step,gap_mm=mm,nearest_geom=geom))
+            with (out/'actual_motion_table_clearance.csv').open('w',newline='') as fp:
+                writer=csv.DictWriter(fp,fieldnames=trajectory_clearances[0].keys())
+                writer.writeheader();writer.writerows(trajectory_clearances)
+            real_motion_min_gap=min(row['gap_mm'] for row in trajectory_clearances)
             preflight=(best['predicts_paired'] and
+                       real_motion_min_gap>=args.min_table_clearance_mm and
                        table_gap>=args.min_table_clearance_mm and
                        preview.get('table_preflight_ok',False) and
                        max(ik_lift['pregrasp_ik_error_mm'],
@@ -670,6 +700,7 @@ def run(args):
                          table_grasp_gap_mm=table_gap,
                          table_grasp_sweep=table_gaps,
                          nearest_table_geom=nearest_table_geom,
+                         actual_motion_min_table_gap_mm=real_motion_min_gap,
                          joint_angles_deg=dict(zip(JOINT_NAMES,np.rad2deg(q).tolist())),
                          geometry=best['geometry'],
                          geometric_score=best['score'],
@@ -691,6 +722,7 @@ def run(args):
                j4_deg=r.get('j4_solved_deg'),j5_deg=r.get('j5_solved_deg'),
                finger_perpendicular_error_deg=r.get('finger_perpendicular_error_deg'),
                table_grasp_gap_mm=r.get('table_grasp_gap_mm'),
+               actual_motion_min_table_gap_mm=r.get('actual_motion_min_table_gap_mm'),
                predicted_bilateral=r.get('predicted_bilateral'),
                bilateral_hold_steps=r.get('dynamic',{}).get('bilateral_hold_steps'),
                max_xy_displacement_mm=r.get('dynamic',{}).get('max_xy_displacement_mm'),
@@ -721,7 +753,7 @@ def run(args):
         table_preflight_j6_samples=[0.0,0.5,0.85,1.0],
         act_dataset_ready=False,
         preview_is_kinematic_only=True,
-        validation_note='Fixed-jaw 2-3mm preflight, torque-limited dynamic approach, J6 close and contact-gated world-Z lift. MuJoCo result requires video validation.',
+        validation_note='Fixed-jaw 2-3mm preflight; synchronized 3-view dynamic approach, torque-limited J6 close, and contact-gated 20mm world-Z lift; actual motion table gaps scanned. MuJoCo execution not yet verified.',
         collision_model=args.jaw_collision_mode,friction_modified=False,
         results=outputs))
     print('RESULT_DIR:',args.out,flush=True)
