@@ -278,6 +278,79 @@ def render_scene(model,data,camera,renderer,scene_options,label):
     return img
 
 
+def render_table_collision_diagnostic(model,qadr,bq,q,xyz,quat,lo,hi,
+                                      floor,tool_geoms,args,out,bench,bid):
+    """Render visual evidence regardless of collision preflight failure.
+
+    This is a STATIC pose/kinematic sweep, not a safe physics trajectory.
+    The target Muhi never moves; every frame is mj_forward + renderer.
+    """
+    model.vis.global_.offwidth=max(640,model.vis.global_.offwidth)
+    model.vis.global_.offheight=max(460,model.vis.global_.offheight)
+    data=mujoco.MjData(model)
+    camera=mujoco.MjvCamera()
+    camera.type=mujoco.mjtCamera.mjCAMERA_FREE
+    camera.lookat[:]=xyz
+    camera.distance=.43
+    scene_options=mujoco.MjvOption()
+    original_colors=model.geom_rgba.copy()
+    renderer=None
+    frames=[]
+    rows=[]
+    try:
+        renderer=mujoco.Renderer(model,width=640,height=460)
+        stages=[('home_open',bench,0.),('grasp_open',q,0.),
+                ('grasp_half',q,.5),('grasp_85pct',q,.85),
+                ('grasp_closed',q,1.)]
+        viewpoints=[('side',85.,-15.),('opposite_side',265.,-15.),
+                    ('overhead',120.,-75.)]
+        for stage,posture,closing_fraction in stages:
+            jaw_angle=hi[5]+closing_fraction*(lo[5]-hi[5])
+            data.qpos[qadr[:5]]=posture
+            data.qpos[qadr[5]]=jaw_angle
+            data.qpos[bq:bq+3]=xyz
+            data.qpos[bq+3:bq+7]=quat
+            data.qvel[:]=0
+            mujoco.mj_forward(model,data)
+            contact=[]
+            for gid in tool_geoms:
+                dist=float(mujoco.mj_geomDistance(
+                    model,data,int(floor),int(gid),.25,np.zeros(6)))
+                contact.append((dist,int(gid)))
+            gap,gid=min(contact)
+            name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,gid)
+            rows.append(dict(stage=stage,j6_closed_fraction=closing_fraction,
+                             min_tool_table_gap_mm=gap*1000,nearest_geom=name))
+            model.geom_rgba[:]=original_colors
+            if gap<args.min_table_clearance_mm/1000:
+                model.geom_rgba[gid]=[.95,.12,.14,1.]
+            for view,azimuth,elevation in viewpoints:
+                camera.azimuth=azimuth
+                camera.elevation=elevation
+                frame=render_scene(model,data,camera,renderer,scene_options,
+                                   f'Yaw {args.current_yaw_deg} | {stage} | {view}')
+                dr=ImageDraw.Draw(frame)
+                dr.rectangle((0,430,640,460),fill=(25,37,50))
+                dr.text((10,438),f'TABLE GAP {gap*1000:+.1f} mm | closest: {name}',
+                        fill=(255,175,175) if gap<0 else (180,255,195))
+                # Hold each viewpoint long enough to inspect and pause.
+                frames.extend([frame]*4)
+                frame.save(out/f'diagnostic_{stage}_{view}.png')
+        with (out/'table_collision_diagnostic.csv').open('w',newline='') as fp:
+            wr=csv.DictWriter(fp,fieldnames=rows[0].keys())
+            wr.writeheader()
+            wr.writerows(rows)
+        video=save_video(frames,out/'table_collision_diagnostic.mp4',args.fps)
+        return dict(status='RENDERED_KINEMATIC_DIAGNOSTIC',video=video,
+                    snapshots=len(stages)*len(viewpoints),
+                    stages=len(stages),views=len(viewpoints),
+                    minimum_gap_mm=min(r['min_tool_table_gap_mm'] for r in rows),
+                    note='Images are intentionally rendered even when collision preflight fails; no physics action or penetration resolution is implied.')
+    finally:
+        model.geom_rgba[:]=original_colors
+        if renderer is not None:renderer.close()
+
+
 def physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,fixed,moving,
                    bottle,args,out):
     d=mujoco.MjData(model);mujoco.mj_resetData(model,d)
@@ -465,6 +538,15 @@ def run(args):
                        dict(yaw_deg=yaw,world_center_m=xyz.tolist(),
                             world_quat_wxyz=quat.tolist(),axis_world=axis.tolist(),
                             selected=choices[0],candidates=choices))
+            # Always render diagnostic evidence before preflight can skip motion.
+            try:
+                collision_visual=render_table_collision_diagnostic(
+                    model,qadr,bq,q,xyz,quat,lo,hi,floor,tool_geoms,
+                    args,out,bench,bid)
+            except Exception as render_exc:
+                collision_visual=dict(status='DIAGNOSTIC_RENDER_FAILED',
+                                      error=repr(render_exc),video=None)
+                (out/'diagnostic_render_error.txt').write_text(repr(render_exc))
             preview=approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
                                      args,out,bench,floor,tool_geoms)
             # Keep a visual record even for failed geometry candidates.
@@ -500,6 +582,7 @@ def run(args):
                          geometric_score=best['final_score'],
                          predicted_bilateral=best['predicts_paired'],
                          dynamic=physics,approach_preview=preview,
+                         collision_diagnostic=collision_visual,
                          note='Predicted geometric grasp != dynamic physical grasp success')
         except Exception as exc:
             outcome=dict(yaw_deg=yaw,status='EXECUTION_ERROR',
@@ -519,6 +602,7 @@ def run(args):
                geometric_score=r.get('geometric_score'),
                video=r.get('dynamic',{}).get('video'),
                approach_preview=r.get('approach_preview',{}).get('video'),
+               collision_diagnostic=r.get('collision_diagnostic',{}).get('video'),
                error=r.get('error')) for r in outputs]
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
