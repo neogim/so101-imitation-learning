@@ -163,13 +163,45 @@ def search_nonreverse_contact_pose(model,qadr,bj,lo,hi,xyz,bq,
     if not feasible:
         raise RuntimeError('No nonreverse contact-aware J4 candidate passed geometry/IK preflight; review search CSV')
     chosen=min(feasible,key=lambda r:r['score'])
-    short={k:v for k,v in chosen.items() if k not in ('q','ik')}
+    baseline_choice={k:v for k,v in chosen.items() if k not in ('q','ik')}
+    chosen_q=chosen['q'].copy()
+    chosen_anchor=np.asarray(chosen['anchor'],dtype=float)
+    refined_report=None
+    if args.j4_bilateral_refine:
+        import j4_bilateral_contact_refinement
+        chosen_q,chosen_anchor,refined_report=j4_bilateral_contact_refinement.refine(
+            model,qadr,bj,bq,xyz,fixed,moving,bottle,
+            lo,hi,hi[5],lo[5],options,args.max_ik_error_mm,
+            out,j4_min_deg=args.j4_nonnegative_min_deg)
+    # Recompute the IK diagnostics for the ACTUAL selected/refined posture.
+    # Returning the old seed's error/J4 angle here would be misleading.
+    pos,rot=fk(model,pose_data,qadr,bj,chosen_q)
+    anchor_xyz=pos+rot@chosen_anchor
+    _,bench_rot=fk(model,pose_data,qadr,bj,bench)
+    ik=dict(chosen['ik'])
+    ik.update({'solved_j2_deg':float(np.rad2deg(chosen_q[1])),
+               'anchor_error_mm':float(np.linalg.norm(anchor_xyz-xyz)*1000),
+               'orientation_error_deg':float(np.rad2deg(
+                   np.linalg.norm(Rotation.from_matrix(bench_rot@rot.T).as_rotvec()))),
+               'grasp_reference_world_xyz_m':anchor_xyz.tolist(),
+               'ik_angles_deg':dict(zip(JOINTS,np.rad2deg(chosen_q).tolist())),
+               'ik_refinement':'paired contact witnesses, J4 >= 0' if refined_report else '18-anchor screening'})
+    short=dict(baseline_choice)
+    short.update({'selected_anchor_local_mm':(1000*chosen_anchor).tolist(),
+                  'selected_j4_deg':float(np.rad2deg(chosen_q[3])),
+                  'selected_j2_deg':float(np.rad2deg(chosen_q[1])),
+                  'selected_ik_error_mm':ik['anchor_error_mm'],
+                  'bilateral_refinement_used':bool(refined_report),
+                  'predicted_bilateral_contact':(
+                      refined_report['chosen_predicted_paired'] if refined_report else None),
+                  'bilateral_refinement_report':(
+                      'j4_bilateral_refinement.json' if refined_report else None)})
     dump(out/'j4_nonnegative_selected_pose.json',
-         {'chosen':short,'feasible_count':len(feasible),
-          'candidate_count':len(options),
-          'method':'18 local finger-anchor placements scored on actual open/closed jaw-to-bottle distances; fixed bottle XYZ; no friction edits',
-          'caveat':'Geometric preflight; best score does not imply physical grasp success'})
-    return chosen['q'],chosen['ik'],np.asarray(chosen['anchor']),short
+         {'chosen':short,'unrefined_seed':baseline_choice,
+          'feasible_count':len(feasible),'candidate_count':len(options),
+          'method':'18-anchor IK preflight, then optional bounded 5-joint refinement of simultaneous fixed/moving jaw contact witnesses; bottle and friction unchanged',
+          'caveat':'Predicted bilateral proximity is NOT confirmed grasp; inspect dynamic contacts and motion'})
+    return chosen_q,ik,chosen_anchor,short
 
 
 def jaw_geometry(model,data,qadr,q,xyz,bq,fixed,moving,bottle,lo,hi):
@@ -575,6 +607,8 @@ def run(args):
        'depth_subset':args.depth_only,
        'j4_sign_comparison_enabled':args.j4_compare,
        'j4_contact_search_enabled':args.j4_contact_search,
+       'j4_bilateral_refinement_enabled':args.j4_bilateral_refine,
+       'j4_bilateral_refinement_report':'j4_bilateral_refinement.json' if (args.out/'j4_bilateral_refinement.json').exists() else None,
        'j4_contact_search_csv':'j4_nonnegative_contact_search.csv' if (args.out/'j4_nonnegative_contact_search.csv').exists() else None,
        'j4_contact_selected_pose':'j4_nonnegative_selected_pose.json' if (args.out/'j4_nonnegative_selected_pose.json').exists() else None,
        'j4_nonnegative_min_deg':args.j4_nonnegative_min_deg,
@@ -612,6 +646,9 @@ def main():
     p.add_argument('--max-ik-error-mm',type=float,default=20.)
     p.add_argument('--depth-only',choices=('all','root','middle','tip'),default='all',
                    help='Restrict physics and geometry to one depth; middle recommended for root-gap regression')
+    p.add_argument('--no-j4-bilateral-refine',dest='j4_bilateral_refine',action='store_false',
+                   help='Disable bounded paired-contact refinement; use the prior 18-anchor selector only')
+    p.set_defaults(j4_bilateral_refine=True)
     p.add_argument('--no-j4-contact-search',dest='j4_contact_search',action='store_false',
                    help='Restore old single-anchor IK for J4 nonnegative, for A/B comparison')
     p.set_defaults(j4_contact_search=True)
