@@ -16,6 +16,7 @@ import math
 import os
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import mujoco
@@ -48,6 +49,43 @@ def bottle_pose(x, y, table_z, yaw_deg):
     quat_wxyz = quat_xyzw[[3, 0, 1, 2]]
     axis = Rotation.from_quat(quat_xyzw).apply([0., 0., 1.])
     return center, quat_wxyz, axis
+
+
+def finger_axis_local(args):
+    """Principal longitudinal axis from actual finger STL, transformed to link frame."""
+    p=args.out/'collision_urdf'/'jaw_collision_build.json'
+    report=json.loads(p.read_text())['jaw_parts'][grasp.FINGER_BODY]
+    direction=np.asarray(report['principal_axis_mesh_local'],float)
+    link=next(x for x in ET.parse(args.urdf).getroot().findall('link')
+              if x.get('name')==grasp.FINGER_BODY)
+    original_mesh=report['visual_stl']
+    collision=next(x for x in link.findall('collision')
+                   if x.find('./geometry/mesh') is not None and
+                   Path(x.find('./geometry/mesh').get('filename','')).name==original_mesh)
+    origin=collision.find('origin')
+    rpy=np.fromstring(origin.get('rpy','0 0 0'),sep=' ') if origin is not None else np.zeros(3)
+    direction=Rotation.from_euler('xyz',rpy).apply(direction)
+    return direction/np.linalg.norm(direction)
+
+
+def finger_axis_error(model,data,qadr,bid,q,finger_axis,object_axis):
+    _,r=phase6g.fk(model,data,qadr,bid,q)
+    # 0deg means perpendicular; a 35deg deviation is allowed as a
+    # soft starting preference. J6 physics determines actual contact.
+    return float(np.degrees(np.arcsin(min(1.,abs(float(np.dot(r@finger_axis,object_axis))))))
+
+
+def tool_table_gap(model,data,qadr,bq,q,xyz,quat,hi,floor,tool_geoms):
+    data.qpos[qadr[:5]]=q
+    data.qpos[qadr[5]]=hi[5]
+    data.qpos[bq:bq+3]=xyz
+    data.qpos[bq+3:bq+7]=quat
+    mujoco.mj_forward(model,data)
+    distances=[(float(mujoco.mj_geomDistance(model,data,int(floor),int(g),.25,np.zeros(6))),g)
+               for g in tool_geoms]
+    distance,gid=min(distances)
+    name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(gid))
+    return float(distance*1000),name
 
 
 def geom_witness(model, data, jaw_ids, bottle_ids):
@@ -106,11 +144,12 @@ def score_geo(g):
 
 
 def ik_target(model, data, qadr, bid, lo, hi, xyz, anchor, ref_q, target_r,
-              max_nfev=75):
+              max_nfev=75, finger_axis=None, object_axis=None):
     def residual(q):
         p, r = phase6g.fk(model, data, qadr, bid, q)
         rot_err = Rotation.from_matrix(target_r.T@r).as_rotvec()
-        return np.r_[(p+r@anchor-xyz)/.012, rot_err/.55, (q-ref_q)*.18]
+        orth=[] if finger_axis is None else [2.*float(np.dot(r@finger_axis,object_axis))]
+        return np.r_[(p+r@anchor-xyz)/.012, rot_err/.55, orth, (q-ref_q)*.18]
     out = least_squares(residual, np.clip(ref_q, lo+1e-5, hi-1e-5),
                         bounds=(lo, hi), max_nfev=max_nfev)
     p, r = phase6g.fk(model, data, qadr, bid, out.x)
@@ -118,7 +157,7 @@ def ik_target(model, data, qadr, bid, lo, hi, xyz, anchor, ref_q, target_r,
 
 
 def search_pose(model, data, qadr, bq, bid, lo, hi, xyz, quat, axis,
-                fixed, moving, bottle, max_seeds):
+                fixed, moving, bottle, max_seeds, finger_axis):
     # A few deliberate grasp orientations, not 18*4 local parameter searches
     # carried over from a vertical bottle. Retain the known middle as a
     # pose warm start, and rotate the desired gripper orientation with yaw.
@@ -129,22 +168,31 @@ def search_pose(model, data, qadr, bq, bid, lo, hi, xyz, quat, axis,
     base_p, base_r = phase6g.fk(model,data,qadr,bid,bench)
     # Include two roll branches; J4 is NOT constrained to a sign.
     for orientation_deg in (yaw, yaw+90, yaw-90):
-        target_r = Rotation.from_euler('z',orientation_deg,degrees=True).as_matrix()@base_r
+        target_r=Rotation.from_euler('z',orientation_deg,degrees=True).as_matrix()@base_r
         for anchor_z in (-.055,-.070):
-            anchor = np.array([.030,.036,anchor_z])
-            for offset_z in (0., .018):
-                goal = xyz+np.array([0.,0.,offset_z])
-                try:
-                    q,err = ik_target(model,data,qadr,bid,lo[:5],hi[:5],
-                                      goal,anchor,bench,target_r)
-                    g = geometry(model,data,qadr,bq,q,xyz,quat,axis,
-                                 fixed,moving,bottle,lo,hi)
-                    score = score_geo(g)+.12*err
-                    candidates.append(dict(q=q,anchor=anchor,ik_error_mm=err,
-                                           score=score,geo=g,branch_deg=orientation_deg,
-                                           goal_height_offset_mm=1000*offset_z))
-                except (ValueError,RuntimeError) as exc:
-                    continue
+            anchor=np.array([.030,.036,anchor_z])
+            for offset_z in (0.,.018):
+                goal=xyz+np.array([0.,0.,offset_z])
+                # Include J5 wrist-roll branches instead of only one
+                # posture from the upright-bottle benchmark.
+                for j5_seed_deg in (-90.,0.,90.):
+                    qseed=bench.copy()
+                    qseed[4]=np.clip(math.radians(j5_seed_deg),lo[4]+1e-5,hi[4]-1e-5)
+                    try:
+                        q,err=ik_target(model,data,qadr,bid,lo[:5],hi[:5],goal,anchor,
+                                        qseed,target_r,finger_axis=finger_axis,
+                                        object_axis=axis)
+                        g=geometry(model,data,qadr,bq,q,xyz,quat,axis,
+                                   fixed,moving,bottle,lo,hi)
+                        angle_error=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
+                        score=score_geo(g)+.12*err+.6*max(0.,angle_error-35.)
+                        candidates.append(dict(q=q,anchor=anchor,ik_error_mm=err,
+                            score=score,geo=g,branch_deg=orientation_deg,
+                            j5_seed_deg=j5_seed_deg,
+                            finger_perpendicular_error_deg=angle_error,
+                            goal_height_offset_mm=1000*offset_z))
+                    except (ValueError,RuntimeError):
+                        continue
     candidates.sort(key=lambda c:c['score'])
     if not candidates:
         raise RuntimeError('No IK seeds for the horizontal grasp')
@@ -157,7 +205,9 @@ def search_pose(model, data, qadr, bq, bid, lo, hi, xyz, quat, axis,
         def objective(q):
             g = geometry(model,data,qadr,bq,q,xyz,quat,axis,
                          fixed,moving,bottle,lo,hi)
-            return score_geo(g)+.6*np.linalg.norm((q-q0)/.5)
+            angle_error=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
+            return (score_geo(g)+.6*np.linalg.norm((q-q0)/.5)
+                    +.6*max(0.,angle_error-35.))
         opt = minimize(objective,q0,method='Powell',
                        bounds=list(zip(lo[:5]+1e-5,hi[:5]-1e-5)),
                        options=dict(maxiter=10,maxfev=180,xtol=.012,ftol=.03))
@@ -173,7 +223,8 @@ def search_pose(model, data, qadr, bq, bid, lo, hi, xyz, quat, axis,
                                  abs(s['moving_gap_mm'])+
                                  10*max(0,s['radial_opposition_cos']+.4))
         opposite = close['radial_opposition_cos']<=-.25
-        paired = (valid_open and opposite and
+        angle_error=finger_axis_error(model,data,qadr,bid,trial,finger_axis,axis)
+        paired = (valid_open and opposite and angle_error<=35. and
                   -1.5<=close['fixed_gap_mm']<=2. and
                   -1.5<=close['moving_gap_mm']<=2.)
         result = dict(q=trial,geometry=g,initial_score=c['score'],
@@ -183,6 +234,8 @@ def search_pose(model, data, qadr, bq, bid, lo, hi, xyz, quat, axis,
                       orientation_branch_deg=c['branch_deg'],
                       optimizer_success=bool(opt.success),
                       optimizer_nfev=int(opt.nfev),
+                      j5_solved_deg=float(np.rad2deg(trial[4])),
+                      finger_perpendicular_error_deg=angle_error,
                       valid_open=bool(valid_open),
                       predicts_paired=bool(paired))
         optimized.append(result)
@@ -300,7 +353,7 @@ def physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,fixed,moving,
 
 
 def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
-                     args,out,bench):
+                     args,out,bench,floor,tool_geoms):
     # Preview only: interpolation in configuration space, collision NOT checked
     # in the currently isolated (finger-bottle-only) model.
     probe=mujoco.MjData(model)
@@ -320,6 +373,14 @@ def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
             # smoothstep to avoid instantaneous joint-velocity jumps
             w=u*u*(3-2*u)
             path.append((phase, (1-w)*first+w*last))
+    clearances=[]
+    for k,(phase,qs) in enumerate(path):
+        mm,name=tool_table_gap(model,probe,qadr,bq,qs,xyz,quat,hi,floor,tool_geoms)
+        clearances.append(dict(frame=k,phase=phase,table_gap_mm=mm,nearest_geom=name))
+    nearest=min(clearances,key=lambda r:r['table_gap_mm'])
+    table_ok=nearest['table_gap_mm']>=args.min_table_clearance_mm
+    with (out/'table_clearance_trace.csv').open('w',newline='') as f:
+        wr=csv.DictWriter(f,fieldnames=clearances[0].keys());wr.writeheader();wr.writerows(clearances)
     with (out/'kinematic_preview_joint_targets.csv').open('w',newline='') as f:
         fields=['frame','phase','time_s']+[n+'_target_deg' for n in JOINT_NAMES]+['j6_target_deg']
         wr=csv.DictWriter(f,fieldnames=fields);wr.writeheader()
@@ -327,7 +388,13 @@ def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
             wr.writerow(dict(frame=k,phase=phase,time_s=k/args.fps,
                              **{n+'_target_deg':float(np.rad2deg(v)) for n,v in zip(JOINT_NAMES,qs)},
                              j6_target_deg=float(np.rad2deg(hi[5]))))
-    if shutil.which('ffmpeg') is None:return dict(status='KINEMATIC_PREVIEW_ONLY',video=None)
+    if not table_ok:
+        return dict(status='TABLE_CLEARANCE_FAILED',video=None,
+                    min_table_gap_mm=nearest['table_gap_mm'],
+                    nearest_geom=nearest['nearest_geom'],table_preflight_ok=False)
+    if shutil.which('ffmpeg') is None:
+        return dict(status='KINEMATIC_PREVIEW_ONLY',video=None,
+                    min_table_gap_mm=nearest['table_gap_mm'],table_preflight_ok=True)
     model.vis.global_.offwidth=max(640,model.vis.global_.offwidth)
     model.vis.global_.offheight=max(460,model.vis.global_.offheight)
     renderer=mujoco.Renderer(model,width=640,height=460)
@@ -345,7 +412,8 @@ def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
     finally:renderer.close()
     vid=save_video(frames,out/'approach_preview.mp4',args.fps)
     return dict(status='KINEMATIC_PREVIEW_ONLY',video=vid,
-                note='Not a dynamically tracked trajectory and not certified collision-free; no ACT training sample yet.')
+                min_table_gap_mm=nearest['table_gap_mm'],table_preflight_ok=True,
+                note='Tool/forearm plane clearance scanned. Not dynamic tracking, self-collision or complete world collision certification. No ACT dataset yet.')
 
 
 def run(args):
@@ -357,6 +425,17 @@ def run(args):
     jid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     bq=int(model.jnt_qposadr[jid]);bd=int(model.jnt_dofadr[jid])
     bench=np.zeros(5);bench[4]=np.clip(-math.pi/2,lo[4],hi[4])
+    faxis=finger_axis_local(args)
+    # The older contact bench disabled jaw/table contact. Explicitly
+    # query geometry distance to the plane without changing contact masks.
+    tool_geoms=[]
+    for gid in range(model.ngeom):
+        body=int(model.geom_bodyid[gid])
+        if body==0 or gid in bottle or gid==floor:continue
+        name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,body) or ''
+        if any(part in name for part in ('elbow','wrist','gripper','jaw')):
+            tool_geoms.append(gid)
+    if not tool_geoms:raise ValueError('No forearm/wrist/tool collision geoms found')
     outputs=[]
     for yaw in args.yaw_deg:
         args.current_yaw_deg=float(yaw)
@@ -365,7 +444,7 @@ def run(args):
         data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
         try:
             best,options=search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,
-                                      axis,fixed,moving,bottle,args.max_seeds)
+                                      axis,fixed,moving,bottle,args.max_seeds,faxis)
             q=best['q']
             choices=[]
             for entry in options:
@@ -375,18 +454,26 @@ def run(args):
                             world_quat_wxyz=quat.tolist(),axis_world=axis.tolist(),
                             selected=choices[0],candidates=choices))
             preview=approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
-                                     args,out,bench)
+                                     args,out,bench,floor,tool_geoms)
             # Keep a visual record even for failed geometry candidates.
             # Reject deeply intersecting jaws before running dynamics.
-            preflight=best['valid_open']
+            table_gap,nearest_table_geom=tool_table_gap(
+                model,data,qadr,bq,q,xyz,quat,hi,floor,tool_geoms)
+            preflight=(best['valid_open'] and
+                       table_gap>=args.min_table_clearance_mm and
+                       preview.get('table_preflight_ok',False))
             physics=physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,
                                    fixed,moving,bottle,args,out) if preflight else {
-                                       'status':'SKIPPED_OPEN_JAW_PENETRATION',
+                                       'status':'SKIPPED_GEOMETRY_OR_TABLE_PREFLIGHT',
                                        'bilateral_hold_steps':None,'video':None}
             outcome=dict(yaw_deg=yaw,bottle_world_center_m=xyz.tolist(),
                          bottle_world_quat_wxyz=quat.tolist(),
                          bottle_axis_world=axis.tolist(),
                          j4_solved_deg=float(np.rad2deg(q[3])),
+                         j5_solved_deg=float(np.rad2deg(q[4])),
+                         finger_perpendicular_error_deg=best['finger_perpendicular_error_deg'],
+                         table_grasp_gap_mm=table_gap,
+                         nearest_table_geom=nearest_table_geom,
                          joint_angles_deg=dict(zip(JOINT_NAMES,np.rad2deg(q).tolist())),
                          geometry=best['geometry'],
                          geometric_score=best['final_score'],
@@ -401,7 +488,9 @@ def run(args):
         print(f'Yaw {yaw}: {outcome.get("dynamic",{}).get("status")}; bilateral='
               f'{outcome.get("dynamic",{}).get("bilateral_hold_steps")}',flush=True)
     rows=[dict(yaw_deg=r['yaw_deg'],status=r.get('dynamic',{}).get('status'),
-               j4_deg=r.get('j4_solved_deg'),
+               j4_deg=r.get('j4_solved_deg'),j5_deg=r.get('j5_solved_deg'),
+               finger_perpendicular_error_deg=r.get('finger_perpendicular_error_deg'),
+               table_grasp_gap_mm=r.get('table_grasp_gap_mm'),
                predicted_bilateral=r.get('predicted_bilateral'),
                bilateral_hold_steps=r.get('dynamic',{}).get('bilateral_hold_steps'),
                max_xy_displacement_mm=r.get('dynamic',{}).get('max_xy_displacement_mm'),
@@ -418,6 +507,9 @@ def run(args):
         horizontal_bottle_center_height_m=args.table_z+physical.MUHI_RADIUS+.0005,
         bottle_length_m=physical.MUHI_LENGTH,bottle_radius_m=physical.MUHI_RADIUS,
         yaw_degrees=list(args.yaw_deg),joint_sign_constraint='URDF limits only',
+        finger_long_axis_local=faxis.tolist(),
+        permitted_perpendicular_error_deg=35.0,
+        table_preflight_min_clearance_mm=args.min_table_clearance_mm,
         act_dataset_ready=False,
         preview_is_kinematic_only=True,
         validation_note='Collision geometry optimization + stationary-arm J6 close/hold. Physical Home->Pregrasp->Grasp not yet validated. No lift.',
@@ -438,6 +530,7 @@ def main():
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
     p.add_argument('--max-seeds',type=int,default=4)
+    p.add_argument('--min-table-clearance-mm',type=float,default=1.0)
     p.add_argument('--jaw-collision-mode',default='axial_cross_convex_patches')
     p.add_argument('--jaw-collision-slabs',type=int,default=12)
     p.add_argument('--jaw-collision-cross-bands',type=int,default=3)
