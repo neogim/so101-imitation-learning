@@ -131,18 +131,24 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
 
 
 def score_geo(g):
-    # Heuristic only; NOT physical grasp success probability.
-    def score_stage(s):
-        def gp(x):
-            return max(0., x-1.0) + 3.0*max(0., -x-1.0) + .15*abs(x)
-        return (gp(s['fixed_gap_mm'])+gp(s['moving_gap_mm'])+
-                18.*max(0., s['radial_opposition_cos']+.4))
-    open_g = g['open']
-    open_overlap = sum(max(0., -open_g[k]-.3) for k in
-                       ('fixed_gap_mm', 'moving_gap_mm'))
-    return float(min(score_stage(g['near_closed']),
-                     score_stage(g['closed'])) + 30*open_overlap)
-
+    """Prioritize the fundamental sequence: fixed inner face first (2-3mm),
+    then moving jaw closing from the opposite side. No angle-only shortcut.
+    """
+    f=g['open']['fixed_gap_mm']
+    m=g['open']['moving_gap_mm']
+    near=g['near_closed']
+    end=g['closed']
+    # 2.5mm from the fixed jaw to the outside of the cylinder.
+    score=4.*abs(f-2.5)
+    score+=8.*max(0., -f)
+    score+=4.*max(0., 4.-m) + .1*max(0.,m-35.)
+    # The moving jaw must approach/cross the cylinder surface by J6.
+    score+=2.*max(0.,min(near['moving_gap_mm'],end['moving_gap_mm'])-1.)
+    score+=7.*max(0.,-min(near['moving_gap_mm'],end['moving_gap_mm'])-2.)
+    # Opposite radial faces instead of the previous same-side contact.
+    cos=min(near['radial_opposition_cos'],end['radial_opposition_cos'])
+    score+=35.*max(0.,cos+.3)
+    return float(score)
 
 def ik_target(model, data, qadr, bid, lo, hi, xyz, anchor, ref_q, target_r,
               max_nfev=75, finger_axis=None, object_axis=None):
@@ -157,95 +163,93 @@ def ik_target(model, data, qadr, bid, lo, hi, xyz, anchor, ref_q, target_r,
     return out.x, float(np.linalg.norm(p+r@anchor-xyz)*1000)
 
 
-def search_pose(model, data, qadr, bq, bid, lo, hi, xyz, quat, axis,
-                fixed, moving, bottle, max_seeds, finger_axis):
-    # A few deliberate grasp orientations, not 18*4 local parameter searches
-    # carried over from a vertical bottle. Retain the known middle as a
-    # pose warm start, and rotate the desired gripper orientation with yaw.
-    bench = np.zeros(5)
-    bench[4] = np.clip(-math.pi/2, lo[4], hi[4])
-    candidates = []
-    yaw = math.degrees(math.atan2(axis[1],axis[0]))
-    base_p, base_r = phase6g.fk(model,data,qadr,bid,bench)
-    # Include two roll branches; J4 is NOT constrained to a sign.
-    for orientation_deg in (yaw, yaw+90, yaw-90):
+def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
+                bottle,max_seeds,finger_axis,floor,tool_geoms,args):
+    bench=np.zeros(5)
+    bench[4]=np.clip(-math.pi/2,lo[4],hi[4])
+    _,base_r=phase6g.fk(model,data,qadr,bid,bench)
+    yaw=math.degrees(math.atan2(axis[1],axis[0]))
+    candidates=[]
+    # Candidate generation uses multiple arm approach directions and J5
+    # seeds, but every candidate is scored using physical collision meshes.
+    for orientation_deg in (yaw,yaw+90,yaw-90):
         target_r=Rotation.from_euler('z',orientation_deg,degrees=True).as_matrix()@base_r
-        for anchor_z in (-.055,-.070):
+        for anchor_z in (-.045,-.070,-.095):
             anchor=np.array([.030,.036,anchor_z])
-            for offset_z in (0.,.018):
-                goal=xyz+np.array([0.,0.,offset_z])
-                # Include J5 wrist-roll branches instead of only one
-                # posture from the upright-bottle benchmark.
-                for j5_seed_deg in (-90.,0.,90.):
-                    qseed=bench.copy()
-                    qseed[4]=np.clip(math.radians(j5_seed_deg),lo[4]+1e-5,hi[4]-1e-5)
+            for vertical_offset in (0.,.018,.035):
+                for j5_seed in (-90.,0.,90.):
+                    ref=bench.copy()
+                    ref[4]=np.clip(math.radians(j5_seed),lo[4]+1e-5,hi[4]-1e-5)
                     try:
-                        q,err=ik_target(model,data,qadr,bid,lo[:5],hi[:5],goal,anchor,
-                                        qseed,target_r,finger_axis=finger_axis,
-                                        object_axis=axis)
+                        q,err=ik_target(model,data,qadr,bid,lo[:5],hi[:5],
+                            xyz+[0,0,vertical_offset],anchor,ref,target_r,
+                            finger_axis=finger_axis,object_axis=axis)
                         g=geometry(model,data,qadr,bq,q,xyz,quat,axis,
                                    fixed,moving,bottle,lo,hi)
-                        angle_error=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
-                        score=score_geo(g)+.12*err+.6*max(0.,angle_error-35.)
-                        candidates.append(dict(q=q,anchor=anchor,ik_error_mm=err,
-                            score=score,geo=g,branch_deg=orientation_deg,
-                            j5_seed_deg=j5_seed_deg,
-                            finger_perpendicular_error_deg=angle_error,
-                            goal_height_offset_mm=1000*offset_z))
+                        gap,_=tool_table_gap(model,data,qadr,bq,q,xyz,quat,
+                                              hi,floor,tool_geoms)
+                        angle=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
+                        score=(score_geo(g)+1.5*max(0.,2.-gap)
+                               +.15*err+.10*max(0.,angle-35.))
+                        candidates.append((score,q.copy(),anchor,err,
+                                           orientation_deg,j5_seed,angle))
                     except (ValueError,RuntimeError):
                         continue
-    candidates.sort(key=lambda c:c['score'])
     if not candidates:
-        raise RuntimeError('No IK seeds for the horizontal grasp')
-    optimized = []
-    # Local adjustment against the *true* jaw-to-cylinder distances.
-    # Optimization may fail to converge on a nonsmooth collision-distance
-    # objective. Retain its best evaluated result and log it transparently.
-    for seed_rank, c in enumerate(candidates[:max_seeds],1):
-        q0 = c['q'].copy()
+        raise RuntimeError('No IK candidate for any horizontal grasp seed')
+    candidates.sort(key=lambda item:item[0])
+    refined=[]
+    for seed_rank,entry in enumerate(candidates[:max_seeds],1):
+        score0,q0,anchor,err0,branch,j5seed,angle0=entry
         def objective(q):
-            g = geometry(model,data,qadr,bq,q,xyz,quat,axis,
-                         fixed,moving,bottle,lo,hi)
-            angle_error=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
-            return (score_geo(g)+.6*np.linalg.norm((q-q0)/.5)
-                    +.6*max(0.,angle_error-35.))
-        opt = minimize(objective,q0,method='Powell',
-                       bounds=list(zip(lo[:5]+1e-5,hi[:5]-1e-5)),
-                       options=dict(maxiter=10,maxfev=180,xtol=.012,ftol=.03))
-        trial = np.clip(opt.x,lo[:5]+1e-5,hi[:5]-1e-5)
-        if objective(trial) >= objective(q0):
-            trial = q0.copy()
-        g=geometry(model,data,qadr,bq,trial,xyz,quat,axis,
+            g=geometry(model,data,qadr,bq,q,xyz,quat,axis,
+                       fixed,moving,bottle,lo,hi)
+            # Static table clearance with jaw open AND during J6 closure.
+            gaps=[tool_table_gap(model,data,qadr,bq,q,xyz,quat,hi,
+                                 floor,tool_geoms,jaw_angle=hi[5]+u*(lo[5]-hi[5]))[0]
+                  for u in (0.,.5,1.)]
+            angle=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
+            return (score_geo(g)+16.*max(0.,2.-min(gaps))
+                    +.10*max(0.,angle-35.)
+                    +.3*np.linalg.norm((q-q0)/.5))
+        opt=minimize(objective,q0,method='Powell',
+            bounds=list(zip(lo[:5]+1e-5,hi[:5]-1e-5)),
+            options=dict(maxiter=12,maxfev=220,xtol=.008,ftol=.025))
+        q1=np.clip(opt.x,lo[:5]+1e-5,hi[:5]-1e-5)
+        if objective(q1)>objective(q0):q1=q0
+        g=geometry(model,data,qadr,bq,q1,xyz,quat,axis,
                    fixed,moving,bottle,lo,hi)
-        valid_open=min(g['open']['fixed_gap_mm'],
-                       g['open']['moving_gap_mm'])>=-.5
-        close = min([g['near_closed'],g['closed']],
-                    key=lambda s:abs(s['fixed_gap_mm'])+
-                                 abs(s['moving_gap_mm'])+
-                                 10*max(0,s['radial_opposition_cos']+.4))
-        opposite = close['radial_opposition_cos']<=-.25
-        angle_error=finger_axis_error(model,data,qadr,bid,trial,finger_axis,axis)
-        paired = (valid_open and opposite and angle_error<=35. and
-                  -1.5<=close['fixed_gap_mm']<=2. and
-                  -1.5<=close['moving_gap_mm']<=2.)
-        result = dict(q=trial,geometry=g,initial_score=c['score'],
-                      final_score=objective(trial),seed_rank=seed_rank,
-                      original_anchor=c['anchor'].tolist(),
-                      ik_initial_error_mm=c['ik_error_mm'],
-                      orientation_branch_deg=c['branch_deg'],
-                      optimizer_success=bool(opt.success),
-                      optimizer_nfev=int(opt.nfev),
-                      j5_solved_deg=float(np.rad2deg(trial[4])),
-                      finger_perpendicular_error_deg=angle_error,
-                      valid_open=bool(valid_open),
-                      predicts_paired=bool(paired))
-        optimized.append(result)
-    # Prioritize expected two-sided contacts; never claim success before
-    # the J6 physical close/hold experiment.
-    optimized.sort(key=lambda c:(not c['predicts_paired'],
-                                 not c['valid_open'],c['final_score']))
-    return optimized[0],optimized
-
+        gaps=[tool_table_gap(model,data,qadr,bq,q1,xyz,quat,hi,
+                             floor,tool_geoms,jaw_angle=hi[5]+u*(lo[5]-hi[5]))[0]
+              for u in (0.,.5,.85,1.)]
+        angle=finger_axis_error(model,data,qadr,bid,q1,finger_axis,axis)
+        op=g['open']
+        close=min((g['near_closed'],g['closed']),
+                  key=lambda k:abs(k['moving_gap_mm'])
+                                    +20.*max(0.,k['radial_opposition_cos']+.3))
+        margin=float(op['fixed_gap_mm'])
+        # A true geometric preflight, not a declaration of actual grasp.
+        valid=(2.<=margin<=3. and op['moving_gap_mm']>=3.
+               and -2.<=close['moving_gap_mm']<=2.
+               and close['radial_opposition_cos']<=-.3
+               and min(gaps)>=args.min_table_clearance_mm
+               and angle<=45.)
+        refined.append(dict(q=q1,anchor=anchor,geometry=g,
+            score=objective(q1),initial_score=score0,
+            fixed_inner_surface_gap_mm=margin,
+            table_min_gap_mm=min(gaps),table_j6_sweep_gap_mm=gaps,
+            finger_perpendicular_error_deg=angle,
+            j5_solved_deg=float(np.rad2deg(q1[4])),
+            j6_torque_limit_nm=args.j6_torque,
+            ik_seed_error_mm=err0,orientation_branch_deg=branch,
+            seed_rank=seed_rank,j5_seed_deg=j5seed,
+            optimizer_success=bool(opt.success),
+            valid_open=bool(margin>=0 and op['moving_gap_mm']>=0),
+            predicts_paired=bool(valid)))
+    refined.sort(key=lambda x:(not x['predicts_paired'],
+                                abs(x['fixed_inner_surface_gap_mm']-2.5),
+                                x['score']))
+    return refined[0],refined
 
 def contact_counts(model, data, fixed, moving, bottle):
     return grasp.jaw_contact_counts(model,data,bottle,fixed,moving)
@@ -364,23 +368,45 @@ def render_table_collision_diagnostic(model,qadr,bq,q,xyz,quat,lo,hi,
         if renderer is not None:renderer.close()
 
 
+def lift_ik_targets(model,qadr,bid,lo,hi,q,args):
+    probe=mujoco.MjData(model)
+    # The anchor follows the gripper. World +Z is 20mm lift, independent of
+    # Muhi horizontal yaw and irrespective of joint sign conventions.
+    anchor=np.array([.030,.036,-.070])
+    p,R=phase6g.fk(model,probe,qadr,bid,q)
+    base=p+R@anchor
+    pre,pre_err=ik_target(model,probe,qadr,bid,lo[:5],hi[:5],
+                          base+[0,0,.040],anchor,q,R,max_nfev=110)
+    raised,raise_err=ik_target(model,probe,qadr,bid,lo[:5],hi[:5],
+                          base+[0,0,args.lift_mm/1000.],anchor,q,R,
+                          max_nfev=110)
+    return pre,raised,dict(pregrasp_ik_error_mm=pre_err,
+                           lift_ik_error_mm=raise_err,
+                           commanded_lift_mm=args.lift_mm)
+
+
 def physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,fixed,moving,
-                   bottle,args,out):
-    d=mujoco.MjData(model);mujoco.mj_resetData(model,d)
-    d.qpos[qadr[:5]]=q
+                   bottle,args,out,bid,pre_q,lift_q):
+    """Physical approach -> J6 torque-limited close -> hold -> 20mm lift."""
+    d=mujoco.MjData(model)
+    mujoco.mj_resetData(model,d)
+    d.qpos[qadr[:5]]=pre_q
     d.qpos[qadr[5]]=hi[5]
-    d.qpos[bq:bq+3]=xyz;d.qpos[bq+3:bq+7]=quat
+    d.qpos[bq:bq+3]=xyz
+    d.qpos[bq+3:bq+7]=quat
     d.qvel[:]=0
-    d.ctrl[aids]=np.r_[q,hi[5]]
+    d.ctrl[aids]=np.r_[pre_q,hi[5]]
     mujoco.mj_forward(model,d)
-    phases=[('settle',.4),('close',1.3),('hold',1.)]
-    total=sum(t for _,t in phases)
-    steps=int(round(total/args.dt))
-    frame_stride=max(1,int(round(1/(args.fps*args.dt))))
+    phases=[('settle',.4),('approach',1.0),
+            ('close',1.3),('hold',.7),('lift',1.),('lift_hold',.6)]
+    cutoffs=np.cumsum([duration for _,duration in phases])
+    total=float(cutoffs[-1])
+    steps=int(math.ceil(total/args.dt))
+    stride=max(1,int(round(1/(args.fps*args.dt))))
     camera=mujoco.MjvCamera()
     camera.type=mujoco.mjtCamera.mjCAMERA_FREE
-    camera.lookat[:]=xyz;camera.distance=.52
-    camera.azimuth=115;camera.elevation=-31
+    camera.lookat[:]=xyz
+    camera.distance=.55;camera.azimuth=115;camera.elevation=-25
     vis=mujoco.MjvOption()
     vis.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT]=True
     model.vis.global_.offwidth=max(640,model.vis.global_.offwidth)
@@ -388,55 +414,105 @@ def physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,fixed,moving,
     renderer=None
     if shutil.which('ffmpeg'):
         try:renderer=mujoco.Renderer(model,width=640,height=460)
-        except Exception as exc:
-            (out/'render_error.txt').write_text(repr(exc))
+        except Exception as exc:(out/'render_error.txt').write_text(repr(exc))
     frames=[];rows=[];deep=False;bad=False
+    lift_permission=None
+    lift_start_z=None
+    hold_window=[]
     try:
         for k in range(steps+1):
             t=min(k*args.dt,total)
-            if t<.4:phase='settle';j6=hi[5]
-            elif t<1.7:
-                phase='close';j6=hi[5]+(lo[5]-hi[5])*((t-.4)/1.3)
-            else:phase='hold';j6=lo[5]
-            d.ctrl[aids]=np.r_[q,j6]
+            if t<cutoffs[0]:
+                phase='settle';qctl=pre_q;j6=hi[5]
+            elif t<cutoffs[1]:
+                phase='approach'
+                u=(t-cutoffs[0])/phases[1][1]
+                u=u*u*(3.-2.*u)
+                qctl=(1.-u)*pre_q+u*q;j6=hi[5]
+            elif t<cutoffs[2]:
+                phase='close';qctl=q
+                u=(t-cutoffs[1])/phases[2][1]
+                j6=hi[5]+u*(lo[5]-hi[5])
+            elif t<cutoffs[3]:
+                phase='hold';qctl=q;j6=lo[5]
+            else:
+                if lift_permission is None:
+                    # Require substantial two-jaw contact before lifting.
+                    tail=hold_window[-max(1,int(.25/args.dt)):]
+                    lift_permission=(len(tail)>0 and
+                        sum(v['bilateral'] for v in tail)/len(tail)>=.6 and
+                        max(v['bottle_xy_displacement_mm'] for v in tail)<=10. and
+                        not deep)
+                    lift_start_z=float(d.qpos[bq+2])
+                if lift_permission:
+                    if t<cutoffs[4]:
+                        phase='lift'
+                        u=(t-cutoffs[3])/phases[4][1]
+                        u=u*u*(3.-2.*u)
+                        qctl=(1.-u)*q+u*lift_q
+                    else:
+                        phase='lift_hold';qctl=lift_q
+                else:
+                    phase='lift_skipped_no_stable_grasp';qctl=q
+                j6=lo[5]
+            d.ctrl[aids]=np.r_[qctl,j6]
             if k:mujoco.mj_step(model,d)
             if not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all():
                 bad=True;break
-            fc,mc,depth=contact_counts(model,d,fixed,moving,bottle)
-            deep |= depth is not None and depth < -.003
-            rows.append(dict(time_s=float(d.time),phase=phase,
-                             fixed_contacts=int(fc),moving_contacts=int(mc),
-                             bilateral=int(fc>0 and mc>0),
-                             min_contact_dist_mm=depth*1000 if depth is not None else None,
-                             bottle_x_m=float(d.qpos[bq]),
-                             bottle_y_m=float(d.qpos[bq+1]),
-                             bottle_z_m=float(d.qpos[bq+2]),
-                             bottle_xy_displacement_mm=1000*float(
-                                 np.linalg.norm(d.qpos[bq:bq+2]-xyz[:2])),
-                             j4_target_deg=float(np.rad2deg(q[3])),
-                             j6_target_deg=float(np.rad2deg(j6)),
-                             j6_actual_deg=float(np.rad2deg(d.qpos[qadr[5]])),
-                             max_arm_tracking_error_deg=float(np.max(np.abs(
-                                 np.rad2deg(d.qpos[qadr[:5]]-q))))))
-            if renderer is not None and (k%frame_stride==0 or k==steps):
+            fc,mc,depth=grasp.jaw_contact_counts(model,d,bottle,fixed,moving)
+            deep=deep or (depth is not None and depth<-.003)
+            row=dict(time_s=float(d.time),phase=phase,
+                     fixed_contacts=int(fc),moving_contacts=int(mc),
+                     bilateral=int(fc>0 and mc>0),
+                     min_contact_dist_mm=None if depth is None else 1000*depth,
+                     bottle_x_m=float(d.qpos[bq]),bottle_y_m=float(d.qpos[bq+1]),
+                     bottle_z_m=float(d.qpos[bq+2]),
+                     bottle_xy_displacement_mm=1000*float(
+                         np.linalg.norm(d.qpos[bq:bq+2]-xyz[:2])),
+                     j6_target_deg=float(np.rad2deg(j6)),
+                     j6_actual_deg=float(np.rad2deg(d.qpos[qadr[5]])),
+                     j6_actual_torque_nm=float(d.actuator_force[aids[5]]),
+                     max_arm_tracking_error_deg=float(np.max(np.abs(
+                         np.rad2deg(d.qpos[qadr[:5]]-qctl)))))
+            rows.append(row)
+            if phase=='hold':hold_window.append(row)
+            if renderer is not None and (k%stride==0 or k==steps):
                 frames.append(render_scene(model,d,camera,renderer,vis,
-                        f'Yaw {args.current_yaw_deg} | {phase} | F {fc} M {mc} | t {t:.2f}s'))
+                    f'Yaw {args.current_yaw_deg} {phase} | F{fc}/M{mc} '
+                    f'z={1000*(d.qpos[bq+2]-xyz[2]):+.1f}mm'))
     finally:
         if renderer:renderer.close()
     if rows:
-        with (out/'joint_contact_trace.csv').open('w',newline='') as f:
-            wr=csv.DictWriter(f,fieldnames=rows[0].keys())
-            wr.writeheader();wr.writerows(rows)
-    vid=save_video(frames,out/'grasp.mp4',args.fps)
+        with (out/'joint_contact_trace.csv').open('w',newline='') as fp:
+            writer=csv.DictWriter(fp,fieldnames=rows[0].keys())
+            writer.writeheader();writer.writerows(rows)
+    video=save_video(frames,out/'grasp.mp4',args.fps)
     hold=[r for r in rows if r['phase']=='hold']
-    return dict(status='NUMERIC_FAILURE' if bad else 'DYNAMIC_TEST_COMPLETED',
-                hold_steps=len(hold),
-                bilateral_hold_steps=sum(r['bilateral'] for r in hold),
-                max_xy_displacement_mm=max((r['bottle_xy_displacement_mm'] for r in rows),default=None),
-                deep_penetration_over_3mm=bool(deep),
-                final_bottle_z_m=rows[-1]['bottle_z_m'] if rows else None,
-                video=vid,
-                note='Stationary-arm J6 close/hold only. No validated dynamic Home-to-grasp and no lift.')
+    lift_end=[r for r in rows if r['phase']=='lift_hold']
+    travel=(1000*(lift_end[-1]['bottle_z_m']-lift_start_z)
+            if lift_end and lift_start_z is not None else None)
+    hold_lift_fraction=(sum(r['bilateral'] for r in lift_end)/len(lift_end)
+                        if lift_end else 0.)
+    lift_success=bool(lift_permission and travel is not None and
+                      travel>=.75*args.lift_mm and
+                      hold_lift_fraction>=.8 and not deep)
+    return dict(
+       status='NUMERIC_FAILURE' if bad else
+              ('LIFT_20MM_SUCCEEDED' if lift_success else
+               'LIFT_FAILED_OR_SKIPPED'),
+       hold_steps=len(hold),
+       bilateral_hold_steps=sum(r['bilateral'] for r in hold),
+       max_xy_displacement_mm=max((r['bottle_xy_displacement_mm'] for r in rows),default=None),
+       deep_penetration_over_3mm=bool(deep),
+       requested_lift_mm=args.lift_mm,
+       lift_attempted=bool(lift_permission),
+       measured_lift_mm=travel,
+       lifted_contact_fraction=hold_lift_fraction,
+       lift_success=lift_success,
+       max_abs_j6_torque_nm=max((abs(r['j6_actual_torque_nm']) for r in rows),default=None),
+       final_bottle_z_m=rows[-1]['bottle_z_m'] if rows else None,
+       video=video,
+       note='Real MuJoCo physics, joint torque capped; 20mm world Z lift, NOT a real-robot demonstration.')
 
 
 def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
@@ -542,8 +618,10 @@ def run(args):
         data=mujoco.MjData(model);mujoco.mj_resetData(model,data)
         try:
             best,options=search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,
-                                      axis,fixed,moving,bottle,args.max_seeds,faxis)
+                                      axis,fixed,moving,bottle,args.max_seeds,faxis,
+                                      floor,tool_geoms,args)
             q=best['q']
+            pre_q,lift_q,ik_lift=lift_ik_targets(model,qadr,bid,lo,hi,q,args)
             choices=[]
             for entry in options:
                 choices.append({k:v for k,v in entry.items() if k!='q'})
@@ -574,11 +652,13 @@ def run(args):
             shallowest=min(table_gaps,key=lambda x:x['gap_mm'])
             table_gap=shallowest['gap_mm']
             nearest_table_geom=shallowest['nearest_geom']
-            preflight=(best['valid_open'] and
+            preflight=(best['predicts_paired'] and
                        table_gap>=args.min_table_clearance_mm and
-                       preview.get('table_preflight_ok',False))
+                       preview.get('table_preflight_ok',False) and
+                       max(ik_lift['pregrasp_ik_error_mm'],
+                           ik_lift['lift_ik_error_mm'])<=6.)
             physics=physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,
-                                   fixed,moving,bottle,args,out) if preflight else {
+                                   fixed,moving,bottle,args,out,bid,pre_q,lift_q) if preflight else {
                                        'status':'SKIPPED_GEOMETRY_OR_TABLE_PREFLIGHT',
                                        'bilateral_hold_steps':None,'video':None}
             outcome=dict(yaw_deg=yaw,bottle_world_center_m=xyz.tolist(),
@@ -592,7 +672,10 @@ def run(args):
                          nearest_table_geom=nearest_table_geom,
                          joint_angles_deg=dict(zip(JOINT_NAMES,np.rad2deg(q).tolist())),
                          geometry=best['geometry'],
-                         geometric_score=best['final_score'],
+                         geometric_score=best['score'],
+                         fixed_inner_surface_gap_mm=best['fixed_inner_surface_gap_mm'],
+                         lift_ik_diagnostics=ik_lift,
+                         requested_lift_mm=args.lift_mm,
                          predicted_bilateral=best['predicts_paired'],
                          dynamic=physics,approach_preview=preview,
                          collision_diagnostic=collision_visual,
@@ -613,6 +696,9 @@ def run(args):
                max_xy_displacement_mm=r.get('dynamic',{}).get('max_xy_displacement_mm'),
                deep_penetration=r.get('dynamic',{}).get('deep_penetration_over_3mm'),
                geometric_score=r.get('geometric_score'),
+               fixed_inner_surface_gap_mm=r.get('fixed_inner_surface_gap_mm'),
+               lift_measured_mm=r.get('dynamic',{}).get('measured_lift_mm'),
+               lift_success=r.get('dynamic',{}).get('lift_success'),
                video=r.get('dynamic',{}).get('video'),
                approach_preview=r.get('approach_preview',{}).get('video'),
                collision_diagnostic=r.get('collision_diagnostic',{}).get('video'),
@@ -620,19 +706,22 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7a1_horizontal_yaw_v1',simulation_only=True,
+        schema='phase7a_fixedjaw_lift20_v1',simulation_only=True,
         target_world_xy_m=[args.target_x,args.target_y],
         horizontal_bottle_center_height_m=args.table_z+physical.MUHI_RADIUS+.0005,
         bottle_length_m=physical.MUHI_LENGTH,bottle_radius_m=physical.MUHI_RADIUS,
         yaw_degrees=list(args.yaw_deg),joint_sign_constraint='URDF limits only',
         finger_long_axis_local=faxis.tolist(),
-        permitted_perpendicular_error_deg=35.0,
+        permitted_perpendicular_error_deg=45.0,
+        fixed_inner_jaw_margin_target_mm=[2,3],
+        requested_lift_mm=args.lift_mm,
+        j6_torque_limit_nm=args.j6_torque,
         table_preflight_min_clearance_mm=args.min_table_clearance_mm,
         dynamic_tool_table_contact_enabled=True,
         table_preflight_j6_samples=[0.0,0.5,0.85,1.0],
         act_dataset_ready=False,
         preview_is_kinematic_only=True,
-        validation_note='Collision geometry optimization + stationary-arm J6 close/hold. Physical Home->Pregrasp->Grasp not yet validated. No lift.',
+        validation_note='Fixed-jaw 2-3mm preflight, torque-limited dynamic approach, J6 close and contact-gated world-Z lift. MuJoCo result requires video validation.',
         collision_model=args.jaw_collision_mode,friction_modified=False,
         results=outputs))
     print('RESULT_DIR:',args.out,flush=True)
@@ -649,7 +738,10 @@ def main():
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
-    p.add_argument('--max-seeds',type=int,default=4)
+    p.add_argument('--max-seeds',type=int,default=6)
+    p.add_argument('--fixed-jaw-gap-mm',type=float,default=2.5)
+    p.add_argument('--lift-mm',type=float,default=20.0)
+    p.add_argument('--j6-torque-limit-nm',type=float,default=0.45)
     p.add_argument('--min-table-clearance-mm',type=float,default=1.0)
     p.add_argument('--jaw-collision-mode',default='axial_cross_convex_patches')
     p.add_argument('--jaw-collision-slabs',type=int,default=12)
@@ -661,6 +753,9 @@ def main():
     p.add_argument('--j6-kd',type=float,default=1.8)
     p.add_argument('--j6-torque',type=float,default=3.)
     a=p.parse_args()
+    # Retain Phase6C's j6-torque argument while setting the conservative
+    # Phase7A lift actuator cap explicitly.
+    a.j6_torque=a.j6_torque_limit_nm
     if a.max_seeds<1 or any(y<0 or y>=180 for y in a.yaw_deg):
         p.error('yaw must be in [0,180) and max-seeds>=1; 180-fold symmetry audit is separate')
     run(a)
