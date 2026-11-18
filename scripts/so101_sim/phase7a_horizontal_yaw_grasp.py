@@ -122,7 +122,23 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
         b = b-np.dot(b, axis)*axis
         na, nb = np.linalg.norm(a), np.linalg.norm(b)
         cos = float(np.dot(a, b)/(na*nb)) if min(na, nb)>1e-6 else 1.
-        out[label] = dict(fixed_gap_mm=1000*f['gap_m'],
+        jaw_vector=m['jaw_point']-f['jaw_point']
+        jaw_span=float(np.linalg.norm(jaw_vector))
+        jaw_dir=jaw_vector/max(jaw_span,1e-6)
+        center_between=(float(np.dot(xyz-f['jaw_point'],jaw_dir))>0 and
+                        float(np.dot(xyz-m['jaw_point'],jaw_dir))<0)
+        fixed_facing=float(np.dot(f['bottle_point']-f['jaw_point'],jaw_dir))
+        moving_facing=float(np.dot(m['bottle_point']-m['jaw_point'],-jaw_dir))
+        contact_axial_mm=1000*abs(float(np.dot(f['bottle_point']-xyz,axis)))
+        out[label] = dict(
+                          cylinder_center_between_jaws=bool(center_between),
+                          fixed_inner_facing_mm=1000*fixed_facing,
+                          moving_inner_facing_mm=1000*moving_facing,
+                          fixed_witness_axial_offset_mm=contact_axial_mm,
+                          jaw_span_mm=1000*jaw_span,
+                          fixed_jaw_nearest_point_world_m=f['jaw_point'].tolist(),
+                          moving_jaw_nearest_point_world_m=m['jaw_point'].tolist(),
+                          fixed_gap_mm=1000*f['gap_m'],
                           moving_gap_mm=1000*m['gap_m'],
                           radial_opposition_cos=cos,
                           fixed_contact_candidate_world_m=f['bottle_point'].tolist(),
@@ -140,6 +156,11 @@ def score_geo(g):
     end=g['closed']
     # 2.5mm from the fixed jaw to the outside of the cylinder.
     score=4.*abs(f-2.5)
+    if not g['open']['cylinder_center_between_jaws']:
+        score+=45.
+    if g['open']['fixed_inner_facing_mm']<=0:
+        score+=35.
+    score+=2.*max(0.,g['open']['fixed_witness_axial_offset_mm']-25.)
     score+=8.*max(0., -f)
     score+=4.*max(0., 4.-m) + .1*max(0.,m-35.)
     # The moving jaw must approach/cross the cylinder surface by J6.
@@ -230,6 +251,9 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
         margin=float(op['fixed_gap_mm'])
         # A true geometric preflight, not a declaration of actual grasp.
         valid=(2.<=margin<=3. and op['moving_gap_mm']>=3.
+               and op['cylinder_center_between_jaws']
+               and op['fixed_inner_facing_mm']>0
+               and op['fixed_witness_axial_offset_mm']<=25.
                and -2.<=close['moving_gap_mm']<=2.
                and close['radial_opposition_cos']<=-.3
                and min(gaps)>=args.min_table_clearance_mm
@@ -738,7 +762,7 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7a_fixedjaw_lift20_v1',simulation_only=True,
+        schema='phase7a_fixedjaw_lift20_v2',simulation_only=True,
         target_world_xy_m=[args.target_x,args.target_y],
         horizontal_bottle_center_height_m=args.table_z+physical.MUHI_RADIUS+.0005,
         bottle_length_m=physical.MUHI_LENGTH,bottle_radius_m=physical.MUHI_RADIUS,
@@ -746,6 +770,7 @@ def run(args):
         finger_long_axis_local=faxis.tolist(),
         permitted_perpendicular_error_deg=45.0,
         fixed_inner_jaw_margin_target_mm=[2,3],
+        fixed_jaw_inner_face_preflight='center between jaws, inner-facing nearest witness and axial offset <= 25mm',
         requested_lift_mm=args.lift_mm,
         j6_torque_limit_nm=args.j6_torque,
         table_preflight_min_clearance_mm=args.min_table_clearance_mm,
