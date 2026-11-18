@@ -72,7 +72,8 @@ def finger_axis_error(model,data,qadr,bid,q,finger_axis,object_axis):
     _,r=phase6g.fk(model,data,qadr,bid,q)
     # 0deg means perpendicular; a 35deg deviation is allowed as a
     # soft starting preference. J6 physics determines actual contact.
-    return float(np.degrees(np.arcsin(min(1.,abs(float(np.dot(r@finger_axis,object_axis))))))
+    alignment = float(np.dot(r @ finger_axis, object_axis))
+    return float(np.degrees(np.arcsin(np.clip(abs(alignment), 0.0, 1.0))))
 
 
 def tool_table_gap(model,data,qadr,bq,q,xyz,quat,hi,floor,tool_geoms,jaw_angle=None):
