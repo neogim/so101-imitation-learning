@@ -109,7 +109,8 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
     data.qpos[bq:bq+3] = xyz
     data.qpos[bq+3:bq+7] = quat
     out = {}
-    for label, u in [('open', 0.), ('near_closed', .90), ('closed', 1.)]:
+    for label, u in [('open',0.),('close_25pct',.25),('close_50pct',.50),
+                     ('close_75pct',.75),('near_closed',.90),('closed',1.)]:
         data.qpos[qadr[5]] = hi[5]+u*(lo[5]-hi[5])
         mujoco.mj_forward(model, data)
         f = geom_witness(model, data, fixed, bottle)
@@ -146,7 +147,8 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
     # Explicit closure path test. Moving jaw must approach the cylinder
     # from the OTHER side; merely producing a nearby witness is insufficient.
     start=out['open']
-    states=[out['near_closed'],out['closed']]
+    states=[out[label] for label in (
+        'close_25pct','close_50pct','close_75pct','near_closed','closed')]
     inward_approach=min(v['moving_gap_mm'] for v in states)<start['moving_gap_mm']-2.
     opposite_contact=any(
         -2.<=v['moving_gap_mm']<=2.
@@ -179,6 +181,8 @@ def score_geo(g):
     m=g['open']['moving_gap_mm']
     near=g['near_closed']
     end=g['closed']
+    closing=[g[k] for k in ('close_25pct','close_50pct',
+                            'close_75pct','near_closed','closed')]
     # 2.5mm from the fixed jaw to the outside of the cylinder.
     score=4.*abs(f-2.5)
     if not g['pinch_path']['pinch_geometry_valid']:
@@ -195,10 +199,10 @@ def score_geo(g):
     score+=8.*max(0., -f)
     score+=4.*max(0., 4.-m) + .1*max(0.,m-35.)
     # The moving jaw must approach/cross the cylinder surface by J6.
-    score+=2.*max(0.,min(near['moving_gap_mm'],end['moving_gap_mm'])-1.)
-    score+=7.*max(0.,-min(near['moving_gap_mm'],end['moving_gap_mm'])-2.)
+    score+=2.*max(0.,min(v['moving_gap_mm'] for v in closing)-1.)
+    score+=7.*max(0.,-min(v['moving_gap_mm'] for v in closing)-2.)
     # Opposite radial faces instead of the previous same-side contact.
-    cos=min(near['radial_opposition_cos'],end['radial_opposition_cos'])
+    cos=min(v['radial_opposition_cos'] for v in closing)
     score+=35.*max(0.,cos+.3)
     return float(score)
 
@@ -276,7 +280,8 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
               for u in (0.,.5,.85,1.)]
         angle=finger_axis_error(model,data,qadr,bid,q1,finger_axis,axis)
         op=g['open']
-        close=min((g['near_closed'],g['closed']),
+        close=min((g[k] for k in ('close_25pct','close_50pct',
+                                 'close_75pct','near_closed','closed')),
                   key=lambda k:abs(k['moving_gap_mm'])
                                     +20.*max(0.,k['radial_opposition_cos']+.3))
         margin=float(op['fixed_gap_mm'])
