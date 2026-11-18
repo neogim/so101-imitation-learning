@@ -174,11 +174,15 @@ def search_nonreverse_contact_pose(model,qadr,bj,lo,hi,xyz,bq,
             lo,hi,hi[5],lo[5],options,args.max_ik_error_mm,
             out,j4_min_deg=args.j4_nonnegative_min_deg)
     # Recompute the IK diagnostics for the ACTUAL selected/refined posture.
-    # Returning the old seed's error/J4 angle here would be misleading.
+    # The refinement may choose a different starting seed.
+    origin=(sorted(feasible,key=lambda r:r['score'])[
+        int(refined_report['chosen_seed_rank'])-1] if refined_report else chosen)
     pos,rot=fk(model,pose_data,qadr,bj,chosen_q)
     anchor_xyz=pos+rot@chosen_anchor
     _,bench_rot=fk(model,pose_data,qadr,bj,bench)
-    ik=dict(chosen['ik'])
+    ik=dict(origin['ik'])
+    ik['refinement_source_seed_rank']=(
+        int(refined_report['chosen_seed_rank']) if refined_report else None)
     ik.update({'solved_j2_deg':float(np.rad2deg(chosen_q[1])),
                'anchor_error_mm':float(np.linalg.norm(anchor_xyz-xyz)*1000),
                'orientation_error_deg':float(np.rad2deg(
@@ -539,7 +543,14 @@ def run(args):
                     root_gap_audit_status='ERROR: '+repr(exc)
                     (args.out/'jaw_root_gap_error.txt').write_text(repr(exc))
             geo=jaw_geometry(model,data,qadr,q,xyz,bq,fixed,moving,bottle,lo,hi)
-            phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if ik['anchor_error_mm']<=args.max_ik_error_mm and not geo['open_jaws_overlap'] else {'status':'GEOMETRY_DIAGNOSTIC_ONLY','reason':'IK error or initial open-jaw overlap','bilateral_hold_steps':0}
+            # The synthetic IK reference point is not a meaningful gate after
+            # directly optimizing physical jaw-to-bottle clearance. Preserve its
+            # measured error, but require an open-jaw non-overlap before physics.
+            use_refined_geometry=(name=='middle_j4_nonnegative' and
+                                  args.j4_contact_search and args.j4_bilateral_refine)
+            can_run=(not geo['open_jaws_overlap'] and
+                     (use_refined_geometry or ik['anchor_error_mm']<=args.max_ik_error_mm))
+            phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {'status':'GEOMETRY_DIAGNOSTIC_ONLY','reason':'IK error or initial open-jaw overlap','bilateral_hold_steps':0}
         except Exception as exc:
             ik={};geo={};phys={'status':'EXECUTION_ERROR','reason':repr(exc),'bilateral_hold_steps':0}
         info={'name':name,'depth_local_z_m':local_z,'anchor_local_m':anchor.tolist(),
@@ -550,6 +561,7 @@ def run(args):
              'j2_solved_deg':ik.get('solved_j2_deg'),
              'j4_solved_deg':ik.get('j4_wrist_flex_deg'),
              'j4_constraint':ik.get('j4_constraint'),
+             'predicted_bilateral_contact':ik.get('contact_aware_search_selected',{}).get('predicted_bilateral_contact'),
              'ik_error_mm':ik.get('anchor_error_mm'),'open_fixed_gap_mm':geo.get('open_fixed_gap_mm'),
              'open_moving_gap_mm':geo.get('open_moving_gap_mm'),
              'sweep_moving_min_gap_mm':geo.get('closing_moving_min_gap_mm'),
