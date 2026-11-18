@@ -143,6 +143,31 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
                           radial_opposition_cos=cos,
                           fixed_contact_candidate_world_m=f['bottle_point'].tolist(),
                           moving_contact_candidate_world_m=m['bottle_point'].tolist())
+    # Explicit closure path test. Moving jaw must approach the cylinder
+    # from the OTHER side; merely producing a nearby witness is insufficient.
+    start=out['open']
+    states=[out['near_closed'],out['closed']]
+    inward_approach=min(v['moving_gap_mm'] for v in states)<start['moving_gap_mm']-2.
+    opposite_contact=any(
+        -2.<=v['moving_gap_mm']<=2.
+        and v['radial_opposition_cos']<=-.3
+        and v['cylinder_center_between_jaws']
+        and v['moving_inner_facing_mm']>0
+        for v in states)
+    # If the moving jaw is already touching while open, the scene is not an
+    # open-jaw pregrasp.
+    entry_ready=(start['moving_gap_mm']>=3.
+                 and start['fixed_gap_mm']>=0.
+                 and start['fixed_inner_facing_mm']>0
+                 and start['cylinder_center_between_jaws'])
+    out['pinch_path']={
+        'open_gap_mm':start['moving_gap_mm'],
+        'min_closed_gap_mm':min(v['moving_gap_mm'] for v in states),
+        'moving_jaw_advances_toward_cylinder':bool(inward_approach),
+        'opposite_side_contact_predicted':bool(opposite_contact),
+        'open_jaw_encircles_object':bool(entry_ready),
+        'pinch_geometry_valid':bool(entry_ready and inward_approach and opposite_contact),
+        'note':'Kinematic proximity preflight; physics contact and lift not yet verified'}
     return out
 
 
@@ -156,6 +181,12 @@ def score_geo(g):
     end=g['closed']
     # 2.5mm from the fixed jaw to the outside of the cylinder.
     score=4.*abs(f-2.5)
+    if not g['pinch_path']['pinch_geometry_valid']:
+        score+=180.
+    if not g['pinch_path']['moving_jaw_advances_toward_cylinder']:
+        score+=60.
+    if not g['pinch_path']['opposite_side_contact_predicted']:
+        score+=80.
     if not g['open']['cylinder_center_between_jaws']:
         score+=45.
     if g['open']['fixed_inner_facing_mm']<=0:
@@ -251,6 +282,7 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
         margin=float(op['fixed_gap_mm'])
         # A true geometric preflight, not a declaration of actual grasp.
         valid=(2.<=margin<=3. and op['moving_gap_mm']>=3.
+               and g['pinch_path']['pinch_geometry_valid']
                and op['cylinder_center_between_jaws']
                and op['fixed_inner_facing_mm']>0
                and op['fixed_witness_axial_offset_mm']<=25.
@@ -269,8 +301,18 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
             seed_rank=seed_rank,j5_seed_deg=j5seed,
             optimizer_success=bool(opt.success),
             valid_open=bool(margin>=0 and op['moving_gap_mm']>=0),
-            predicts_paired=bool(valid)))
+            predicts_paired=bool(valid),
+            pinch_path=g['pinch_path'],
+            rejection_reasons=(
+                ([] if 2.<=margin<=3. else ['FIXED_JAW_NOT_2_TO_3MM'])+
+                ([] if g['pinch_path']['open_jaw_encircles_object'] else ['OBJECT_NOT_BETWEEN_OPEN_INNER_FACES'])+
+                ([] if g['pinch_path']['moving_jaw_advances_toward_cylinder'] else ['J6_CLOSURE_NOT_APPROACHING_OBJECT'])+
+                ([] if g['pinch_path']['opposite_side_contact_predicted'] else ['NO_OPPOSING_CLOSURE_CONTACT'])+
+                ([] if min(gaps)>=args.min_table_clearance_mm else ['TABLE_INTERFERENCE'])+
+                ([] if angle<=45. else ['FINGER_AXIS_BAD_ORIENTATION']))))
     refined.sort(key=lambda x:(not x['predicts_paired'],
+                                not x['pinch_path']['pinch_geometry_valid'],
+                                len(x['rejection_reasons']),
                                 abs(x['fixed_inner_surface_gap_mm']-2.5),
                                 x['score']))
     return refined[0],refined
@@ -705,6 +747,8 @@ def run(args):
                 writer=csv.DictWriter(fp,fieldnames=trajectory_clearances[0].keys())
                 writer.writeheader();writer.writerows(trajectory_clearances)
             real_motion_min_gap=min(row['gap_mm'] for row in trajectory_clearances)
+            # INVALID candidates are only shown as diagnostics. Do not
+            # execute a physically impossible approach/lift.
             preflight=(best['predicts_paired'] and
                        real_motion_min_gap>=args.min_table_clearance_mm and
                        table_gap>=args.min_table_clearance_mm and
@@ -732,6 +776,9 @@ def run(args):
                          lift_ik_diagnostics=ik_lift,
                          requested_lift_mm=args.lift_mm,
                          predicted_bilateral=best['predicts_paired'],
+                         pinch_path=best['pinch_path'],
+                         grasp_geometry_rejection_reasons=best['rejection_reasons'],
+                         grasp_candidate_is_valid=bool(preflight),
                          dynamic=physics,approach_preview=preview,
                          collision_diagnostic=collision_visual,
                          note='Predicted geometric grasp != dynamic physical grasp success')
@@ -748,6 +795,9 @@ def run(args):
                table_grasp_gap_mm=r.get('table_grasp_gap_mm'),
                actual_motion_min_table_gap_mm=r.get('actual_motion_min_table_gap_mm'),
                predicted_bilateral=r.get('predicted_bilateral'),
+               grasp_candidate_is_valid=r.get('grasp_candidate_is_valid'),
+               grasp_geometry_rejection_reasons=';'.join(
+                   r.get('grasp_geometry_rejection_reasons',[])),
                bilateral_hold_steps=r.get('dynamic',{}).get('bilateral_hold_steps'),
                max_xy_displacement_mm=r.get('dynamic',{}).get('max_xy_displacement_mm'),
                deep_penetration=r.get('dynamic',{}).get('deep_penetration_over_3mm'),
@@ -762,7 +812,7 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7a_fixedjaw_lift20_v2',simulation_only=True,
+        schema='phase7a_fixedjaw_lift20_v3',simulation_only=True,
         target_world_xy_m=[args.target_x,args.target_y],
         horizontal_bottle_center_height_m=args.table_z+physical.MUHI_RADIUS+.0005,
         bottle_length_m=physical.MUHI_LENGTH,bottle_radius_m=physical.MUHI_RADIUS,
@@ -771,6 +821,8 @@ def run(args):
         permitted_perpendicular_error_deg=45.0,
         fixed_inner_jaw_margin_target_mm=[2,3],
         fixed_jaw_inner_face_preflight='center between jaws, inner-facing nearest witness and axial offset <= 25mm',
+        closing_direction_preflight='J6 must reduce moving jaw gap by >2mm and create opposite-radial-side contact while object is between jaws',
+        invalid_candidates_do_not_execute_physics=True,
         requested_lift_mm=args.lift_mm,
         j6_torque_limit_nm=args.j6_torque,
         table_preflight_min_clearance_mm=args.min_table_clearance_mm,
@@ -795,7 +847,7 @@ def main():
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
-    p.add_argument('--max-seeds',type=int,default=6)
+    p.add_argument('--max-seeds',type=int,default=12)
     p.add_argument('--fixed-jaw-gap-mm',type=float,default=2.5)
     p.add_argument('--lift-mm',type=float,default=20.0)
     p.add_argument('--j6-torque-limit-nm',type=float,default=0.45)
