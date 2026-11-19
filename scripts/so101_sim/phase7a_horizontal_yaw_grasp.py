@@ -30,7 +30,7 @@ import phase6c_upright_reach_grasp as phase6c
 import phase6g_fixed_workspace_grasp_depth as phase6g
 import physical_grasp_j6_bench as grasp
 
-DEGS = (0, 45, 90)
+DEGS = (0,)  # Phase 7B: SO-101 reach direction // horizontal Muhi axis
 JOINT_NAMES = phase6g.JOINTS
 
 
@@ -183,8 +183,8 @@ def score_geo(g):
     end=g['closed']
     closing=[g[k] for k in ('close_25pct','close_50pct',
                             'close_75pct','near_closed','closed')]
-    # 2.5mm from the fixed jaw to the outside of the cylinder.
-    score=4.*abs(f-2.5)
+    # Prefer the specified 2-3mm fixed inside-face clearance.
+    score=7.*abs(f-2.5)
     if not g['pinch_path']['pinch_geometry_valid']:
         score+=180.
     if not g['pinch_path']['moving_jaw_advances_toward_cylinder']:
@@ -226,13 +226,15 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
     _,base_r=phase6g.fk(model,data,qadr,bid,bench)
     yaw=math.degrees(math.atan2(axis[1],axis[0]))
     candidates=[]
-    # Candidate generation uses multiple arm approach directions and J5
-    # seeds, but every candidate is scored using physical collision meshes.
-    for orientation_deg in (yaw,yaw+90,yaw-90):
+    # PARALLEL CASE ONLY: robot base -> Muhi direction is approximately
+    # parallel to the horizontal cylinder axis. The approach is oblique
+    # from above, never a top-down template from the perpendicular case.
+    # Every candidate still must pass inside-face and J6-opposition tests.
+    for orientation_deg in (yaw,yaw+45,yaw-45):
         target_r=Rotation.from_euler('z',orientation_deg,degrees=True).as_matrix()@base_r
         for anchor_z in (-.045,-.070,-.095):
             anchor=np.array([.030,.036,anchor_z])
-            for vertical_offset in (0.,.018,.035):
+            for vertical_offset in (-.008,0.,.010):
                 for j5_seed in (-90.,0.,90.):
                     ref=bench.copy()
                     ref[4]=np.clip(math.radians(j5_seed),lo[4]+1e-5,hi[4]-1e-5)
@@ -286,7 +288,7 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
                                     +20.*max(0.,k['radial_opposition_cos']+.3))
         margin=float(op['fixed_gap_mm'])
         # A true geometric preflight, not a declaration of actual grasp.
-        valid=(2.<=margin<=3. and op['moving_gap_mm']>=3.
+        valid=(abs(margin-args.fixed_jaw_gap_mm)<=.5 and op['moving_gap_mm']>=3.
                and g['pinch_path']['pinch_geometry_valid']
                and op['cylinder_center_between_jaws']
                and op['fixed_inner_facing_mm']>0
@@ -309,7 +311,7 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
             predicts_paired=bool(valid),
             pinch_path=g['pinch_path'],
             rejection_reasons=(
-                ([] if 2.<=margin<=3. else ['FIXED_JAW_NOT_2_TO_3MM'])+
+                ([] if abs(margin-args.fixed_jaw_gap_mm)<=.5 else ['FIXED_JAW_NOT_2_TO_3MM'])+
                 ([] if g['pinch_path']['open_jaw_encircles_object'] else ['OBJECT_NOT_BETWEEN_OPEN_INNER_FACES'])+
                 ([] if g['pinch_path']['moving_jaw_advances_toward_cylinder'] else ['J6_CLOSURE_NOT_APPROACHING_OBJECT'])+
                 ([] if g['pinch_path']['opposite_side_contact_predicted'] else ['NO_OPPOSING_CLOSURE_CONTACT'])+
@@ -446,12 +448,22 @@ def lift_ik_targets(model,qadr,bid,lo,hi,q,args):
     anchor=np.array([.030,.036,-.070])
     p,R=phase6g.fk(model,probe,qadr,bid,q)
     base=p+R@anchor
+    # Fixed oblique pregrasp: retract toward the robot base by 25mm while
+    # raising 35mm. Interpolation back to the grasp creates a forward/down
+    # diagonal entry. Relative to base->object in the world XY plane.
+    radial=np.array([args.target_x,args.target_y,0.],dtype=float)
+    radial /= max(1e-9,float(np.linalg.norm(radial)))
+    pre_target=base-radial*args.approach_retract_mm/1000.
+    pre_target+=np.array([0.,0.,args.approach_raise_mm/1000.])
     pre,pre_err=ik_target(model,probe,qadr,bid,lo[:5],hi[:5],
-                          base+[0,0,.040],anchor,q,R,max_nfev=110)
+                          pre_target,anchor,q,R,max_nfev=110)
     raised,raise_err=ik_target(model,probe,qadr,bid,lo[:5],hi[:5],
                           base+[0,0,args.lift_mm/1000.],anchor,q,R,
                           max_nfev=110)
-    return pre,raised,dict(pregrasp_ik_error_mm=pre_err,
+    return pre,raised,dict(
+                           approach_retract_mm=args.approach_retract_mm,
+                           approach_raise_mm=args.approach_raise_mm,
+                           pregrasp_ik_error_mm=pre_err,
                            lift_ik_error_mm=raise_err,
                            commanded_lift_mm=args.lift_mm)
 
@@ -663,6 +675,20 @@ def approach_preview(model,data,qadr,bq,bid,lo,hi,q,xyz,quat,
 
 
 def run(args):
+    # Define "parallel" in world XY using the actual robot base -> object
+    # direction, not the gripper finger axis (those are different vectors).
+    radial=np.array([args.target_x,args.target_y],float)
+    if np.linalg.norm(radial)<.01:
+        raise ValueError('target must be distinct from the robot base')
+    unit=radial/np.linalg.norm(radial)
+    for yaw in args.yaw_deg:
+        cylinder=np.array([math.cos(math.radians(yaw)),
+                           math.sin(math.radians(yaw))])
+        acute=math.degrees(math.acos(min(1.,abs(float(np.dot(unit,cylinder))))))
+        if acute>args.parallel_tolerance_deg:
+            raise ValueError(
+                f'Parallel-only Phase 7B: yaw {yaw} differs by {acute:.1f} deg '
+                f'from robot-base-to-object direction; max {args.parallel_tolerance_deg} deg')
     if args.out.exists():raise FileExistsError(args.out)
     args.out.mkdir(parents=True)
     args.support_plane_z_m=args.table_z
@@ -817,7 +843,11 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7a_fixedjaw_lift20_v3',simulation_only=True,
+        schema='phase7b_parallel_oblique_lift20_v1',simulation_only=True,
+        approach_mode='parallel_oblique_only',
+        approach_retract_mm=args.approach_retract_mm,
+        approach_raise_mm=args.approach_raise_mm,
+        parallel_tolerance_deg=args.parallel_tolerance_deg,
         target_world_xy_m=[args.target_x,args.target_y],
         horizontal_bottle_center_height_m=args.table_z+physical.MUHI_RADIUS+.0005,
         bottle_length_m=physical.MUHI_LENGTH,bottle_radius_m=physical.MUHI_RADIUS,
@@ -835,7 +865,7 @@ def run(args):
         table_preflight_j6_samples=[0.0,0.5,0.85,1.0],
         act_dataset_ready=False,
         preview_is_kinematic_only=True,
-        validation_note='Fixed-jaw 2-3mm preflight; synchronized 3-view dynamic approach, torque-limited J6 close, and contact-gated 20mm world-Z lift; actual motion table gaps scanned. MuJoCo execution not yet verified.',
+        validation_note='Parallel object / base-to-object direction only. Diagonal 25mm-back 35mm-up pregrasp. Fixed inside-face 2-3mm, opposing J6 closure, world-Z 20mm lift. Geometry screened; requires real MuJoCo run.',
         collision_model=args.jaw_collision_mode,friction_modified=False,
         results=outputs))
     print('RESULT_DIR:',args.out,flush=True)
@@ -853,6 +883,9 @@ def main():
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
     p.add_argument('--max-seeds',type=int,default=12)
+    p.add_argument('--parallel-tolerance-deg',type=float,default=30.0)
+    p.add_argument('--approach-retract-mm',type=float,default=25.0)
+    p.add_argument('--approach-raise-mm',type=float,default=35.0)
     p.add_argument('--fixed-jaw-gap-mm',type=float,default=2.5)
     p.add_argument('--lift-mm',type=float,default=20.0)
     p.add_argument('--j6-torque-limit-nm',type=float,default=0.45)
@@ -867,6 +900,8 @@ def main():
     p.add_argument('--j6-kd',type=float,default=1.8)
     p.add_argument('--j6-torque',type=float,default=3.)
     a=p.parse_args()
+    if a.approach_retract_mm<=0 or a.approach_raise_mm<=0 or a.lift_mm<=0:
+        p.error('Approach retract/raise and lift must be positive')
     # Retain Phase6C's j6-torque argument while setting the conservative
     # Phase7A lift actuator cap explicitly.
     a.j6_torque=a.j6_torque_limit_nm
