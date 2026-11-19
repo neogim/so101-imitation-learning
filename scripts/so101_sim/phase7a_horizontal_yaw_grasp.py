@@ -280,13 +280,13 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
     # from above, never a top-down template from the perpendicular case.
     # Every candidate still must pass inside-face and J6-opposition tests.
     # Include sideways wrist orientations, not just end-on alignment.
-    for orientation_deg in (yaw+90,yaw-90,yaw+45,yaw-45):
+    for orientation_deg in (yaw+90,yaw-90):
         target_r=Rotation.from_euler('z',orientation_deg,degrees=True).as_matrix()@base_r
         for anchor_z in (-.070,-.095):
             anchor=np.array([.030,.036,anchor_z])
-            for vertical_offset in (0.,.010):
+            for vertical_offset in (0.,):
                 for axial_shift_mm in (0.,):
-                    for j5_seed in (-90.,0.,90.):
+                    for j5_seed in (-90.,90.):
                         ref=bench.copy()
                         ref[4]=np.clip(math.radians(j5_seed),lo[4]+1e-5,hi[4]-1e-5)
                         try:
@@ -533,13 +533,16 @@ def lift_ik_targets(model,qadr,bid,lo,hi,q,args):
     anchor=np.array([.030,.036,-.070])
     p,R=phase6g.fk(model,probe,qadr,bid,q)
     base=p+R@anchor
-    # Fixed oblique pregrasp: retract toward the robot base by 25mm while
-    # raising 35mm. Interpolation back to the grasp creates a forward/down
-    # diagonal entry. Relative to base->object in the world XY plane.
-    radial=np.array([args.target_x,args.target_y,0.],dtype=float)
-    radial /= max(1e-9,float(np.linalg.norm(radial)))
-    pre_target=base-radial*args.approach_retract_mm/1000.
-    pre_target+=np.array([0.,0.,args.approach_raise_mm/1000.])
+    # Approach from the SIDE of the long cylinder, never from its end.
+    # Cylinder axis is along world XY; pregrasp displacement must have
+    # zero axial component. The upward component avoids the tabletop.
+    length_axis=np.array([math.cos(math.radians(args.current_yaw_deg)),
+                          math.sin(math.radians(args.current_yaw_deg)),0.])
+    side=np.cross(length_axis,[0.,0.,1.])
+    side/=max(float(np.linalg.norm(side)),1e-9)
+    pre_shift=side*args.approach_retract_mm/1000.
+    pre_shift+=np.array([0.,0.,args.approach_raise_mm/1000.])
+    pre_target=base+pre_shift
     pre,pre_err=ik_target(model,probe,qadr,bid,lo[:5],hi[:5],
                           pre_target,anchor,q,R,max_nfev=110)
     raised,raise_err=ik_target(model,probe,qadr,bid,lo[:5],hi[:5],
@@ -940,7 +943,7 @@ def run(args):
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
         schema='phase7b_parallel_oblique_lift20_v4',simulation_only=True,
-        approach_mode='parallel_oblique_only',
+        approach_mode='parallel_oblique_side_entry_only',
         approach_retract_mm=args.approach_retract_mm,
         approach_raise_mm=args.approach_raise_mm,
         parallel_tolerance_deg=args.parallel_tolerance_deg,
@@ -981,7 +984,7 @@ def main():
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
-    p.add_argument('--max-seeds',type=int,default=12)
+    p.add_argument('--max-seeds',type=int,default=6)
     p.add_argument('--parallel-tolerance-deg',type=float,default=30.0)
     p.add_argument('--approach-retract-mm',type=float,default=25.0)
     p.add_argument('--approach-raise-mm',type=float,default=35.0)
