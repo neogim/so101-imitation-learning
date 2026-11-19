@@ -94,6 +94,20 @@ def model_build(args):
     spec=mujoco.MjSpec.from_file(str(effective))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
+    # Optional, massless, non-colliding CENTRAL grasp region for Phase7B.
+    # mj_geomDistance can query it even with both collision masks disabled.
+    # Real physics still uses only the two original full-length Muhi geoms.
+    half_length=getattr(args, 'central_probe_half_length_m', None)
+    if half_length is not None:
+        half_length=float(half_length)
+        if not 0.<half_length<physical.MUHI_LENGTH*.25:
+            raise ValueError('central_probe_half_length_m outside safe range')
+        spec.body(physical.DYNAMIC_BODY).add_geom(
+            name='phase7b_muhi_central_probe',
+            type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+            pos=[0,0,0],size=[physical.MUHI_RADIUS,half_length,0],
+            mass=0,rgba=[.1,.9,.2,0],
+            contype=0,conaffinity=0)
     # Place support plane BEFORE MjSpec.compile(): moving a compiled static
     # world geom can leave its collision acceleration structures stale.
     support_z = getattr(args, 'support_plane_z_m', None)
