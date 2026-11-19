@@ -252,6 +252,35 @@ def finger_vs_bottle_axis_angle(model,data,qadr,bid,q,finger_local,object_axis):
     return float(np.rad2deg(np.arcsin(np.clip(cosine,0.,1.))))
 
 
+def jaw_centerline_bracketing(model,data,fixed,moving,xyz):
+    """Object must lie on the INSIDE of the fixed jaw, facing the moving jaw.
+
+    This uses collision-patch geometry centers rather than the artificial
+    IK anchor or the unsigned nearest-geom distance. It is a positional
+    bracketing constraint, NOT a physical contact success claim.
+    """
+    fc=np.mean(np.asarray(data.geom_xpos)[list(fixed)],axis=0)
+    mc=np.mean(np.asarray(data.geom_xpos)[list(moving)],axis=0)
+    v=mc-fc
+    length=float(np.linalg.norm(v))
+    if length<1e-7:
+        return dict(valid=False,reason='JAW_CENTROIDS_COINCIDE',
+                    along_mm=0.,jaw_separation_mm=length*1000.,
+                    lateral_mm=float('inf'))
+    direction=v/length
+    delta=xyz-fc
+    along=float(np.dot(delta,direction))
+    lateral=float(np.linalg.norm(delta-along*direction))
+    # A real cylinder between the claws should have its center beyond
+    # the fixed jaw's inner face, and before the moving jaw's inner face.
+    return dict(valid=bool(0.<along<length),
+                along_mm=along*1000.,jaw_separation_mm=length*1000.,
+                lateral_mm=lateral*1000.,
+                fixed_center_world_m=fc.tolist(),
+                moving_center_world_m=mc.tolist(),
+                between_centroids=bool(0.<along<length))
+
+
 def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                                     fixed,moving,bottle,q_initial,anchor,bid,args,out):
     """Retarget BOTH actual jaw collision surfaces, not the imaginary TCP.
@@ -281,6 +310,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         mujoco.mj_forward(model,data)
         fg=float(grasp.geometry_gaps(model,data,bottle,fixed))*1000.
         mg=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
+        bracket=jaw_centerline_bracketing(model,data,fixed,moving,xyz)
         data.qpos[qadr[5]]=hi[5]+.8*(lo[5]-hi[5])
         mujoco.mj_forward(model,data)
         m80=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
@@ -291,20 +321,25 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         anchor_err=float(np.linalg.norm((p+r@anchor)-xyz)*1000.)
         angle=finger_vs_bottle_axis_angle(model,data,qadr,bid,q,
                                           finger_local,object_axis)
-        return fg,mg,m80,m100,anchor_err,angle
+        return fg,mg,m80,m100,anchor_err,angle,bracket
     best=None
     for label,seed in seeds:
         def residual(q):
-            fg,mg,m80,m100,err,angle=measure(q)
+            fg,mg,m80,m100,err,angle,bracket=measure(q)
             # Clearance first. Do not squeeze the moving jaw through the
             # object at OPEN. At 80%-closed prefer approaching the surface.
             return np.array([
-                (fg-2.5)*1.7,
-                max(0.,3.-mg)*5.,
+                (fg-1.5)*2.0,
+                max(0.,2.-mg)*5.,
                 np.clip(mg-10.,0.,35.)*.12,
                 np.clip(m80,-12.,25.)*.17,
                 max(0.,m100+1.)*.5,
-                err*.22,
+                err*.16,
+                # Keep Muhi between the fixed and moving jaw, not
+                # beside the OUTER face of the fixed finger.
+                max(0.,2.-bracket['along_mm'])*4.,
+                max(0.,bracket['along_mm']-bracket['jaw_separation_mm']+2.)*4.,
+                max(0.,bracket['lateral_mm']-18.)*.7,
                 # 0deg = finger axis perpendicular to bottle long axis.
                 # This is a PRIMARY target, not a decorative penalty.
                 120.*np.sin(np.deg2rad(angle)),
@@ -317,19 +352,25 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_nfev=args.horizontal_ik_max_nfev,ftol=.008,
                 xtol=.008,gtol=.008)
             candidate=fit.x.copy()
-            fg,mg,m80,m100,err,angle=measure(candidate)
-            valid=(fg>=1. and mg>=1. and angle<=angle_limit
-                   and (mg-m80)>=2.)
-            score=(abs(fg-2.5)*2.+10.*max(0.,1.-mg)+
-                   .35*abs(m80)+.22*err+max(0.,m100+1.)*.3+15.*angle)
+            fg,mg,m80,m100,err,angle,bracket=measure(candidate)
+            valid=(1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
+                   and (mg-m80)>=2. and bracket['between_centroids']
+                   and bracket['lateral_mm']<=20.)
+            score=(abs(fg-1.5)*2.+10.*max(0.,1.-mg)+
+                   .35*abs(m80)+.16*err+max(0.,m100+1.)*.3+
+                   15.*angle+15.*float(not bracket['between_centroids'])+
+                   max(0.,bracket['lateral_mm']-20.))
             row=dict(seed=label,score=float(score),
                 open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
+                fixed_jaw_inside_bracketing=bracket,
+                fixed_jaw_inside_valid=bool(bracket['between_centroids']
+                       and bracket['lateral_mm']<=20.),
                 closing_80pct_moving_gap_mm=m80,
                 closed_moving_gap_mm=m100,
                 anchor_error_mm=err,
                 finger_perpendicular_error_deg=angle,
                 perpendicular_tolerance_deg=angle_limit,
-                open_clear=bool(fg>=1. and mg>=1.),
+                open_clear=bool(1.<=fg<=2.5 and mg>=1.),
                 direction_clear=bool(angle<=angle_limit),
                 moving_closes_toward_muhi=bool((mg-m80)>=2.),
                 valid_for_physics=bool(valid),
