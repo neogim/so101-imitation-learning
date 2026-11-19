@@ -318,7 +318,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 xtol=.008,gtol=.008)
             candidate=fit.x.copy()
             fg,mg,m80,m100,err,angle=measure(candidate)
-            valid=fg>=-.5 and mg>=-.5 and angle<=angle_limit
+            valid=(fg>=1. and mg>=1. and angle<=angle_limit
+                   and (mg-m80)>=2.)
             score=(abs(fg-2.5)*2.+10.*max(0.,1.-mg)+
                    .35*abs(m80)+.22*err+max(0.,m100+1.)*.3+15.*angle)
             row=dict(seed=label,score=float(score),
@@ -328,8 +329,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 anchor_error_mm=err,
                 finger_perpendicular_error_deg=angle,
                 perpendicular_tolerance_deg=angle_limit,
-                open_clear=bool(fg>=-.5 and mg>=-.5),
+                open_clear=bool(fg>=1. and mg>=1.),
                 direction_clear=bool(angle<=angle_limit),
+                moving_closes_toward_muhi=bool((mg-m80)>=2.),
                 valid_for_physics=bool(valid),
                 ik_angles_deg=np.rad2deg(candidate).tolist(),
                 optimizer_evaluations=int(fit.nfev))
@@ -746,11 +748,14 @@ def run(args):
             # A bad candidate is NOT a proven grasp; see contact metrics.
             direction_clear=(args.orientation!='horizontal' or
                  ik.get('horizontal_clearance_search',{}).get('chosen',{})
-                   .get('direction_clear',False))
+                   .get('valid_for_physics',False))
             can_run=(not geo['open_jaws_overlap'] and direction_clear and
                 (args.orientation=='horizontal' or use_refined_geometry or
                  ik['anchor_error_mm']<=args.max_ik_error_mm))
-            phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {'status':'GEOMETRY_DIAGNOSTIC_ONLY','reason':'Initial open-jaw mesh overlap; see horizontal_jaw_ik_candidates.json and open_jaw_pose_3views.png','bilateral_hold_steps':None}
+            phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {
+                'status':'GEOMETRY_DIAGNOSTIC_ONLY',
+                'reason':'Initial clearance, finger-long-axis perpendicularity, or J6 approach direction invalid; see horizontal_jaw_ik_candidates.json and open_jaw_pose_3views.png',
+                'bilateral_hold_steps':None}
         except Exception as exc:
             ik={};geo={};phys={'status':'EXECUTION_ERROR','reason':repr(exc),'bilateral_hold_steps':0}
         info={'name':name,'depth_local_z_m':local_z,'anchor_local_m':anchor.tolist(),
