@@ -562,6 +562,38 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
 
 
 
+def render_j5_stage_top_view(model,qadr,bq,q,xyz,quat,hi,out):
+    """Overhead frame showing J5-aligned pose BEFORE any approach / J6."""
+    d=mujoco.MjData(model)
+    d.qpos[qadr[:5]]=q
+    d.qpos[qadr[5]]=hi[5]
+    d.qpos[bq:bq+3]=xyz
+    d.qpos[bq+3:bq+7]=quat
+    mujoco.mj_forward(model,d)
+    model.vis.global_.offwidth=max(640,model.vis.global_.offwidth)
+    model.vis.global_.offheight=max(460,model.vis.global_.offheight)
+    renderer=None
+    try:
+        renderer=mujoco.Renderer(model,width=640,height=460)
+        camera=mujoco.MjvCamera()
+        camera.type=mujoco.mjtCamera.mjCAMERA_FREE
+        camera.lookat[:]=xyz
+        camera.distance=.48
+        camera.azimuth=120.
+        camera.elevation=-89.
+        renderer.update_scene(d,camera=camera)
+        panel=Image.new('RGB',(640,492),'#17212c')
+        panel.paste(Image.fromarray(renderer.render().copy()),(0,30))
+        ImageDraw.Draw(panel).text((10,9),
+              'STAGE 1: J5 TOP VIEW ALIGN / J6 OPEN / NO PHYSICS',
+              fill='white')
+        panel.save(out/'stage1_j5_top_view.png')
+    except Exception as exc:
+        (out/'stage1_view_error.txt').write_text(repr(exc))
+    finally:
+        if renderer is not None:renderer.close()
+
+
 def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,lo,hi,out,fps=8):
     """Save three-view still + visually labeled kinematic J6 diagnostic video.
 
@@ -967,6 +999,10 @@ def run(args):
                 q,clearance_report=horizontal_jaw_clearance_search(
                     model,data,qadr,bq,lo,hi,xyz,args.object_quat,
                     fixed,moving,bottle,floor,tool_geoms,q,anchor,bj,args,sub)
+                aligned_deg=clearance_report['stage1_j5_aligned_q_deg']
+                aligned_q=np.deg2rad(np.asarray(aligned_deg,float))
+                render_j5_stage_top_view(model,qadr,bq,aligned_q,xyz,
+                                          args.object_quat,hi,sub)
                 ik['horizontal_clearance_search']=clearance_report
                 ik['ik_angles_deg']=dict(zip(JOINTS,np.rad2deg(q).tolist()))
                 ik['anchor_error_mm']=clearance_report['chosen']['anchor_error_mm']
