@@ -714,6 +714,87 @@ def lift_ik_targets(model,qadr,bid,lo,hi,q,args):
                            commanded_lift_mm=args.lift_mm)
 
 
+def collision_pair_audit(model,qadr,bq,q,xyz,quat,lo,hi,fixed,moving,
+                         bottle,floor,args,out):
+    """Audit physical jaw-bottle pairs, distinguishing geometry penetration
+    from actual MuJoCo contact generation. Read-only mj_forward diagnostics.
+    """
+    d=mujoco.MjData(model)
+    fixed_set,moving_set,bottle_set=set(fixed),set(moving),set(bottle)
+    mask_report=[]
+    for name,ids in (('fixed',fixed),('moving',moving),('muhi',bottle)):
+        for gid in ids:
+            mask_report.append(dict(group=name,
+                geom=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(gid)),
+                contype=int(model.geom_contype[gid]),
+                conaffinity=int(model.geom_conaffinity[gid]),
+                geom_type=int(model.geom_type[gid])))
+    rows=[]
+    nsteps=21
+    for ix in range(nsteps):
+        fraction=ix/(nsteps-1)
+        d.qpos[qadr[:5]]=q
+        d.qpos[qadr[5]]=hi[5]+fraction*(lo[5]-hi[5])
+        d.qpos[bq:bq+3]=xyz
+        d.qpos[bq+3:bq+7]=quat
+        d.qvel[:]=0
+        mujoco.mj_forward(model,d)
+        fc=mc=0
+        contacts=[]
+        for con in d.contact[:d.ncon]:
+            ids={int(con.geom1),int(con.geom2)}
+            if not ids.intersection(bottle_set):
+                continue
+            match_fixed=bool(ids.intersection(fixed_set))
+            match_moving=bool(ids.intersection(moving_set))
+            if match_fixed:fc+=1
+            if match_moving:mc+=1
+            if match_fixed or match_moving:
+                contacts.append(dict(
+                    geom1=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                          int(con.geom1)),
+                    geom2=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                          int(con.geom2)),
+                    penetration_mm=max(0.,-1000.*float(con.dist))))
+        fw=geom_witness(model,d,fixed,bottle)
+        mw=geom_witness(model,d,moving,bottle)
+        rows.append(dict(j6_closed_fraction=fraction,
+            j6_angle_deg=float(np.rad2deg(d.qpos[qadr[5]])),
+            fixed_nearest_geom_distance_mm=1000.*fw['gap_m'],
+            moving_nearest_geom_distance_mm=1000.*mw['gap_m'],
+            fixed_contact_pairs=fc,moving_contact_pairs=mc,
+            moving_penetrates_without_contact=bool(mw['gap_m']<-.001 and mc==0),
+            moving_contact_details=contacts))
+    with (out/'collision_pair_audit.csv').open('w',newline='') as fd:
+        fields=[x for x in rows[0] if x!='moving_contact_details']
+        writer=csv.DictWriter(fd,fieldnames=fields)
+        writer.writeheader()
+        writer.writerows({k:v for k,v in x.items() if k!='moving_contact_details'}
+                         for x in rows)
+    write_json(out/'collision_pair_audit.json',
+        dict(masks=mask_report,rows=rows,active_pairs=[
+            dict(pair='fixed_muhi',pair_can_collide=any(
+                (model.geom_contype[f]&model.geom_conaffinity[b]) or
+                (model.geom_contype[b]&model.geom_conaffinity[f])
+                for f in fixed for b in bottle)),
+            dict(pair='moving_muhi',pair_can_collide=any(
+                (model.geom_contype[m]&model.geom_conaffinity[b]) or
+                (model.geom_contype[b]&model.geom_conaffinity[m])
+                for m in moving for b in bottle))]))
+    return dict(
+        status='AUDITED_KINEMATIC_CONTACT_GENERATION',
+        moving_contact_steps=sum(r['moving_contact_pairs']>0 for r in rows),
+        fixed_contact_steps=sum(r['fixed_contact_pairs']>0 for r in rows),
+        moving_penetration_without_contact_steps=sum(
+            r['moving_penetrates_without_contact'] for r in rows),
+        max_moving_penetration_mm=max(
+            max(0.,-r['moving_nearest_geom_distance_mm']) for r in rows),
+        csv='collision_pair_audit.csv',
+        json='collision_pair_audit.json',
+        note='mj_forward generates contact candidates but does not resolve '
+             'penetrations or represent physical time integration. '             'Compare to Phase6C upright actual mj_step results.')
+
+
 def physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,fixed,moving,
                    bottle,args,out,bid,pre_q,lift_q):
     """Physical approach -> J6 torque-limited close -> hold -> 20mm lift."""
@@ -985,6 +1066,16 @@ def run(args):
                        dict(yaw_deg=yaw,world_center_m=xyz.tolist(),
                             world_quat_wxyz=quat.tolist(),axis_world=axis.tolist(),
                             selected=choices[0],candidates=choices))
+            # Audit the SAME collision filtering and full-body Muhi geoms
+            # that Phase6C uses, even if this horizontal candidate is invalid.
+            try:
+                collision_audit=collision_pair_audit(
+                    model,qadr,bq,q,xyz,quat,lo,hi,
+                    fixed,moving,bottle,floor,args,out)
+            except Exception as audit_exc:
+                collision_audit=dict(status='COLLISION_AUDIT_ERROR',
+                                     error=repr(audit_exc))
+                (out/'collision_pair_audit_error.txt').write_text(repr(audit_exc))
             # Always provide BOTH videos, even when geometric grasp preflight
             # fails. Physical test moves Muhi away; grasp sweep is kinematics.
             try:
@@ -1077,7 +1168,8 @@ def run(args):
                          pinch_path=best['pinch_path'],
                          grasp_geometry_rejection_reasons=best['rejection_reasons'],
                          grasp_candidate_is_valid=bool(preflight),
-                         dynamic=physics,j6_independent_smoke=j6_smoke,
+                         dynamic=physics,collision_pair_audit=collision_audit,
+                         j6_independent_smoke=j6_smoke,
                          j6_candidate_sweep=j6_sweep,
                          approach_preview=preview,
                          collision_diagnostic=collision_visual,
@@ -1112,6 +1204,8 @@ def run(args):
                video=r.get('dynamic',{}).get('video'),
                approach_preview=r.get('approach_preview',{}).get('video'),
                collision_diagnostic=r.get('collision_diagnostic',{}).get('video'),
+               moving_contact_steps_in_audit=r.get('collision_pair_audit',{}).get('moving_contact_steps'),
+               moving_penetration_without_contact_steps=r.get('collision_pair_audit',{}).get('moving_penetration_without_contact_steps'),
                j6_smoke_video=r.get('j6_independent_smoke',{}).get('video'),
                j6_smoke_motion_range_deg=r.get('j6_independent_smoke',{}).get('motion_range_deg'),
                j6_candidate_sweep_video=r.get('j6_candidate_sweep',{}).get('video'),
