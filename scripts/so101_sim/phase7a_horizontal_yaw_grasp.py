@@ -141,13 +141,21 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
         fixed_facing=float(np.dot(f['bottle_point']-f['jaw_point'],jaw_dir))
         moving_facing=float(np.dot(m['bottle_point']-m['jaw_point'],-jaw_dir))
         contact_axial_mm=1000*abs(float(np.dot(f['bottle_point']-xyz,axis)))
+        radial_f=f['bottle_point']-xyz
+        radial_f-=np.dot(radial_f,axis)*axis
+        fixed_radial_mm=1000*float(np.linalg.norm(radial_f))
         moving_axial_mm=1000*abs(float(np.dot(m['bottle_point']-xyz,axis)))
+        radial_m=m['bottle_point']-xyz
+        radial_m-=np.dot(radial_m,axis)*axis
+        moving_radial_mm=1000*float(np.linalg.norm(radial_m))
         out[label] = dict(
                           cylinder_center_between_jaws=bool(center_between),
                           fixed_inner_facing_mm=1000*fixed_facing,
                           moving_inner_facing_mm=1000*moving_facing,
                           fixed_witness_axial_offset_mm=contact_axial_mm,
                           moving_witness_axial_offset_mm=moving_axial_mm,
+                          fixed_witness_radial_mm=fixed_radial_mm,
+                          moving_witness_radial_mm=moving_radial_mm,
                           jaw_span_mm=1000*jaw_span,
                           fixed_jaw_nearest_point_world_m=f['jaw_point'].tolist(),
                           moving_jaw_nearest_point_world_m=m['jaw_point'].tolist(),
@@ -211,8 +219,12 @@ def score_geo(g):
         score+=35.
     # Favor a central pinch, not cap or end contact.
     score+=35.*max(0.,g['open']['fixed_witness_axial_offset_mm']-6.)
+    score+=40.*max(0.,physical.MUHI_RADIUS*1000.-1.-
+                      g['open']['fixed_witness_radial_mm'])
     close_states=[g[k] for k in ('close_25pct','close_50pct','close_75pct','near_closed','closed')]
     score+=35.*max(0.,min(x['moving_witness_axial_offset_mm'] for x in close_states)-6.)
+    score+=40.*max(0.,physical.MUHI_RADIUS*1000.-1.-
+                      max(x['moving_witness_radial_mm'] for x in close_states))
     score+=8.*max(0., -f)
     # Never trade genuine full-body penetration for a center-only witness.
     score+=25.*max(0.,-g['open']['whole_body_fixed_gap_mm']-0.5)
@@ -355,8 +367,12 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
                g[k]['radial_opposition_cos']<=-.3]
         moving_axial=(min(x['moving_witness_axial_offset_mm'] for x in valid_moving_stages)
                       if valid_moving_stages else None)
-        fixed_middle=(op['fixed_witness_axial_offset_mm']<=args.central_window_mm*.6)
-        moving_middle=(moving_axial is not None and moving_axial<=args.central_window_mm*.6)
+        fixed_middle=(op['fixed_witness_axial_offset_mm']<=args.central_window_mm*.6
+                      and op['fixed_witness_radial_mm']>=physical.MUHI_RADIUS*1000.-1.)
+        moving_middle=(moving_axial is not None and
+                       any(x['moving_witness_axial_offset_mm']<=args.central_window_mm*.6
+                           and x['moving_witness_radial_mm']>=physical.MUHI_RADIUS*1000.-1.
+                           for x in valid_moving_stages))
         # A true geometric preflight, not a declaration of actual grasp.
         valid=(abs(margin-args.fixed_jaw_gap_mm)<=.5 and op['moving_gap_mm']>=3.
                and op['whole_body_fixed_gap_mm']>=-0.5
@@ -954,6 +970,7 @@ def run(args):
         finger_long_axis_local=faxis.tolist(),
         permitted_perpendicular_error_deg=45.0,
         fixed_inner_jaw_margin_target_mm=[2,3],
+        curved_side_surface_only=True,
         central_grasp_axial_window_mm=args.central_window_mm,
         center_probe_only_for_planning=True,
         center_probe_physics_disabled=True,
