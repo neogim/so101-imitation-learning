@@ -224,6 +224,34 @@ def jaw_geometry(model,data,qadr,q,xyz,bq,fixed,moving,bottle,lo,hi,object_quat)
             'closing_sweeps_bottle':bool(min(sweep)<-0.00035)}
 
 
+def actual_finger_long_axis_local(args):
+    """Read the REAL STL principal axis instead of assuming link Y/Z."""
+    import xml.etree.ElementTree as ET
+    report_path=args.out/'collision_urdf'/'jaw_collision_build.json'
+    report=json.loads(report_path.read_text())
+    part=report['jaw_parts'][grasp.FINGER_BODY]
+    direction=np.asarray(part['principal_axis_mesh_local'],float)
+    root=ET.parse(args.urdf).getroot()
+    link=next(x for x in root.findall('link')
+              if x.get('name')==grasp.FINGER_BODY)
+    mesh_name=part['visual_stl']
+    collision=next(x for x in link.findall('collision')
+        if x.find('./geometry/mesh') is not None
+        and Path(x.find('./geometry/mesh').get('filename','')).name==mesh_name)
+    origin=collision.find('origin')
+    rpy=np.fromstring(origin.get('rpy','0 0 0'),sep=' ') if origin is not None else np.zeros(3)
+    direction=Rotation.from_euler('xyz',rpy).apply(direction)
+    return direction/np.linalg.norm(direction)
+
+
+def finger_vs_bottle_axis_angle(model,data,qadr,bid,q,finger_local,object_axis):
+    """0 degrees means fingers lie PERPENDICULAR to Muhi long axis."""
+    _,rot=fk(model,data,qadr,bid,q)
+    f=rot@finger_local
+    cosine=abs(float(np.dot(f,object_axis)))
+    return float(np.rad2deg(np.arcsin(np.clip(cosine,0.,1.))))
+
+
 def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                                     fixed,moving,bottle,q_initial,anchor,bid,args,out):
     """Retarget BOTH actual jaw collision surfaces, not the imaginary TCP.
@@ -234,6 +262,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
     """
     from scipy.optimize import least_squares
     trials=[]
+    finger_local=actual_finger_long_axis_local(args)
+    object_axis=Rotation.from_quat(np.asarray(quat)[[1,2,3,0]]).apply([0.,0.,1.])
+    angle_limit=args.max_finger_perpendicular_error_deg
     seed_angles=(-150.,-105.,-60.,-15.,30.,75.,120.,165.)
     # Include the initial IK result for reproducibility.
     seeds=[('baseline_ik',q_initial.copy())]
@@ -258,11 +289,13 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         m100=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
         p,r=fk(model,data,qadr,bid,q)
         anchor_err=float(np.linalg.norm((p+r@anchor)-xyz)*1000.)
-        return fg,mg,m80,m100,anchor_err
+        angle=finger_vs_bottle_axis_angle(model,data,qadr,bid,q,
+                                          finger_local,object_axis)
+        return fg,mg,m80,m100,anchor_err,angle
     best=None
     for label,seed in seeds:
         def residual(q):
-            fg,mg,m80,m100,err=measure(q)
+            fg,mg,m80,m100,err,angle=measure(q)
             # Clearance first. Do not squeeze the moving jaw through the
             # object at OPEN. At 80%-closed prefer approaching the surface.
             return np.array([
@@ -272,7 +305,10 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 np.clip(m80,-12.,25.)*.17,
                 max(0.,m100+1.)*.5,
                 err*.22,
-                *(np.rad2deg(q-seed)*.018),
+                # 0deg = finger axis perpendicular to bottle long axis.
+                # This is a PRIMARY target, not a decorative penalty.
+                120.*np.sin(np.deg2rad(angle)),
+                *(np.rad2deg(q-seed)*.012),
             ])
         q0=np.clip(seed,lo[:5]+.0003,hi[:5]-.0003)
         try:
@@ -281,15 +317,20 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_nfev=args.horizontal_ik_max_nfev,ftol=.008,
                 xtol=.008,gtol=.008)
             candidate=fit.x.copy()
-            fg,mg,m80,m100,err=measure(candidate)
-            valid=fg>=-.5 and mg>=-.5
+            fg,mg,m80,m100,err,angle=measure(candidate)
+            valid=fg>=-.5 and mg>=-.5 and angle<=angle_limit
             score=(abs(fg-2.5)*2.+10.*max(0.,1.-mg)+
-                   .35*abs(m80)+.22*err+max(0.,m100+1.)*.3)
+                   .35*abs(m80)+.22*err+max(0.,m100+1.)*.3+15.*angle)
             row=dict(seed=label,score=float(score),
                 open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
                 closing_80pct_moving_gap_mm=m80,
                 closed_moving_gap_mm=m100,
-                anchor_error_mm=err,open_clear=valid,
+                anchor_error_mm=err,
+                finger_perpendicular_error_deg=angle,
+                perpendicular_tolerance_deg=angle_limit,
+                open_clear=bool(fg>=-.5 and mg>=-.5),
+                direction_clear=bool(angle<=angle_limit),
+                valid_for_physics=bool(valid),
                 ik_angles_deg=np.rad2deg(candidate).tolist(),
                 optimizer_evaluations=int(fit.nfev))
             trials.append(row)
@@ -300,8 +341,10 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
     dump(out/'horizontal_jaw_ik_candidates.json',trials)
     if best is None:
         raise RuntimeError('Horizontal IK produced no measurable candidates')
-    return best[2],dict(method='both_jaws_collision_clearance_ik',
+    return best[2],dict(method='perpendicular_finger_axis_and_both_jaw_clearance_ik',
         chosen=best[3],n_candidates=len(seeds),
+        actual_finger_axis_local=finger_local.tolist(),
+        bottle_axis_world=object_axis.tolist(),
         note='Kinematic optimization only; physical contact is mj_step.')
 
 
@@ -701,7 +744,10 @@ def run(args):
             # Run real contact physics for a non-overlapping horizontal
             # initial posture, even if the soft IK anchor-error is high.
             # A bad candidate is NOT a proven grasp; see contact metrics.
-            can_run=(not geo['open_jaws_overlap'] and
+            direction_clear=(args.orientation!='horizontal' or
+                 ik.get('horizontal_clearance_search',{}).get('chosen',{})
+                   .get('direction_clear',False))
+            can_run=(not geo['open_jaws_overlap'] and direction_clear and
                 (args.orientation=='horizontal' or use_refined_geometry or
                  ik['anchor_error_mm']<=args.max_ik_error_mm))
             phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {'status':'GEOMETRY_DIAGNOSTIC_ONLY','reason':'Initial open-jaw mesh overlap; see horizontal_jaw_ik_candidates.json and open_jaw_pose_3views.png','bilateral_hold_steps':None}
@@ -818,6 +864,7 @@ def main():
     p.add_argument('--yaw-deg',type=float,default=0.)
     p.add_argument('--object-height-clearance-mm',type=float,default=.5)
     p.add_argument('--horizontal-ik-max-nfev',type=int,default=45)
+    p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=12.)
     p.add_argument('--target-x',type=float,default=.220)
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
@@ -858,6 +905,8 @@ def main():
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
     if args.object_height_clearance_mm<0: p.error('Object clearance cannot be negative')
+    if not 0<args.max_finger_perpendicular_error_deg<=45:
+        p.error('Finger perpendicular error limit must be (0,45] degrees')
     if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32 or not 1<=args.jaw_collision_cross_bands<=8 or not 0<=args.j4_nonnegative_min_deg<=95:p.error('Invalid args')
     run(args)
 
