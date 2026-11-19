@@ -409,10 +409,18 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                  'max_arm_error_deg':float(np.max(np.abs(np.rad2deg(q-d.qpos[qadr[:5]]))))}
             rows.append(row)
             if renderer is not None and (k%stride==0 or k==steps):
-                renderer.update_scene(d,camera=camera,scene_option=scene_options)
-                im=Image.fromarray(renderer.render().copy())
-                canvas=Image.new('RGB',(640,496),'#192532');canvas.paste(im,(0,30))
-                ImageDraw.Draw(canvas).text((10,9),f'{out.name} {phase} {t:.2f}s F{fc}/M{mc} | jaw->bottle Fxy=({jaw_force_world[0]:+.2f},{jaw_force_world[1]:+.2f})N',fill='white')
+                panels=[]
+                for az,el,view in ((90.,-15.,'SIDE'),(270.,-15.,'OPPOSITE'),(120.,-80.,'OVERHEAD')):
+                    camera.azimuth=az;camera.elevation=el
+                    renderer.update_scene(d,camera=camera,scene_option=scene_options)
+                    im=Image.fromarray(renderer.render().copy())
+                    pane=Image.new('RGB',(640,496),'#192532')
+                    pane.paste(im,(0,30))
+                    ImageDraw.Draw(pane).text((10,9),
+                        f'PHYSICS mj_step {view} {phase} t={t:.2f} J6={np.rad2deg(d.qpos[qadr[5]]):.1f} F{fc}/M{mc}',fill='white')
+                    panels.append(pane)
+                canvas=Image.new('RGB',(1920,496),'#192532')
+                for ix,pane in enumerate(panels):canvas.paste(pane,(640*ix,0))
                 frames.append(canvas)
     finally:
         if renderer:renderer.close()
