@@ -108,13 +108,23 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
     data.qpos[qadr[:5]] = q
     data.qpos[bq:bq+3] = xyz
     data.qpos[bq+3:bq+7] = quat
+    # Plan against the CENTRAL 20mm band, NOT the nearest end-cap of
+    # the entire 97mm bottle. Massless probe has zero collision masks.
+    central_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                 'phase7b_muhi_central_probe')
+    if central_id<0:
+        raise RuntimeError('Missing Phase7B central probe in MuJoCo model')
     out = {}
     for label, u in [('open',0.),('close_25pct',.25),('close_50pct',.50),
                      ('close_75pct',.75),('near_closed',.90),('closed',1.)]:
         data.qpos[qadr[5]] = hi[5]+u*(lo[5]-hi[5])
         mujoco.mj_forward(model, data)
-        f = geom_witness(model, data, fixed, bottle)
-        m = geom_witness(model, data, moving, bottle)
+        f=geom_witness(model,data,fixed,(central_id,))
+        m=geom_witness(model,data,moving,(central_id,))
+        # The center probe is for IK/search ONLY. Track real-body geometry
+        # independently to ensure it is not used as a fictitious collider.
+        f_phys=geom_witness(model,data,fixed,bottle)
+        m_phys=geom_witness(model,data,moving,bottle)
         # Strip the axial component: opposite sides means cos(theta)=-1
         # in the cross-section perpendicular to the cylinder long axis.
         a = f['bottle_point']-xyz
@@ -143,6 +153,8 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
                           moving_jaw_nearest_point_world_m=m['jaw_point'].tolist(),
                           fixed_gap_mm=1000*f['gap_m'],
                           moving_gap_mm=1000*m['gap_m'],
+                          whole_body_fixed_gap_mm=1000*f_phys['gap_m'],
+                          whole_body_moving_gap_mm=1000*m_phys['gap_m'],
                           radial_opposition_cos=cos,
                           fixed_contact_candidate_world_m=f['bottle_point'].tolist(),
                           moving_contact_candidate_world_m=m['bottle_point'].tolist())
@@ -202,6 +214,9 @@ def score_geo(g):
     close_states=[g[k] for k in ('close_25pct','close_50pct','close_75pct','near_closed','closed')]
     score+=12.*max(0.,min(x['moving_witness_axial_offset_mm'] for x in close_states)-10.)
     score+=8.*max(0., -f)
+    # Never trade genuine full-body penetration for a center-only witness.
+    score+=25.*max(0.,-g['open']['whole_body_fixed_gap_mm']-0.5)
+    score+=25.*max(0.,-g['open']['whole_body_moving_gap_mm']-0.5)
     score+=4.*max(0., 4.-m) + .1*max(0.,m-35.)
     # The moving jaw must approach/cross the cylinder surface by J6.
     score+=2.*max(0.,min(v['moving_gap_mm'] for v in closing)-1.)
@@ -303,6 +318,8 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
         moving_middle=(moving_axial is not None and moving_axial<=args.central_window_mm)
         # A true geometric preflight, not a declaration of actual grasp.
         valid=(abs(margin-args.fixed_jaw_gap_mm)<=.5 and op['moving_gap_mm']>=3.
+               and op['whole_body_fixed_gap_mm']>=-0.5
+               and op['whole_body_moving_gap_mm']>=-0.5
                and g['pinch_path']['pinch_geometry_valid']
                and op['cylinder_center_between_jaws']
                and op['fixed_inner_facing_mm']>0
@@ -314,6 +331,8 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
         refined.append(dict(q=q1,anchor=anchor,geometry=g,
             score=objective(q1),initial_score=score0,
             fixed_inner_surface_gap_mm=margin,
+            whole_body_fixed_gap_mm=op['whole_body_fixed_gap_mm'],
+            whole_body_moving_gap_mm=op['whole_body_moving_gap_mm'],
             fixed_axial_offset_mm=op['fixed_witness_axial_offset_mm'],
             moving_axial_offset_mm=moving_axial,
             axial_shift_seed_mm=axial_seed_mm,
@@ -329,6 +348,9 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
             pinch_path=g['pinch_path'],
             rejection_reasons=(
                 ([] if abs(margin-args.fixed_jaw_gap_mm)<=.5 else ['FIXED_JAW_NOT_2_TO_3MM'])+
+                ([] if op['whole_body_fixed_gap_mm']>=-.5 and
+                        op['whole_body_moving_gap_mm']>=-.5 else
+                        ['WHOLE_BOTTLE_INTERSECTION_AT_OPEN'])+
                 ([] if fixed_middle else ['FIXED_CONTACT_NEAR_END'])+
                 ([] if moving_middle else ['MOVING_CONTACT_NEAR_END_OR_ABSENT'])+
                 ([] if g['pinch_path']['open_jaw_encircles_object'] else ['OBJECT_NOT_BETWEEN_OPEN_INNER_FACES'])+
@@ -714,6 +736,7 @@ def run(args):
     if args.out.exists():raise FileExistsError(args.out)
     args.out.mkdir(parents=True)
     args.support_plane_z_m=args.table_z
+    args.central_probe_half_length_m=args.central_window_mm/1000.
     model,qadr,vadr,aids,lo,hi,fixed,moving,bottle,floor=phase6c.model_build(args)
     bid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,grasp.FINGER_BODY)
     jid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
@@ -829,6 +852,8 @@ def run(args):
                          geometric_score=best['score'],
                          fixed_inner_surface_gap_mm=best['fixed_inner_surface_gap_mm'],
                          fixed_axial_offset_mm=best['fixed_axial_offset_mm'],
+                         whole_body_fixed_gap_mm=best['whole_body_fixed_gap_mm'],
+                         whole_body_moving_gap_mm=best['whole_body_moving_gap_mm'],
                          moving_axial_offset_mm=best['moving_axial_offset_mm'],
                          lift_ik_diagnostics=ik_lift,
                          requested_lift_mm=args.lift_mm,
@@ -861,6 +886,8 @@ def run(args):
                geometric_score=r.get('geometric_score'),
                fixed_inner_surface_gap_mm=r.get('fixed_inner_surface_gap_mm'),
                fixed_axial_offset_mm=r.get('fixed_axial_offset_mm'),
+               whole_body_fixed_gap_mm=r.get('whole_body_fixed_gap_mm'),
+               whole_body_moving_gap_mm=r.get('whole_body_moving_gap_mm'),
                moving_axial_offset_mm=r.get('moving_axial_offset_mm'),
                lift_measured_mm=r.get('dynamic',{}).get('measured_lift_mm'),
                lift_success=r.get('dynamic',{}).get('lift_success'),
@@ -871,7 +898,7 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7b_parallel_oblique_lift20_v2',simulation_only=True,
+        schema='phase7b_parallel_oblique_lift20_v3',simulation_only=True,
         approach_mode='parallel_oblique_only',
         approach_retract_mm=args.approach_retract_mm,
         approach_raise_mm=args.approach_raise_mm,
@@ -884,6 +911,8 @@ def run(args):
         permitted_perpendicular_error_deg=45.0,
         fixed_inner_jaw_margin_target_mm=[2,3],
         central_grasp_axial_window_mm=args.central_window_mm,
+        center_probe_only_for_planning=True,
+        center_probe_physics_disabled=True,
         fixed_jaw_inner_face_preflight='center between jaws, inner-facing nearest witness and axial offset <= 25mm',
         closing_direction_preflight='J6 must reduce moving jaw gap by >2mm and create opposite-radial-side contact while object is between jaws',
         invalid_candidates_do_not_execute_physics=True,
