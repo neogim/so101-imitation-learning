@@ -234,6 +234,17 @@ def score_geo(g):
     score+=2.*max(0.,min(v['moving_gap_mm'] for v in closing)-1.)
     score+=7.*max(0.,-min(v['moving_gap_mm'] for v in closing)-2.)
     # Opposite radial faces instead of the previous same-side contact.
+    # Opposite-side geometry must hold precisely when moving finger first
+    # reaches the bottle, not at an arbitrary J6 sample far from contact.
+    contact_near=[v for v in closing if -3.<=v['moving_gap_mm']<=3.]
+    if contact_near:
+        near_contact=min(contact_near,key=lambda v:abs(v['moving_gap_mm']))
+        score+=240.*max(0.,near_contact['radial_opposition_cos']+.30)
+        score+=80.*float(not near_contact['cylinder_center_between_jaws'])
+        score+=80.*float(near_contact['moving_inner_facing_mm']<=0)
+        score+=80.*max(0.,near_contact['moving_witness_axial_offset_mm']-6.)
+    else:
+        score+=250.  # J6 never arrives at the cylinder
     cos=min(v['radial_opposition_cos'] for v in closing)
     score+=35.*max(0.,cos+.3)
     return float(score)
@@ -298,7 +309,7 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
             anchor=np.array([.030,.036,anchor_z])
             for vertical_offset in (0.,):
                 for axial_shift_mm in (0.,):
-                    for j5_seed in (-90.,90.):
+                    for j5_seed in (-135.,-90.,-45.,0.,45.,90.,135.):
                         ref=bench.copy()
                         ref[4]=np.clip(math.radians(j5_seed),lo[4]+1e-5,hi[4]-1e-5)
                         try:
@@ -958,7 +969,7 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7b_parallel_oblique_lift20_v4',simulation_only=True,
+        schema='phase7b_parallel_oblique_lift20_v5',simulation_only=True,
         approach_mode='parallel_oblique_side_entry_only',
         approach_retract_mm=args.approach_retract_mm,
         approach_raise_mm=args.approach_raise_mm,
@@ -971,6 +982,7 @@ def run(args):
         permitted_perpendicular_error_deg=45.0,
         fixed_inner_jaw_margin_target_mm=[2,3],
         curved_side_surface_only=True,
+        prioritize_j6_near_contact_opposite_side=True,
         central_grasp_axial_window_mm=args.central_window_mm,
         center_probe_only_for_planning=True,
         center_probe_physics_disabled=True,
@@ -1001,7 +1013,7 @@ def main():
     p.add_argument('--table-z',type=float,default=0.)
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
-    p.add_argument('--max-seeds',type=int,default=6)
+    p.add_argument('--max-seeds',type=int,default=10)
     p.add_argument('--parallel-tolerance-deg',type=float,default=30.0)
     p.add_argument('--approach-retract-mm',type=float,default=25.0)
     p.add_argument('--approach-raise-mm',type=float,default=35.0)
