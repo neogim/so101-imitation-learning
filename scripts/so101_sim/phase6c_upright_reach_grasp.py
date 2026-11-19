@@ -106,7 +106,7 @@ def model_build(args):
             name='phase7b_muhi_central_probe',
             type=mujoco.mjtGeom.mjGEOM_CYLINDER,
             pos=[0,0,0],size=[physical.MUHI_RADIUS,half_length,0],
-            mass=0,rgba=[.1,.9,.2,0],
+            mass=0,rgba=[.10,.90,.23,.35],
             contype=0,conaffinity=0)
     # Place support plane BEFORE MjSpec.compile(): moving a compiled static
     # world geom can leave its collision acceleration structures stale.
