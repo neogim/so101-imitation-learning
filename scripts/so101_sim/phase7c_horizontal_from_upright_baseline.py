@@ -330,8 +330,25 @@ def center_band_contact_witness(model,data,patches,bottle,xyz,axis):
         point_world_m=bottle_point.tolist())
 
 
+def arm_tool_floor_clearance(model,data,floor,tool_geoms):
+    """Signed geomDistance floor-to-jaws and wrist/tool collision geoms.
+
+    Evaluate independently from the collision bit masks, which deliberately
+    differ between upright Phase6G and this horizontal diagnostic.
+    """
+    nearest=(float('inf'),None)
+    for gid in tool_geoms:
+        val=float(mujoco.mj_geomDistance(model,data,int(floor),int(gid),.25,
+                                         np.zeros(6,dtype=float)))
+        if val<nearest[0]:
+            nearest=(val,int(gid))
+    return dict(gap_mm=nearest[0]*1000.,
+                nearest_geom=(None if nearest[1] is None else
+                    mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,nearest[1])))
+
+
 def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
-                                    fixed,moving,bottle,q_initial,anchor,bid,args,out):
+                                    fixed,moving,bottle,floor,tool_geoms,q_initial,anchor,bid,args,out):
     """Retarget BOTH actual jaw collision surfaces, not the imaginary TCP.
 
     Preserve Phase6G contact meshes / J6 PD. Only J1..J5 are optimized.
@@ -361,6 +378,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         fg=float(grasp.geometry_gaps(model,data,bottle,fixed))*1000.
         mg=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
         bracket=jaw_centerline_bracketing(model,data,fixed,moving,bottle,xyz)
+        open_floor=arm_tool_floor_clearance(model,data,floor,tool_geoms)
         fixed_witness=center_band_contact_witness(model,data,fixed,bottle,xyz,object_axis)
         data.qpos[qadr[5]]=hi[5]+.8*(lo[5]-hi[5])
         mujoco.mj_forward(model,data)
@@ -368,17 +386,18 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         data.qpos[qadr[5]]=lo[5]
         mujoco.mj_forward(model,data)
         m100=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
+        closed_floor=arm_tool_floor_clearance(model,data,floor,tool_geoms)
         moving_witness=center_band_contact_witness(model,data,moving,bottle,xyz,object_axis)
         opposition=float(np.dot(fixed_witness['side_vector_world'],moving_witness['side_vector_world']))
         p,r=fk(model,data,qadr,bid,q)
         anchor_err=float(np.linalg.norm((p+r@anchor)-xyz)*1000.)
         angle=finger_vs_bottle_axis_angle(model,data,qadr,bid,q,
                                           finger_local,object_axis)
-        return fg,mg,m80,m100,anchor_err,angle,bracket,fixed_witness,moving_witness,opposition
+        return fg,mg,m80,m100,anchor_err,angle,bracket,fixed_witness,moving_witness,opposition,open_floor,closed_floor
     best=None
     for label,seed in seeds:
         def residual(q):
-            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition=measure(q)
+            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition,open_floor,closed_floor=measure(q)
             # Clearance first. Do not squeeze the moving jaw through the
             # object at OPEN. At 80%-closed prefer approaching the surface.
             return np.array([
@@ -398,6 +417,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max(0.,mw['axial_offset_mm']-6.)*2.,
                 # Fixed/moving jaw must approach OPPOSITE radial sides.
                 max(0.,opposition+.35)*35.,
+                # Stop the optimizer choosing wrist/jaw poses below the table.
+                max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm'])*5.,
+                max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm'])*5.,
                 # 0deg = finger axis perpendicular to bottle long axis.
                 # This is a PRIMARY target, not a decorative penalty.
                 120.*np.sin(np.deg2rad(angle)),
@@ -410,12 +432,13 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_nfev=args.horizontal_ik_max_nfev,ftol=.008,
                 xtol=.008,gtol=.008)
             candidate=fit.x.copy()
-            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition=measure(candidate)
+            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition,open_floor,closed_floor=measure(candidate)
             valid=(1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
                    and (mg-m80)>=2. and bracket['between_centroids']
                    and fw['axial_offset_mm']<=central_half_mm
                    and mw['axial_offset_mm']<=central_half_mm
                    and opposition<=-.35
+                   and min(open_floor['gap_mm'],closed_floor['gap_mm'])>=args.min_tool_floor_gap_mm
                    and bracket['fixed_surface_inward'])
             score=(abs(fg-1.5)*2.+10.*max(0.,1.-mg)+
                    .35*abs(m80)+.16*err+max(0.,m100+1.)*.3+
@@ -423,12 +446,17 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    60.*float(not bracket['fixed_surface_inward'])+
                    5.*max(0.,fw['axial_offset_mm']-central_half_mm)+
                    4.*max(0.,mw['axial_offset_mm']-central_half_mm)+
-                   40.*max(0.,opposition+.35))
+                   40.*max(0.,opposition+.35)+
+                   8.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm'])+
+                   8.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm']))
             row=dict(seed=label,score=float(score),
                 open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
                 fixed_jaw_inside_bracketing=bracket,
                 fixed_contact_witness=fw,moving_contact_witness=mw,
                 opposite_radial_sides_cos=opposition,
+                open_tool_floor_clearance=open_floor,
+                closed_tool_floor_clearance=closed_floor,
+                tool_floor_ok=bool(min(open_floor['gap_mm'],closed_floor['gap_mm'])>=args.min_tool_floor_gap_mm),
                 center_band_half_mm=central_half_mm,
                 both_contacts_central=bool(fw['axial_offset_mm']<=central_half_mm and mw['axial_offset_mm']<=central_half_mm),
                 fixed_jaw_inside_valid=bool(bracket['between_centroids']
@@ -780,6 +808,21 @@ def run(args):
     bj=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,grasp.FINGER_BODY)
     fj=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     bq=int(model.jnt_qposadr[fj]);bd=int(model.jnt_dofadr[fj])
+    # Check ONLY moving wrist/forearm/tool shapes; not the base mounting
+    # hardware which may legitimately intersect the support plane.
+    tool_geoms=[]
+    for gid in range(model.ngeom):
+        if gid==floor or gid in bottle:
+            continue
+        body=int(model.geom_bodyid[gid])
+        if body==0:
+            continue
+        body_name=(mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,body) or '').lower()
+        if any(key in body_name for key in ('elbow','wrist','gripper','jaw')):
+            tool_geoms.append(gid)
+    tool_geoms=sorted(set(tool_geoms)|set(fixed)|set(moving))
+    if not tool_geoms:
+        raise RuntimeError('No tool collision geometry for floor clearance')
     bench=np.zeros(5);bench[4]=np.clip(-math.pi/2,lo[4],hi[4])
     # The sign of J2 is URDF-dependent. Pick the candidate that physically
     # raises the finger body in world Z, rather than guessing a motor sign.
@@ -848,7 +891,7 @@ def run(args):
             if args.orientation=='horizontal':
                 q,clearance_report=horizontal_jaw_clearance_search(
                     model,data,qadr,bq,lo,hi,xyz,args.object_quat,
-                    fixed,moving,bottle,q,anchor,bj,args,sub)
+                    fixed,moving,bottle,floor,tool_geoms,q,anchor,bj,args,sub)
                 ik['horizontal_clearance_search']=clearance_report
                 ik['ik_angles_deg']=dict(zip(JOINTS,np.rad2deg(q).tolist()))
                 ik['anchor_error_mm']=clearance_report['chosen']['anchor_error_mm']
@@ -887,7 +930,7 @@ def run(args):
                  ik['anchor_error_mm']<=args.max_ik_error_mm))
             phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {
                 'status':'GEOMETRY_DIAGNOSTIC_ONLY',
-                'reason':'Central 20mm, opposing jaw sides, fixed inside face 1-2mm, J5 perpendicularity or open clearance not satisfied; inspect horizontal_jaw_ik_candidates.json',
+                'reason':'Floor clearance (open/closed 2mm), central 20mm, opposed inner jaws, J5 perpendicularity, or open geometry invalid; inspect horizontal_jaw_ik_candidates.json',
                 'bilateral_hold_steps':None}
         except Exception as exc:
             ik={};geo={};phys={'status':'EXECUTION_ERROR','reason':repr(exc),'bilateral_hold_steps':0}
@@ -956,6 +999,8 @@ def run(args):
        'orientation':args.orientation,
        'central_grasp_half_mm':args.central_grasp_half_mm,
        'central_grasp_required':True,
+       'min_tool_floor_gap_mm':args.min_tool_floor_gap_mm,
+       'tool_floor_clearance_required':True,
        'kinematic_video_phase':'close_and_hold_NOT_PHYSICS',
        'yaw_deg':args.yaw_deg,
        'object_quat_wxyz':args.object_quat,
@@ -1007,6 +1052,7 @@ def main():
     p.add_argument('--horizontal-ik-max-nfev',type=int,default=45)
     p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=12.)
     p.add_argument('--central-grasp-half-mm',type=float,default=10.)
+    p.add_argument('--min-tool-floor-gap-mm',type=float,default=2.)
     p.add_argument('--target-x',type=float,default=.220)
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
@@ -1047,6 +1093,8 @@ def main():
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
     if args.object_height_clearance_mm<0: p.error('Object clearance cannot be negative')
+    if args.min_tool_floor_gap_mm<0:
+        p.error('min-tool-floor-gap-mm must be nonnegative')
     if not 0<args.central_grasp_half_mm<=15:
         p.error('central-grasp-half-mm must be (0,15]')
     if not 0<args.max_finger_perpendicular_error_deg<=45:
