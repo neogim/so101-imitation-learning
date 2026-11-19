@@ -635,7 +635,15 @@ def run(args):
         axes[1].text(.01,.93,'\n'.join(lines),va='top',ha='left',fontfamily='monospace',fontsize=10,transform=axes[1].transAxes)
         fig.savefig(args.out/'comparison.png',dpi=150);plt.close(fig)
     except Exception as e:(args.out/'plot_error.txt').write_text(repr(e))
-    summary={'schema':'phase6g_fixed_workcell_root_middle_tip_v1','simulation_only':True,
+    summary={'schema':'phase7c_horizontal_upright_contact_parity_v1',
+       'simulation_only':True,
+       'orientation':args.orientation,
+       'yaw_deg':args.yaw_deg,
+       'object_quat_wxyz':args.object_quat,
+       'source_baseline_sha':'f304135959adc5f9e97d693de37474f766c63cc1',
+       'j6_pd':[args.j6_kp,args.j6_kd,args.j6_torque],
+       'physical_close_is_mj_step':True,
+       'lift_executed':False,
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
        'depth_subset':args.depth_only,
