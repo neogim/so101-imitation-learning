@@ -349,26 +349,65 @@ def arm_tool_floor_clearance(model,data,floor,tool_geoms):
 
 def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                                     fixed,moving,bottle,floor,tool_geoms,q_initial,anchor,bid,args,out):
-    """Retarget BOTH actual jaw collision surfaces, not the imaginary TCP.
+    """Ordered plan-view grasp: J5 yaw alignment -> J1..J4 approach -> J6.
 
-    Preserve Phase6G contact meshes / J6 PD. Only J1..J5 are optimized.
-    The initial solve often puts the moving jaw 10mm INSIDE the horizontal
-    bottle, despite a valid fixed-jaw distance. Search alternative J5 rolls.
+    Critical: J5 is NOT traded away for smaller nearest-geom distance.
+    The horizontal projection of the actual STL finger axis must be 90 deg
+    from the horizontal bottle long axis, and have nonzero projection.
+    Stage 2 optimizes only J1..J4 while J5 is locked; J6 stays OPEN.
     """
     from scipy.optimize import least_squares
-    trials=[]
     finger_local=actual_finger_long_axis_local(args)
     object_axis=Rotation.from_quat(np.asarray(quat)[[1,2,3,0]]).apply([0.,0.,1.])
+    obj_xy=np.asarray(object_axis[:2],float)
+    obj_xy/=max(1e-10,float(np.linalg.norm(obj_xy)))
     angle_limit=args.max_finger_perpendicular_error_deg
     central_half_mm=args.central_grasp_half_mm
-    seed_angles=(-150.,-105.,-60.,-15.,30.,75.,120.,165.)
-    # Include the initial IK result for reproducibility.
-    seeds=[('baseline_ik',q_initial.copy())]
-    for deg in seed_angles:
-        q=q_initial.copy()
-        q[4]=np.clip(np.deg2rad(deg),lo[4]+.0003,hi[4]-.0003)
-        seeds.append((f'j5_{deg:+g}',q))
-    # No contact solver in this optimization: collision-only geometry scores.
+    trials=[]
+    stages=[]
+
+    def top_view(q):
+        p,r=fk(model,data,qadr,bid,q)
+        world=r@finger_local
+        horizontal=np.asarray(world[:2],float)
+        proj=float(np.linalg.norm(horizontal))
+        if proj<1e-8:
+            return 90.,proj,world.tolist()
+        unit=horizontal/proj
+        error=float(np.degrees(np.arcsin(
+            np.clip(abs(np.dot(unit,obj_xy)),0.,1.))))
+        return error,proj,world.tolist()
+
+    def align_j5(q):
+        """Stage 1: only J5 is swept and adjusted; J1..J4 remain fixed."""
+        lower=float(lo[4]+.0002);upper=float(hi[4]-.0002)
+        grid=np.linspace(lower,upper,33)
+        possibilities=[]
+        for j5 in grid:
+            candidate=q.copy();candidate[4]=float(j5)
+            err,proj,_=top_view(candidate)
+            cost=err+180.*max(0.,.55-proj)
+            possibilities.append((cost,candidate,err,proj))
+        possibilities.sort(key=lambda v:v[0])
+        result=possibilities[0][1]
+        # Small local refinement of J5 only, around grid minima.
+        from scipy.optimize import minimize_scalar
+        step=(upper-lower)/32
+        for _,pre,_,_ in possibilities[:4]:
+            center=float(pre[4])
+            a=max(lower,center-step)
+            b=min(upper,center+step)
+            if b<=a:continue
+            def obj(j5):
+                candidate=q.copy();candidate[4]=j5
+                err,proj,_=top_view(candidate)
+                return err+180.*max(0.,.55-proj)
+            fit=minimize_scalar(obj,bounds=(a,b),method='bounded',
+                                options={'xatol':.0001,'maxiter':35})
+            candidate=q.copy();candidate[4]=fit.x
+            if obj(candidate[4])<obj(result[4]):result=candidate
+        return result
+
     def measure(q):
         data.qpos[qadr[:5]]=q
         data.qpos[qadr[5]]=hi[5]
@@ -379,7 +418,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         mg=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
         bracket=jaw_centerline_bracketing(model,data,fixed,moving,bottle,xyz)
         open_floor=arm_tool_floor_clearance(model,data,floor,tool_geoms)
-        fixed_witness=center_band_contact_witness(model,data,fixed,bottle,xyz,object_axis)
+        fw=center_band_contact_witness(model,data,fixed,bottle,xyz,object_axis)
         data.qpos[qadr[5]]=hi[5]+.8*(lo[5]-hi[5])
         mujoco.mj_forward(model,data)
         m80=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
@@ -387,104 +426,140 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         mujoco.mj_forward(model,data)
         m100=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
         closed_floor=arm_tool_floor_clearance(model,data,floor,tool_geoms)
-        moving_witness=center_band_contact_witness(model,data,moving,bottle,xyz,object_axis)
-        opposition=float(np.dot(fixed_witness['side_vector_world'],moving_witness['side_vector_world']))
-        p,r=fk(model,data,qadr,bid,q)
-        anchor_err=float(np.linalg.norm((p+r@anchor)-xyz)*1000.)
-        angle=finger_vs_bottle_axis_angle(model,data,qadr,bid,q,
-                                          finger_local,object_axis)
-        return fg,mg,m80,m100,anchor_err,angle,bracket,fixed_witness,moving_witness,opposition,open_floor,closed_floor
+        mw=center_band_contact_witness(model,data,moving,bottle,xyz,object_axis)
+        opposition=float(np.dot(fw['side_vector_world'],mw['side_vector_world']))
+        pos,rot=fk(model,data,qadr,bid,q)
+        anchor_err=float(np.linalg.norm((pos+rot@anchor)-xyz)*1000.)
+        err,projection,_=top_view(q)
+        return (fg,mg,m80,m100,anchor_err,err,projection,
+                bracket,fw,mw,opposition,open_floor,closed_floor)
+
+    # Different J1..J4 configurations, rather than only changing J5 seeds:
+    # J5 stage must have a real opportunity to fix top-view orientation.
+    seeds=[('upright_seed',q_initial.copy())]
+    for j2,j3,j4 in ((-20,0,0),(20,0,0),(0,-25,0),(0,25,0),
+                     (0,0,-30),(0,0,30),(-20,15,-20),(20,-15,20)):
+        seed=q_initial.copy()
+        seed[1:4]=np.clip(seed[1:4]+np.deg2rad([j2,j3,j4]),
+                          lo[1:4]+.0004,hi[1:4]-.0004)
+        seeds.append((f'arm_{j2:+d}_{j3:+d}_{j4:+d}',seed))
     best=None
+
     for label,seed in seeds:
-        def residual(q):
-            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition,open_floor,closed_floor=measure(q)
-            # Clearance first. Do not squeeze the moving jaw through the
-            # object at OPEN. At 80%-closed prefer approaching the surface.
-            return np.array([
-                (fg-1.5)*2.0,
-                max(0.,2.-mg)*5.,
-                np.clip(mg-10.,0.,35.)*.12,
-                np.clip(m80,-12.,25.)*.17,
-                max(0.,m100+1.)*.5,
-                err*.16,
-                # Keep Muhi between the fixed and moving jaw, not
-                # beside the OUTER face of the fixed finger.
-                max(0.,2.-bracket['along_mm'])*4.,
-                max(0.,1.5-bracket['fixed_surface_inward_projection_mm'])*4.,
-                max(0.,bracket['along_mm']-bracket['jaw_separation_mm']+2.)*4.,
-                # Never slide toward an END CAP to reduce the nearest gap.
-                max(0.,fw['axial_offset_mm']-6.)*3.,
-                max(0.,mw['axial_offset_mm']-6.)*2.,
-                # Fixed/moving jaw must approach OPPOSITE radial sides.
-                max(0.,opposition+.35)*35.,
-                # Stop the optimizer choosing wrist/jaw poses below the table.
-                max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm'])*5.,
-                max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm'])*5.,
-                # 0deg = finger axis perpendicular to bottle long axis.
-                # This is a PRIMARY target, not a decorative penalty.
-                120.*np.sin(np.deg2rad(angle)),
-                *(np.rad2deg(q-seed)*.012),
-            ])
-        q0=np.clip(seed,lo[:5]+.0003,hi[:5]-.0003)
         try:
-            fit=least_squares(residual,q0,
-                bounds=(lo[:5]+.0001,hi[:5]-.0001),
-                max_nfev=args.horizontal_ik_max_nfev,ftol=.008,
-                xtol=.008,gtol=.008)
-            candidate=fit.x.copy()
-            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition,open_floor,closed_floor=measure(candidate)
+            # STEP 1. Top view: rotate J5 alone, no approach, no J6.
+            q_first=align_j5(seed)
+            first_err,first_proj,first_axis=top_view(q_first)
+            stages.append(dict(seed=label,stage='1_J5_top_view_align',
+                  j5_deg=float(np.rad2deg(q_first[4])),
+                  top_view_perpendicular_error_deg=first_err,
+                  finger_horizontal_projection=first_proj,
+                  finger_world_axis=first_axis,
+                  q_deg=np.rad2deg(q_first).tolist()))
+            # STEP 2. Fixed J5. Move ONLY J1..J4 to put fixed inner jaw
+            # 1-2mm from the center, with moving jaw opposite and floor clear.
+            def residual(q4):
+                q=q_first.copy();q[:4]=q4
+                (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,
+                     opposition,open_floor,closed_floor)=measure(q)
+                return np.array([
+                    2.5*(fg-1.5),
+                    6.*max(0.,1.-mg),
+                    .12*max(0.,mg-15.),
+                    .4*np.clip(m80,-12.,25.),
+                    .4*max(0.,m100+1.),
+                    .10*err,
+                    8.*max(0.,2.-bracket['along_mm']),
+                    10.*max(0.,1.5-bracket['fixed_surface_inward_projection_mm']),
+                    4.*max(0.,fw['axial_offset_mm']-6.),
+                    3.*max(0.,mw['axial_offset_mm']-6.),
+                    40.*max(0.,opposition+.35),
+                    7.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm']),
+                    7.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm']),
+                    # Preserve plan-view perpendicularity with J5 LOCKED.
+                    12.*angle,
+                    100.*max(0.,.55-proj),
+                    *(np.rad2deg(q4-seed[:4])*.009)
+                ])
+            fit=least_squares(residual,q_first[:4],
+                bounds=(lo[:4]+.0002,hi[:4]-.0002),
+                max_nfev=args.horizontal_ik_max_nfev,
+                ftol=.005,xtol=.005,gtol=.005)
+            q=q_first.copy();q[:4]=fit.x
+            (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
+                  open_floor,closed_floor)=measure(q)
             valid=(1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
-                   and (mg-m80)>=2. and bracket['between_centroids']
+                   and proj>=.55 and (mg-m80)>=2.
+                   and bracket['between_centroids']
+                   and bracket['fixed_surface_inward']
                    and fw['axial_offset_mm']<=central_half_mm
                    and mw['axial_offset_mm']<=central_half_mm
                    and opposition<=-.35
-                   and min(open_floor['gap_mm'],closed_floor['gap_mm'])>=args.min_tool_floor_gap_mm
-                   and bracket['fixed_surface_inward'])
-            score=(abs(fg-1.5)*2.+10.*max(0.,1.-mg)+
-                   .35*abs(m80)+.16*err+max(0.,m100+1.)*.3+
-                   15.*angle+15.*float(not bracket['between_centroids'])+
-                   60.*float(not bracket['fixed_surface_inward'])+
+                   and min(open_floor['gap_mm'],closed_floor['gap_mm'])
+                       >=args.min_tool_floor_gap_mm)
+            score=(3.*abs(fg-1.5)+20.*max(0.,1.-mg)+
+                   .3*abs(m80)+.1*err+2.*angle+
+                   80.*max(0.,.55-proj)+
+                   70.*float(not bracket['fixed_surface_inward'])+
+                   30.*float(not bracket['between_centroids'])+
                    5.*max(0.,fw['axial_offset_mm']-central_half_mm)+
-                   4.*max(0.,mw['axial_offset_mm']-central_half_mm)+
-                   40.*max(0.,opposition+.35)+
+                   5.*max(0.,mw['axial_offset_mm']-central_half_mm)+
+                   50.*max(0.,opposition+.35)+
                    8.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm'])+
                    8.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm']))
             row=dict(seed=label,score=float(score),
-                open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
-                fixed_jaw_inside_bracketing=bracket,
-                fixed_contact_witness=fw,moving_contact_witness=mw,
-                opposite_radial_sides_cos=opposition,
-                open_tool_floor_clearance=open_floor,
-                closed_tool_floor_clearance=closed_floor,
-                tool_floor_ok=bool(min(open_floor['gap_mm'],closed_floor['gap_mm'])>=args.min_tool_floor_gap_mm),
-                center_band_half_mm=central_half_mm,
-                both_contacts_central=bool(fw['axial_offset_mm']<=central_half_mm and mw['axial_offset_mm']<=central_half_mm),
-                fixed_jaw_inside_valid=bool(bracket['between_centroids']
+                 stage='2_fixed_j5_approach',
+                 open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
+                 fixed_jaw_inside_bracketing=bracket,
+                 fixed_contact_witness=fw,moving_contact_witness=mw,
+                 opposite_radial_sides_cos=opposition,
+                 open_tool_floor_clearance=open_floor,
+                 closed_tool_floor_clearance=closed_floor,
+                 tool_floor_ok=bool(min(open_floor['gap_mm'],
+                    closed_floor['gap_mm'])>=args.min_tool_floor_gap_mm),
+                 center_band_half_mm=central_half_mm,
+                 both_contacts_central=bool(fw['axial_offset_mm']<=central_half_mm
+                       and mw['axial_offset_mm']<=central_half_mm),
+                 fixed_jaw_inside_valid=bool(bracket['between_centroids']
                        and bracket['fixed_surface_inward']),
-                closing_80pct_moving_gap_mm=m80,
-                closed_moving_gap_mm=m100,
-                anchor_error_mm=err,
-                finger_perpendicular_error_deg=angle,
-                perpendicular_tolerance_deg=angle_limit,
-                open_clear=bool(1.<=fg<=2.5 and mg>=1.),
-                direction_clear=bool(angle<=angle_limit),
-                moving_closes_toward_muhi=bool((mg-m80)>=2.),
-                valid_for_physics=bool(valid),
-                ik_angles_deg=np.rad2deg(candidate).tolist(),
-                optimizer_evaluations=int(fit.nfev))
+                 closing_80pct_moving_gap_mm=m80,
+                 closed_moving_gap_mm=m100,anchor_error_mm=err,
+                 finger_perpendicular_error_deg=angle,
+                 top_view_perpendicular_error_deg=angle,
+                 finger_horizontal_projection=proj,
+                 j5_locked_at_deg=float(np.rad2deg(q_first[4])),
+                 perpendicular_tolerance_deg=angle_limit,
+                 open_clear=bool(1.<=fg<=2.5 and mg>=1.),
+                 direction_clear=bool(angle<=angle_limit and proj>=.55),
+                 moving_closes_toward_muhi=bool((mg-m80)>=2.),
+                 valid_for_physics=bool(valid),
+                 ik_angles_deg=np.rad2deg(q).tolist(),
+                 optimizer_evaluations=int(fit.nfev))
             trials.append(row)
-            if best is None or (valid, -score)>(best[0],-best[1]):
-                best=(valid,score,candidate,row)
+            stages.append(dict(seed=label,stage='2_fixed_j5_approach',
+                 j5_deg=row['j5_locked_at_deg'],
+                 top_view_perpendicular_error_deg=angle,
+                 fixed_gap_mm=fg,moving_gap_mm=mg,
+                 candidate_valid=bool(valid),q_deg=row['ik_angles_deg']))
+            if best is None or (valid,-score)>(best[0],-best[1]):
+                best=(valid,score,q,row,q_first.copy())
         except Exception as exc:
-            trials.append(dict(seed=label,error=repr(exc),open_clear=False))
+            trials.append(dict(seed=label,error=repr(exc),
+                               valid_for_physics=False))
     dump(out/'horizontal_jaw_ik_candidates.json',trials)
+    dump(out/'ordered_j5_then_approach_stages.json',stages)
     if best is None:
-        raise RuntimeError('Horizontal IK produced no measurable candidates')
-    return best[2],dict(method='perpendicular_finger_axis_and_both_jaw_clearance_ik',
+        raise RuntimeError('Ordered J5 alignment did not yield a candidate')
+    report=dict(method='ordered_J5_top_view_then_fixed_J5_approach_then_J6',
         chosen=best[3],n_candidates=len(seeds),
+        stage1_j5_aligned_q_deg=np.rad2deg(best[4]).tolist(),
+        stage2_approach_q_deg=np.rad2deg(best[2]).tolist(),
         actual_finger_axis_local=finger_local.tolist(),
         bottle_axis_world=object_axis.tolist(),
-        note='Kinematic optimization only; physical contact is mj_step.')
+        top_view_angle_limit_deg=angle_limit,
+        note='Stage 1 only J5, stage 2 J1..J4 with J5 frozen, then J6 physics only if all constraints valid.')
+    return best[2],report
+
 
 
 def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,lo,hi,out,fps=8):
@@ -1050,7 +1125,7 @@ def main():
     p.add_argument('--yaw-deg',type=float,default=0.)
     p.add_argument('--object-height-clearance-mm',type=float,default=.5)
     p.add_argument('--horizontal-ik-max-nfev',type=int,default=45)
-    p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=12.)
+    p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=8.)
     p.add_argument('--central-grasp-half-mm',type=float,default=10.)
     p.add_argument('--min-tool-floor-gap-mm',type=float,default=2.)
     p.add_argument('--target-x',type=float,default=.220)
