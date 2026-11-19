@@ -416,8 +416,12 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         note='Kinematic optimization only; physical contact is mj_step.')
 
 
-def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,hi,out):
-    """Still diagnostic for an invalid pose; never claim physical contact."""
+def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,lo,hi,out,fps=8):
+    """Save three-view still + visually labeled kinematic J6 diagnostic video.
+
+    This manually changes qpos and calls mj_forward: NEVER physical grasp.
+    Actual MuJoCo mj_step contact is solely middle/grasp.mp4.
+    """
     d=mujoco.MjData(model)
     d.qpos[qadr[:5]]=q
     d.qpos[qadr[5]]=hi[5]
@@ -433,8 +437,11 @@ def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,hi,out):
         camera.type=mujoco.mjtCamera.mjCAMERA_FREE
         camera.lookat[:]=xyz
         camera.distance=.5
-        imgs=[]
-        try:
+        def triptych(fraction):
+            # Diagnostic ONLY: writes the J6 angle directly.
+            d.qpos[qadr[5]]=hi[5]+fraction*(lo[5]-hi[5])
+            mujoco.mj_forward(model,d)
+            imgs=[]
             for az,el,view in ((90.,-15.,'SIDE'),(270.,-15.,'OPPOSITE'),
                                (120.,-80.,'OVERHEAD')):
                 camera.azimuth=az
@@ -443,15 +450,32 @@ def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,hi,out):
                 pane=Image.new('RGB',(640,490),'#192532')
                 pane.paste(Image.fromarray(renderer.render().copy()),(0,30))
                 ImageDraw.Draw(pane).text((8,8),
-                    'OPEN JAW STATIC GEOMETRY - NOT PHYSICS - '+view,
+                    f'KINEMATIC ONLY / NO CONTACT SOLVER | {view} | J6 {fraction*100:.0f}%',
                     fill='white')
                 imgs.append(pane)
+            canvas=Image.new('RGB',(1920,490))
+            for i,pane in enumerate(imgs):canvas.paste(pane,(640*i,0))
+            return canvas
+        try:
+            triptych(0.).save(out/'open_jaw_pose_3views.png')
+            if shutil.which('ffmpeg'):
+                frame_dir=out/'kinematic_frames'
+                frame_dir.mkdir(exist_ok=True)
+                frames=max(20,2*fps)
+                for i in range(frames):
+                    phase=i/(frames-1)
+                    frac=2*phase if phase<=.5 else 2*(1.-phase)
+                    triptych(frac).save(frame_dir/f'{i:05d}.png')
+                proc=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error',
+                      '-y','-framerate',str(fps),'-i',
+                      str(frame_dir/'%05d.png'),'-c:v','libx264',
+                      '-pix_fmt','yuv420p',str(out/'kinematic_j6_NOT_PHYSICS.mp4')],
+                      capture_output=True,text=True)
+                if proc.returncode:
+                    (out/'kinematic_video_error.txt').write_text(proc.stderr[-2000:])
+                shutil.rmtree(frame_dir)
         finally:
             renderer.close()
-        canvas=Image.new('RGB',(1920,490))
-        for i,pane in enumerate(imgs):
-            canvas.paste(pane,(640*i,0))
-        canvas.save(out/'open_jaw_pose_3views.png')
     except Exception as exc:
         (out/'pose_preview_error.txt').write_text(repr(exc))
 
@@ -788,7 +812,7 @@ def run(args):
                 ip,ir=fk(model,data,qadr,bj,q)
                 ik['grasp_reference_world_xyz_m']=(ip+ir@anchor).tolist()
             horizontal_pose_preview(model,qadr,bq,q,xyz,args.object_quat,
-                                    hi,sub)
+                                    lo,hi,sub,args.fps)
             ik['j4_wrist_flex_deg']=float(np.rad2deg(q[3]))
             ik['j4_constraint']='J4 >= %.3f deg' % args.j4_nonnegative_min_deg if name=='middle_j4_nonnegative' else 'original URDF limits'
             if name=='middle':
