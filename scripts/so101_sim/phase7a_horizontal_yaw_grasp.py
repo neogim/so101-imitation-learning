@@ -780,10 +780,12 @@ def run(args):
             real_motion_min_gap=min(row['gap_mm'] for row in trajectory_clearances)
             # INVALID candidates are only shown as diagnostics. Do not
             # execute a physically impossible approach/lift.
+            # Phase 7B executes Pregrasp->Grasp->Lift, NOT the diagnostic
+            # Home->Pregrasp preview. Only the actual executed motion is a
+            # safety preflight requirement. Do not block it on Home preview.
             preflight=(best['predicts_paired'] and
                        real_motion_min_gap>=args.min_table_clearance_mm and
                        table_gap>=args.min_table_clearance_mm and
-                       preview.get('table_preflight_ok',False) and
                        max(ik_lift['pregrasp_ik_error_mm'],
                            ik_lift['lift_ik_error_mm'])<=6.)
             physics=physical_close(model,qadr,aids,bq,bd,q,xyz,quat,lo,hi,
