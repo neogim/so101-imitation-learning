@@ -239,6 +239,27 @@ def ik_target(model, data, qadr, bid, lo, hi, xyz, anchor, ref_q, target_r,
     return out.x, float(np.linalg.norm(p+r@anchor-xyz)*1000)
 
 
+def snap_fixed_jaw_to_center_side(model,data,qadr,bq,q0,lo,hi,
+                                  xyz,quat,fixed,central_geom,side_normal):
+    """IK correction using the actual fixed-jaw collision surface, not a guessed TCP.
+
+    The target is on the cylindrical SIDE at the center of the Muhi axis.
+    This is an explicit contact-position residual, not an angular penalty.
+    """
+    desired=xyz+(physical.MUHI_RADIUS+.0025)*side_normal
+    def residual(q):
+        data.qpos[qadr[:5]]=q
+        data.qpos[qadr[5]]=hi[5]
+        data.qpos[bq:bq+3]=xyz
+        data.qpos[bq+3:bq+7]=quat
+        mujoco.mj_forward(model,data)
+        witness=geom_witness(model,data,fixed,(central_geom,))
+        return np.r_[1000.*(witness['jaw_point']-desired), .3*(q-q0)]
+    result=least_squares(residual,q0,bounds=(lo[:5]+1e-5,hi[:5]-1e-5),
+                         max_nfev=55,xtol=.005,ftol=.005)
+    return result.x,float(np.linalg.norm(residual(result.x)[:3]))
+
+
 def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
                 bottle,max_seeds,finger_axis,floor,tool_geoms,args):
     bench=np.zeros(5)
@@ -246,6 +267,14 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
     _,base_r=phase6g.fk(model,data,qadr,bid,bench)
     yaw=math.degrees(math.atan2(axis[1],axis[0]))
     candidates=[]
+    central_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,
+                                 'phase7b_muhi_central_probe')
+    if central_id<0: raise RuntimeError('Missing center-region probe')
+    # The Muhi axis is almost parallel to base->object. Grasp from the
+    # curved SIDE (+/- Y and above), not along its X-direction end cap.
+    side=np.cross(axis,[0.,0.,1.])
+    side/=max(np.linalg.norm(side),1e-9)
+    normals=[sign*.65*side+.76*np.array([0.,0.,1.]) for sign in (-1.,1.)]
     # PARALLEL CASE ONLY: robot base -> Muhi direction is approximately
     # parallel to the horizontal cylinder axis. The approach is oblique
     # from above, never a top-down template from the perpendicular case.
@@ -264,15 +293,26 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
                             q,err=ik_target(model,data,qadr,bid,lo[:5],hi[:5],
                                 xyz+axis*axial_shift_mm/1000.+[0,0,vertical_offset],anchor,ref,target_r,
                                 finger_axis=finger_axis,object_axis=axis)
-                            g=geometry(model,data,qadr,bq,q,xyz,quat,axis,
-                                       fixed,moving,bottle,lo,hi)
-                            gap,_=tool_table_gap(model,data,qadr,bq,q,xyz,quat,
-                                                  hi,floor,tool_geoms)
-                            angle=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
-                            score=(score_geo(g)+1.5*max(0.,2.-gap)
-                                   +.15*err+.10*max(0.,angle-35.))
-                            candidates.append((score,q.copy(),anchor,err,
-                                               orientation_deg,j5_seed,angle,axial_shift_mm))
+                            # Explicitly target the center SIDE of the
+                            # physical cylinder with the FIXED jaw surface.
+                            for normal in normals:
+                                try:
+                                    qs,fit_mm=snap_fixed_jaw_to_center_side(
+                                        model,data,qadr,bq,q,lo,hi,xyz,quat,
+                                        fixed,central_id,normal)
+                                    g=geometry(model,data,qadr,bq,qs,xyz,quat,axis,
+                                               fixed,moving,bottle,lo,hi)
+                                    gap,_=tool_table_gap(model,data,qadr,bq,qs,xyz,quat,
+                                                          hi,floor,tool_geoms)
+                                    angle=finger_axis_error(model,data,qadr,bid,qs,finger_axis,axis)
+                                    score=(score_geo(g)+4.*fit_mm
+                                           +12.*max(0.,2.-gap)
+                                           +.15*err+.10*max(0.,angle-35.))
+                                    candidates.append((score,qs.copy(),anchor,
+                                        err+fit_mm,orientation_deg,j5_seed,
+                                        angle,axial_shift_mm))
+                                except (ValueError,RuntimeError):
+                                    continue
                         except (ValueError,RuntimeError):
                             continue
     if not candidates:
