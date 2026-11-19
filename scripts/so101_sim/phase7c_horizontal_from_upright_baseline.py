@@ -302,6 +302,34 @@ def jaw_centerline_bracketing(model,data,fixed,moving,bottle,xyz):
                 between_centroids=bool(0.<along<length))
 
 
+def center_band_contact_witness(model,data,patches,bottle,xyz,axis):
+    """Nearest real-patch / real-Muhi witnesses and axial position.
+    End-face contacts are rejected; no artificial central collision geom.
+    """
+    best=(float('inf'),None,None)
+    for gid in patches:
+        for bgid in bottle:
+            x=np.zeros(6,dtype=float)
+            dist=float(mujoco.mj_geomDistance(
+                model,data,int(gid),int(bgid),.3,x))
+            if dist<best[0]:
+                best=(dist,x[:3].copy(),x[3:].copy())
+    if best[1] is None:
+        return dict(distance_mm=1e6,axial_offset_mm=1e6,
+                    side_vector_world=[0.,0.,0.],point_world_m=None)
+    finger_point,bottle_point=best[1],best[2]
+    axial=float(np.dot(bottle_point-xyz,axis))
+    radial=finger_point-xyz
+    radial=radial-np.dot(radial,axis)*axis
+    mag=np.linalg.norm(radial)
+    unit=radial/mag if mag>1e-8 else np.zeros(3)
+    return dict(distance_mm=best[0]*1000.,
+        axial_offset_mm=abs(axial)*1000.,
+        signed_axial_offset_mm=axial*1000.,
+        side_vector_world=unit.tolist(),
+        point_world_m=bottle_point.tolist())
+
+
 def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                                     fixed,moving,bottle,q_initial,anchor,bid,args,out):
     """Retarget BOTH actual jaw collision surfaces, not the imaginary TCP.
@@ -315,6 +343,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
     finger_local=actual_finger_long_axis_local(args)
     object_axis=Rotation.from_quat(np.asarray(quat)[[1,2,3,0]]).apply([0.,0.,1.])
     angle_limit=args.max_finger_perpendicular_error_deg
+    central_half_mm=args.central_grasp_half_mm
     seed_angles=(-150.,-105.,-60.,-15.,30.,75.,120.,165.)
     # Include the initial IK result for reproducibility.
     seeds=[('baseline_ik',q_initial.copy())]
@@ -332,21 +361,24 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         fg=float(grasp.geometry_gaps(model,data,bottle,fixed))*1000.
         mg=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
         bracket=jaw_centerline_bracketing(model,data,fixed,moving,bottle,xyz)
+        fixed_witness=center_band_contact_witness(model,data,fixed,bottle,xyz,object_axis)
         data.qpos[qadr[5]]=hi[5]+.8*(lo[5]-hi[5])
         mujoco.mj_forward(model,data)
         m80=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
         data.qpos[qadr[5]]=lo[5]
         mujoco.mj_forward(model,data)
         m100=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
+        moving_witness=center_band_contact_witness(model,data,moving,bottle,xyz,object_axis)
+        opposition=float(np.dot(fixed_witness['side_vector_world'],moving_witness['side_vector_world']))
         p,r=fk(model,data,qadr,bid,q)
         anchor_err=float(np.linalg.norm((p+r@anchor)-xyz)*1000.)
         angle=finger_vs_bottle_axis_angle(model,data,qadr,bid,q,
                                           finger_local,object_axis)
-        return fg,mg,m80,m100,anchor_err,angle,bracket
+        return fg,mg,m80,m100,anchor_err,angle,bracket,fixed_witness,moving_witness,opposition
     best=None
     for label,seed in seeds:
         def residual(q):
-            fg,mg,m80,m100,err,angle,bracket=measure(q)
+            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition=measure(q)
             # Clearance first. Do not squeeze the moving jaw through the
             # object at OPEN. At 80%-closed prefer approaching the surface.
             return np.array([
@@ -361,7 +393,11 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max(0.,2.-bracket['along_mm'])*4.,
                 max(0.,1.5-bracket['fixed_surface_inward_projection_mm'])*4.,
                 max(0.,bracket['along_mm']-bracket['jaw_separation_mm']+2.)*4.,
-                max(0.,bracket['lateral_mm']-18.)*.7,
+                # Never slide toward an END CAP to reduce the nearest gap.
+                max(0.,fw['axial_offset_mm']-6.)*3.,
+                max(0.,mw['axial_offset_mm']-6.)*2.,
+                # Fixed/moving jaw must approach OPPOSITE radial sides.
+                max(0.,opposition+.35)*35.,
                 # 0deg = finger axis perpendicular to bottle long axis.
                 # This is a PRIMARY target, not a decorative penalty.
                 120.*np.sin(np.deg2rad(angle)),
@@ -374,21 +410,28 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_nfev=args.horizontal_ik_max_nfev,ftol=.008,
                 xtol=.008,gtol=.008)
             candidate=fit.x.copy()
-            fg,mg,m80,m100,err,angle,bracket=measure(candidate)
+            fg,mg,m80,m100,err,angle,bracket,fw,mw,opposition=measure(candidate)
             valid=(1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
                    and (mg-m80)>=2. and bracket['between_centroids']
-                   and bracket['lateral_mm']<=20.
+                   and fw['axial_offset_mm']<=central_half_mm
+                   and mw['axial_offset_mm']<=central_half_mm
+                   and opposition<=-.35
                    and bracket['fixed_surface_inward'])
             score=(abs(fg-1.5)*2.+10.*max(0.,1.-mg)+
                    .35*abs(m80)+.16*err+max(0.,m100+1.)*.3+
                    15.*angle+15.*float(not bracket['between_centroids'])+
                    60.*float(not bracket['fixed_surface_inward'])+
-                   max(0.,bracket['lateral_mm']-20.))
+                   5.*max(0.,fw['axial_offset_mm']-central_half_mm)+
+                   4.*max(0.,mw['axial_offset_mm']-central_half_mm)+
+                   40.*max(0.,opposition+.35))
             row=dict(seed=label,score=float(score),
                 open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
                 fixed_jaw_inside_bracketing=bracket,
+                fixed_contact_witness=fw,moving_contact_witness=mw,
+                opposite_radial_sides_cos=opposition,
+                center_band_half_mm=central_half_mm,
+                both_contacts_central=bool(fw['axial_offset_mm']<=central_half_mm and mw['axial_offset_mm']<=central_half_mm),
                 fixed_jaw_inside_valid=bool(bracket['between_centroids']
-                       and bracket['lateral_mm']<=20.
                        and bracket['fixed_surface_inward']),
                 closing_80pct_moving_gap_mm=m80,
                 closed_moving_gap_mm=m100,
@@ -450,7 +493,7 @@ def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,lo,hi,out,fps=8):
                 pane=Image.new('RGB',(640,490),'#192532')
                 pane.paste(Image.fromarray(renderer.render().copy()),(0,30))
                 ImageDraw.Draw(pane).text((8,8),
-                    f'KINEMATIC ONLY / NO CONTACT SOLVER | {view} | J6 {fraction*100:.0f}%',
+                    f'KINEMATIC ONLY / NO CONTACT SOLVER | {view} | J6 {fraction*100:.0f}% | CLOSE THEN HOLD',
                     fill='white')
                 imgs.append(pane)
             canvas=Image.new('RGB',(1920,490))
@@ -463,8 +506,8 @@ def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,lo,hi,out,fps=8):
                 frame_dir.mkdir(exist_ok=True)
                 frames=max(20,2*fps)
                 for i in range(frames):
-                    phase=i/(frames-1)
-                    frac=2*phase if phase<=.5 else 2*(1.-phase)
+                    # Close and HOLD. The earlier reopen was misleading.
+                    frac=min(1.,(i/max(1,frames-1))/.7)
                     triptych(frac).save(frame_dir/f'{i:05d}.png')
                 proc=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error',
                       '-y','-framerate',str(fps),'-i',
@@ -844,7 +887,7 @@ def run(args):
                  ik['anchor_error_mm']<=args.max_ik_error_mm))
             phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {
                 'status':'GEOMETRY_DIAGNOSTIC_ONLY',
-                'reason':'Initial clearance, finger-long-axis perpendicularity, or J6 approach direction invalid; see horizontal_jaw_ik_candidates.json and open_jaw_pose_3views.png',
+                'reason':'Central 20mm, opposing jaw sides, fixed inside face 1-2mm, J5 perpendicularity or open clearance not satisfied; inspect horizontal_jaw_ik_candidates.json',
                 'bilateral_hold_steps':None}
         except Exception as exc:
             ik={};geo={};phys={'status':'EXECUTION_ERROR','reason':repr(exc),'bilateral_hold_steps':0}
@@ -911,6 +954,9 @@ def run(args):
     summary={'schema':'phase7c_horizontal_upright_contact_parity_v1',
        'simulation_only':True,
        'orientation':args.orientation,
+       'central_grasp_half_mm':args.central_grasp_half_mm,
+       'central_grasp_required':True,
+       'kinematic_video_phase':'close_and_hold_NOT_PHYSICS',
        'yaw_deg':args.yaw_deg,
        'object_quat_wxyz':args.object_quat,
        'source_baseline_sha':'f304135959adc5f9e97d693de37474f766c63cc1',
@@ -960,6 +1006,7 @@ def main():
     p.add_argument('--object-height-clearance-mm',type=float,default=.5)
     p.add_argument('--horizontal-ik-max-nfev',type=int,default=45)
     p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=12.)
+    p.add_argument('--central-grasp-half-mm',type=float,default=10.)
     p.add_argument('--target-x',type=float,default=.220)
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
@@ -1000,6 +1047,8 @@ def main():
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
     if args.object_height_clearance_mm<0: p.error('Object clearance cannot be negative')
+    if not 0<args.central_grasp_half_mm<=15:
+        p.error('central-grasp-half-mm must be (0,15]')
     if not 0<args.max_finger_perpendicular_error_deg<=45:
         p.error('Finger perpendicular error limit must be (0,45] degrees')
     if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32 or not 1<=args.jaw_collision_cross_bands<=8 or not 0<=args.j4_nonnegative_min_deg<=95:p.error('Invalid args')
