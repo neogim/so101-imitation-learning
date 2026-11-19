@@ -224,6 +224,127 @@ def jaw_geometry(model,data,qadr,q,xyz,bq,fixed,moving,bottle,lo,hi,object_quat)
             'closing_sweeps_bottle':bool(min(sweep)<-0.00035)}
 
 
+def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
+                                    fixed,moving,bottle,q_initial,anchor,bid,args,out):
+    """Retarget BOTH actual jaw collision surfaces, not the imaginary TCP.
+
+    Preserve Phase6G contact meshes / J6 PD. Only J1..J5 are optimized.
+    The initial solve often puts the moving jaw 10mm INSIDE the horizontal
+    bottle, despite a valid fixed-jaw distance. Search alternative J5 rolls.
+    """
+    from scipy.optimize import least_squares
+    trials=[]
+    seed_angles=(-150.,-105.,-60.,-15.,30.,75.,120.,165.)
+    # Include the initial IK result for reproducibility.
+    seeds=[('baseline_ik',q_initial.copy())]
+    for deg in seed_angles:
+        q=q_initial.copy()
+        q[4]=np.clip(np.deg2rad(deg),lo[4]+.0003,hi[4]-.0003)
+        seeds.append((f'j5_{deg:+g}',q))
+    # No contact solver in this optimization: collision-only geometry scores.
+    def measure(q):
+        data.qpos[qadr[:5]]=q
+        data.qpos[qadr[5]]=hi[5]
+        data.qpos[bq:bq+3]=xyz
+        data.qpos[bq+3:bq+7]=quat
+        mujoco.mj_forward(model,data)
+        fg=float(grasp.geometry_gaps(model,data,bottle,fixed))*1000.
+        mg=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
+        data.qpos[qadr[5]]=hi[5]+.8*(lo[5]-hi[5])
+        mujoco.mj_forward(model,data)
+        m80=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
+        data.qpos[qadr[5]]=lo[5]
+        mujoco.mj_forward(model,data)
+        m100=float(grasp.geometry_gaps(model,data,bottle,moving))*1000.
+        p,r=fk(model,data,qadr,bid,q)
+        anchor_err=float(np.linalg.norm((p+r@anchor)-xyz)*1000.)
+        return fg,mg,m80,m100,anchor_err
+    best=None
+    for label,seed in seeds:
+        def residual(q):
+            fg,mg,m80,m100,err=measure(q)
+            # Clearance first. Do not squeeze the moving jaw through the
+            # object at OPEN. At 80%-closed prefer approaching the surface.
+            return np.array([
+                (fg-2.5)*1.7,
+                max(0.,3.-mg)*5.,
+                np.clip(mg-10.,0.,35.)*.12,
+                np.clip(m80,-12.,25.)*.17,
+                max(0.,m100+1.)*.5,
+                err*.22,
+                *(np.rad2deg(q-seed)*.018),
+            ])
+        q0=np.clip(seed,lo[:5]+.0003,hi[:5]-.0003)
+        try:
+            fit=least_squares(residual,q0,
+                bounds=(lo[:5]+.0001,hi[:5]-.0001),
+                max_nfev=args.horizontal_ik_max_nfev,ftol=.008,
+                xtol=.008,gtol=.008)
+            candidate=fit.x.copy()
+            fg,mg,m80,m100,err=measure(candidate)
+            valid=fg>=-.5 and mg>=-.5
+            score=(abs(fg-2.5)*2.+10.*max(0.,1.-mg)+
+                   .35*abs(m80)+.22*err+max(0.,m100+1.)*.3)
+            row=dict(seed=label,score=float(score),
+                open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
+                closing_80pct_moving_gap_mm=m80,
+                closed_moving_gap_mm=m100,
+                anchor_error_mm=err,open_clear=valid,
+                ik_angles_deg=np.rad2deg(candidate).tolist(),
+                optimizer_evaluations=int(fit.nfev))
+            trials.append(row)
+            if best is None or (valid, -score)>(best[0],-best[1]):
+                best=(valid,score,candidate,row)
+        except Exception as exc:
+            trials.append(dict(seed=label,error=repr(exc),open_clear=False))
+    dump(out/'horizontal_jaw_ik_candidates.json',trials)
+    if best is None:
+        raise RuntimeError('Horizontal IK produced no measurable candidates')
+    return best[2],dict(method='both_jaws_collision_clearance_ik',
+        chosen=best[3],n_candidates=len(seeds),
+        note='Kinematic optimization only; physical contact is mj_step.')
+
+
+def horizontal_pose_preview(model,qadr,bq,q,xyz,quat,hi,out):
+    """Still diagnostic for an invalid pose; never claim physical contact."""
+    d=mujoco.MjData(model)
+    d.qpos[qadr[:5]]=q
+    d.qpos[qadr[5]]=hi[5]
+    d.qpos[bq:bq+3]=xyz
+    d.qpos[bq+3:bq+7]=quat
+    mujoco.mj_forward(model,d)
+    try:
+        model.vis.global_.offwidth=max(model.vis.global_.offwidth,640)
+        model.vis.global_.offheight=max(model.vis.global_.offheight,460)
+        renderer=mujoco.Renderer(model,width=640,height=460)
+        from PIL import ImageDraw
+        camera=mujoco.MjvCamera()
+        camera.type=mujoco.mjtCamera.mjCAMERA_FREE
+        camera.lookat[:]=xyz
+        camera.distance=.5
+        imgs=[]
+        try:
+            for az,el,view in ((90.,-15.,'SIDE'),(270.,-15.,'OPPOSITE'),
+                               (120.,-80.,'OVERHEAD')):
+                camera.azimuth=az
+                camera.elevation=el
+                renderer.update_scene(d,camera=camera)
+                pane=Image.new('RGB',(640,490),'#192532')
+                pane.paste(Image.fromarray(renderer.render().copy()),(0,30))
+                ImageDraw.Draw(pane).text((8,8),
+                    'OPEN JAW STATIC GEOMETRY - NOT PHYSICS - '+view,
+                    fill='white')
+                imgs.append(pane)
+        finally:
+            renderer.close()
+        canvas=Image.new('RGB',(1920,490))
+        for i,pane in enumerate(imgs):
+            canvas.paste(pane,(640*i,0))
+        canvas.save(out/'open_jaw_pose_3views.png')
+    except Exception as exc:
+        (out/'pose_preview_error.txt').write_text(repr(exc))
+
+
 def audit_jaw_meshes(model,fixed,moving,out):
     """Compare compiled jaw mesh surface/vertex cloud with its convex hull.
 
@@ -546,6 +667,14 @@ def run(args):
                 ik['contact_aware_search_selected']=search_choice
             else:
                 q,ik=solve_ik(model,data,qadr,bj,ik_lo,hi[:5],xyz,anchor,bench)
+            if args.orientation=='horizontal':
+                q,clearance_report=horizontal_jaw_clearance_search(
+                    model,data,qadr,bq,lo,hi,xyz,args.object_quat,
+                    fixed,moving,bottle,q,anchor,bj,args,sub)
+                ik['horizontal_clearance_search']=clearance_report
+                ik['ik_angles_deg']=dict(zip(JOINTS,np.rad2deg(q).tolist()))
+            horizontal_pose_preview(model,qadr,bq,q,xyz,args.object_quat,
+                                    hi,sub)
             ik['j4_wrist_flex_deg']=float(np.rad2deg(q[3]))
             ik['j4_constraint']='J4 >= %.3f deg' % args.j4_nonnegative_min_deg if name=='middle_j4_nonnegative' else 'original URDF limits'
             if name=='middle':
@@ -572,7 +701,7 @@ def run(args):
             can_run=(not geo['open_jaws_overlap'] and
                 (args.orientation=='horizontal' or use_refined_geometry or
                  ik['anchor_error_mm']<=args.max_ik_error_mm))
-            phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {'status':'GEOMETRY_DIAGNOSTIC_ONLY','reason':'IK error or initial open-jaw overlap','bilateral_hold_steps':0}
+            phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {'status':'GEOMETRY_DIAGNOSTIC_ONLY','reason':'Initial open-jaw mesh overlap; see horizontal_jaw_ik_candidates.json and open_jaw_pose_3views.png','bilateral_hold_steps':None}
         except Exception as exc:
             ik={};geo={};phys={'status':'EXECUTION_ERROR','reason':repr(exc),'bilateral_hold_steps':0}
         info={'name':name,'depth_local_z_m':local_z,'anchor_local_m':anchor.tolist(),
@@ -685,6 +814,7 @@ def main():
     p.add_argument('--orientation',choices=('horizontal','upright'),default='horizontal')
     p.add_argument('--yaw-deg',type=float,default=0.)
     p.add_argument('--object-height-clearance-mm',type=float,default=.5)
+    p.add_argument('--horizontal-ik-max-nfev',type=int,default=45)
     p.add_argument('--target-x',type=float,default=.220)
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
