@@ -210,9 +210,9 @@ def score_geo(g):
     if g['open']['fixed_inner_facing_mm']<=0:
         score+=35.
     # Favor a central pinch, not cap or end contact.
-    score+=12.*max(0.,g['open']['fixed_witness_axial_offset_mm']-10.)
+    score+=35.*max(0.,g['open']['fixed_witness_axial_offset_mm']-6.)
     close_states=[g[k] for k in ('close_25pct','close_50pct','close_75pct','near_closed','closed')]
-    score+=12.*max(0.,min(x['moving_witness_axial_offset_mm'] for x in close_states)-10.)
+    score+=35.*max(0.,min(x['moving_witness_axial_offset_mm'] for x in close_states)-6.)
     score+=8.*max(0., -f)
     # Never trade genuine full-body penetration for a center-only witness.
     score+=25.*max(0.,-g['open']['whole_body_fixed_gap_mm']-0.5)
@@ -250,12 +250,13 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
     # parallel to the horizontal cylinder axis. The approach is oblique
     # from above, never a top-down template from the perpendicular case.
     # Every candidate still must pass inside-face and J6-opposition tests.
-    for orientation_deg in (yaw,yaw+45):
+    # Include sideways wrist orientations, not just end-on alignment.
+    for orientation_deg in (yaw+90,yaw-90,yaw+45,yaw-45):
         target_r=Rotation.from_euler('z',orientation_deg,degrees=True).as_matrix()@base_r
         for anchor_z in (-.070,-.095):
             anchor=np.array([.030,.036,anchor_z])
             for vertical_offset in (0.,.010):
-                for axial_shift_mm in (-25.,0.,25.):
+                for axial_shift_mm in (0.,):
                     for j5_seed in (-90.,0.,90.):
                         ref=bench.copy()
                         ref[4]=np.clip(math.radians(j5_seed),lo[4]+1e-5,hi[4]-1e-5)
@@ -314,8 +315,8 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
                g[k]['radial_opposition_cos']<=-.3]
         moving_axial=(min(x['moving_witness_axial_offset_mm'] for x in valid_moving_stages)
                       if valid_moving_stages else None)
-        fixed_middle=(op['fixed_witness_axial_offset_mm']<=args.central_window_mm)
-        moving_middle=(moving_axial is not None and moving_axial<=args.central_window_mm)
+        fixed_middle=(op['fixed_witness_axial_offset_mm']<=args.central_window_mm*.6)
+        moving_middle=(moving_axial is not None and moving_axial<=args.central_window_mm*.6)
         # A true geometric preflight, not a declaration of actual grasp.
         valid=(abs(margin-args.fixed_jaw_gap_mm)<=.5 and op['moving_gap_mm']>=3.
                and op['whole_body_fixed_gap_mm']>=-0.5
@@ -898,7 +899,7 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7b_parallel_oblique_lift20_v3',simulation_only=True,
+        schema='phase7b_parallel_oblique_lift20_v4',simulation_only=True,
         approach_mode='parallel_oblique_only',
         approach_retract_mm=args.approach_retract_mm,
         approach_raise_mm=args.approach_raise_mm,
