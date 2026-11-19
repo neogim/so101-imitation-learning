@@ -553,6 +553,137 @@ def render_table_collision_diagnostic(model,qadr,bq,q,xyz,quat,lo,hi,
         if renderer is not None:renderer.close()
 
 
+def j6_independent_diagnostic(model,qadr,aids,bq,q,xyz,quat,lo,hi,args,out):
+    """Physically actuate J6 with the bottle OUT OF THE WAY.
+
+    Intentionally independent of the grasp preflight. A pass here proves
+    J6 drives in MuJoCo, NOT that the candidate can pinch the bottle.
+    """
+    d=mujoco.MjData(model)
+    mujoco.mj_resetData(model,d)
+    # Leave Muhi on the support plane but far from the arm.
+    d.qpos[bq:bq+3]=[2.,2.,physical.MUHI_RADIUS+.001]
+    d.qpos[bq+3:bq+7]=[1.,0.,0.,0.]
+    # A compact, elevated, previously collision-checked robot posture.
+    home=np.zeros(5,dtype=float)
+    home[4]=np.clip(-math.pi/2,lo[4],hi[4])
+    d.qpos[qadr[:5]]=home
+    d.qpos[qadr[5]]=hi[5]
+    d.ctrl[aids]=np.r_[home,hi[5]]
+    mujoco.mj_forward(model,d)
+    model.vis.global_.offwidth=max(640,model.vis.global_.offwidth)
+    model.vis.global_.offheight=max(460,model.vis.global_.offheight)
+    renderer=None
+    frames=[]
+    rows=[]
+    camera=mujoco.MjvCamera()
+    camera.type=mujoco.mjtCamera.mjCAMERA_FREE
+    camera.lookat[:]=[.12,0.,.13]
+    camera.distance=.48
+    views=(('side',95.,-20.),('opposite',265.,-20.),('overhead',120.,-70.))
+    try:
+        if shutil.which('ffmpeg'):
+            try:renderer=mujoco.Renderer(model,width=640,height=460)
+            except Exception as exc:
+                (out/'j6_smoke_render_error.txt').write_text(repr(exc))
+        duration=3.0
+        steps=int(round(duration/args.dt))
+        stride=max(1,int(round(1./(args.fps*args.dt))))
+        for k in range(steps+1):
+            t=k*args.dt
+            if t<.4:
+                phase='settle';fraction=0.
+            elif t<1.8:
+                phase='close';fraction=min(1.,(t-.4)/1.4)
+            elif t<2.2:
+                phase='hold';fraction=1.
+            else:
+                phase='reopen';fraction=max(0.,1.-(t-2.2)/.8)
+            command=hi[5]+fraction*(lo[5]-hi[5])
+            d.ctrl[aids]=np.r_[home,command]
+            if k:mujoco.mj_step(model,d)
+            actual=float(d.qpos[qadr[5]])
+            rows.append(dict(time_s=t,phase=phase,
+                             commanded_j6_deg=float(np.rad2deg(command)),
+                             actual_j6_deg=float(np.rad2deg(actual)),
+                             actuator_torque_nm=float(d.actuator_force[aids[5]])))
+            if renderer is not None and (k%stride==0 or k==steps):
+                panels=[]
+                for title,azimuth,elevation in views:
+                    camera.azimuth=azimuth
+                    camera.elevation=elevation
+                    panels.append(render_scene(
+                        model,d,camera,renderer,mujoco.MjvOption(),
+                        f'J6 PHYSICAL SMOKE | {phase} | {title} | '
+                        f'target={np.rad2deg(command):.1f} actual={np.rad2deg(actual):.1f}'))
+                canvas=Image.new('RGB',(1920,460))
+                for i,panel in enumerate(panels):
+                    canvas.paste(panel,(640*i,0))
+                frames.append(canvas)
+    finally:
+        if renderer:renderer.close()
+    with (out/'j6_physical_smoke_trace.csv').open('w',newline='') as fd:
+        writer=csv.DictWriter(fd,fieldnames=rows[0].keys())
+        writer.writeheader();writer.writerows(rows)
+    actual=np.array([row['actual_j6_deg'] for row in rows],float)
+    movement=float(np.max(actual)-np.min(actual))
+    video=save_video(frames,out/'j6_physical_smoke.mp4',args.fps)
+    return dict(status='J6_MOVED' if movement>=5. else 'J6_NOT_MOVING',
+                motion_range_deg=movement,
+                j6_actual_start_deg=rows[0]['actual_j6_deg'],
+                j6_actual_final_deg=rows[-1]['actual_j6_deg'],
+                video=video,
+                note='Physical MuJoCo actuator test with Muhi relocated far away. '
+                     'This does not demonstrate an actual grasp.')
+
+
+def j6_grasp_candidate_sweep(model,qadr,bq,q,xyz,quat,lo,hi,args,out):
+    """Video showing WHY invalid grasp candidate cannot pinch.
+
+    Dense kinematic sweep, without solver stepping. Not contact physics.
+    """
+    if shutil.which('ffmpeg') is None:
+        return dict(status='FFMPEG_UNAVAILABLE',video=None)
+    d=mujoco.MjData(model)
+    mujoco.mj_resetData(model,d)
+    d.qpos[bq:bq+3]=xyz
+    d.qpos[bq+3:bq+7]=quat
+    d.qpos[qadr[:5]]=q
+    model.vis.global_.offwidth=max(640,model.vis.global_.offwidth)
+    model.vis.global_.offheight=max(460,model.vis.global_.offheight)
+    camera=mujoco.MjvCamera()
+    camera.type=mujoco.mjtCamera.mjCAMERA_FREE
+    camera.lookat[:]=xyz
+    camera.distance=.43
+    views=(('side',85.,-15.),('opposite',265.,-15.),('overhead',120.,-75.))
+    frames=[]
+    renderer=mujoco.Renderer(model,width=640,height=460)
+    try:
+        for k in range(max(16,args.fps*3)):
+            f=k/max(1,max(16,args.fps*3)-1)
+            frac=f if f<=.5 else 1.-f
+            frac*=2.
+            jaw=hi[5]+frac*(lo[5]-hi[5])
+            d.qpos[qadr[5]]=jaw
+            mujoco.mj_forward(model,d)
+            panels=[]
+            for title,azimuth,elevation in views:
+                camera.azimuth=azimuth
+                camera.elevation=elevation
+                panels.append(render_scene(
+                    model,d,camera,renderer,mujoco.MjvOption(),
+                    f'KINEMATIC J6 SWEEP / NOT PHYSICS | '
+                    f'{title} | closure {frac*100:.0f}%'))
+            canvas=Image.new('RGB',(1920,460))
+            for i,panel in enumerate(panels):canvas.paste(panel,(640*i,0))
+            frames.append(canvas)
+    finally:renderer.close()
+    video=save_video(frames,out/'j6_candidate_kinematic_sweep.mp4',args.fps)
+    return dict(status='KINEMATIC_NOT_PHYSICAL',video=video,
+                note='Collision interpenetrations shown here are not solver-resolved. '
+                     'This is a diagnostic and not valid physical grasp movement.')
+
+
 def lift_ik_targets(model,qadr,bid,lo,hi,q,args):
     probe=mujoco.MjData(model)
     # The anchor follows the gripper. World +Z is 20mm lift, independent of
@@ -854,6 +985,20 @@ def run(args):
                        dict(yaw_deg=yaw,world_center_m=xyz.tolist(),
                             world_quat_wxyz=quat.tolist(),axis_world=axis.tolist(),
                             selected=choices[0],candidates=choices))
+            # Always provide BOTH videos, even when geometric grasp preflight
+            # fails. Physical test moves Muhi away; grasp sweep is kinematics.
+            try:
+                j6_smoke=j6_independent_diagnostic(
+                    model,qadr,aids,bq,q,xyz,quat,lo,hi,args,out)
+            except Exception as exc:
+                j6_smoke=dict(status='J6_SMOKE_ERROR',error=repr(exc),video=None)
+                (out/'j6_smoke_error.txt').write_text(repr(exc))
+            try:
+                j6_sweep=j6_grasp_candidate_sweep(
+                    model,qadr,bq,q,xyz,quat,lo,hi,args,out)
+            except Exception as exc:
+                j6_sweep=dict(status='J6_SWEEP_ERROR',error=repr(exc),video=None)
+                (out/'j6_sweep_error.txt').write_text(repr(exc))
             # Always render diagnostic evidence before preflight can skip motion.
             try:
                 collision_visual=render_table_collision_diagnostic(
@@ -932,7 +1077,9 @@ def run(args):
                          pinch_path=best['pinch_path'],
                          grasp_geometry_rejection_reasons=best['rejection_reasons'],
                          grasp_candidate_is_valid=bool(preflight),
-                         dynamic=physics,approach_preview=preview,
+                         dynamic=physics,j6_independent_smoke=j6_smoke,
+                         j6_candidate_sweep=j6_sweep,
+                         approach_preview=preview,
                          collision_diagnostic=collision_visual,
                          note='Predicted geometric grasp != dynamic physical grasp success')
         except Exception as exc:
@@ -965,6 +1112,9 @@ def run(args):
                video=r.get('dynamic',{}).get('video'),
                approach_preview=r.get('approach_preview',{}).get('video'),
                collision_diagnostic=r.get('collision_diagnostic',{}).get('video'),
+               j6_smoke_video=r.get('j6_independent_smoke',{}).get('video'),
+               j6_smoke_motion_range_deg=r.get('j6_independent_smoke',{}).get('motion_range_deg'),
+               j6_candidate_sweep_video=r.get('j6_candidate_sweep',{}).get('video'),
                error=r.get('error')) for r in outputs]
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
