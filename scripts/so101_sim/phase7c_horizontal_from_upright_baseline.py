@@ -673,6 +673,9 @@ def run(args):
                     fixed,moving,bottle,q,anchor,bj,args,sub)
                 ik['horizontal_clearance_search']=clearance_report
                 ik['ik_angles_deg']=dict(zip(JOINTS,np.rad2deg(q).tolist()))
+                ik['anchor_error_mm']=clearance_report['chosen']['anchor_error_mm']
+                ip,ir=fk(model,data,qadr,bj,q)
+                ik['grasp_reference_world_xyz_m']=(ip+ir@anchor).tolist()
             horizontal_pose_preview(model,qadr,bq,q,xyz,args.object_quat,
                                     hi,sub)
             ik['j4_wrist_flex_deg']=float(np.rad2deg(q[3]))
