@@ -131,11 +131,13 @@ def geometry(model, data, qadr, bq, q, xyz, quat, axis,
         fixed_facing=float(np.dot(f['bottle_point']-f['jaw_point'],jaw_dir))
         moving_facing=float(np.dot(m['bottle_point']-m['jaw_point'],-jaw_dir))
         contact_axial_mm=1000*abs(float(np.dot(f['bottle_point']-xyz,axis)))
+        moving_axial_mm=1000*abs(float(np.dot(m['bottle_point']-xyz,axis)))
         out[label] = dict(
                           cylinder_center_between_jaws=bool(center_between),
                           fixed_inner_facing_mm=1000*fixed_facing,
                           moving_inner_facing_mm=1000*moving_facing,
                           fixed_witness_axial_offset_mm=contact_axial_mm,
+                          moving_witness_axial_offset_mm=moving_axial_mm,
                           jaw_span_mm=1000*jaw_span,
                           fixed_jaw_nearest_point_world_m=f['jaw_point'].tolist(),
                           moving_jaw_nearest_point_world_m=m['jaw_point'].tolist(),
@@ -195,7 +197,10 @@ def score_geo(g):
         score+=45.
     if g['open']['fixed_inner_facing_mm']<=0:
         score+=35.
-    score+=2.*max(0.,g['open']['fixed_witness_axial_offset_mm']-25.)
+    # Favor a central pinch, not cap or end contact.
+    score+=12.*max(0.,g['open']['fixed_witness_axial_offset_mm']-10.)
+    close_states=[g[k] for k in ('close_25pct','close_50pct','close_75pct','near_closed','closed')]
+    score+=12.*max(0.,min(x['moving_witness_axial_offset_mm'] for x in close_states)-10.)
     score+=8.*max(0., -f)
     score+=4.*max(0., 4.-m) + .1*max(0.,m-35.)
     # The moving jaw must approach/cross the cylinder surface by J6.
@@ -230,35 +235,36 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
     # parallel to the horizontal cylinder axis. The approach is oblique
     # from above, never a top-down template from the perpendicular case.
     # Every candidate still must pass inside-face and J6-opposition tests.
-    for orientation_deg in (yaw,yaw+45,yaw-45):
+    for orientation_deg in (yaw,yaw+45):
         target_r=Rotation.from_euler('z',orientation_deg,degrees=True).as_matrix()@base_r
-        for anchor_z in (-.045,-.070,-.095):
+        for anchor_z in (-.070,-.095):
             anchor=np.array([.030,.036,anchor_z])
-            for vertical_offset in (-.008,0.,.010):
-                for j5_seed in (-90.,0.,90.):
-                    ref=bench.copy()
-                    ref[4]=np.clip(math.radians(j5_seed),lo[4]+1e-5,hi[4]-1e-5)
-                    try:
-                        q,err=ik_target(model,data,qadr,bid,lo[:5],hi[:5],
-                            xyz+[0,0,vertical_offset],anchor,ref,target_r,
-                            finger_axis=finger_axis,object_axis=axis)
-                        g=geometry(model,data,qadr,bq,q,xyz,quat,axis,
-                                   fixed,moving,bottle,lo,hi)
-                        gap,_=tool_table_gap(model,data,qadr,bq,q,xyz,quat,
-                                              hi,floor,tool_geoms)
-                        angle=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
-                        score=(score_geo(g)+1.5*max(0.,2.-gap)
-                               +.15*err+.10*max(0.,angle-35.))
-                        candidates.append((score,q.copy(),anchor,err,
-                                           orientation_deg,j5_seed,angle))
-                    except (ValueError,RuntimeError):
-                        continue
+            for vertical_offset in (0.,.010):
+                for axial_shift_mm in (-25.,0.,25.):
+                    for j5_seed in (-90.,0.,90.):
+                        ref=bench.copy()
+                        ref[4]=np.clip(math.radians(j5_seed),lo[4]+1e-5,hi[4]-1e-5)
+                        try:
+                            q,err=ik_target(model,data,qadr,bid,lo[:5],hi[:5],
+                                xyz+axis*axial_shift_mm/1000.+[0,0,vertical_offset],anchor,ref,target_r,
+                                finger_axis=finger_axis,object_axis=axis)
+                            g=geometry(model,data,qadr,bq,q,xyz,quat,axis,
+                                       fixed,moving,bottle,lo,hi)
+                            gap,_=tool_table_gap(model,data,qadr,bq,q,xyz,quat,
+                                                  hi,floor,tool_geoms)
+                            angle=finger_axis_error(model,data,qadr,bid,q,finger_axis,axis)
+                            score=(score_geo(g)+1.5*max(0.,2.-gap)
+                                   +.15*err+.10*max(0.,angle-35.))
+                            candidates.append((score,q.copy(),anchor,err,
+                                               orientation_deg,j5_seed,angle,axial_shift_mm))
+                        except (ValueError,RuntimeError):
+                            continue
     if not candidates:
         raise RuntimeError('No IK candidate for any horizontal grasp seed')
     candidates.sort(key=lambda item:item[0])
     refined=[]
     for seed_rank,entry in enumerate(candidates[:max_seeds],1):
-        score0,q0,anchor,err0,branch,j5seed,angle0=entry
+        score0,q0,anchor,err0,branch,j5seed,angle0,axial_seed_mm=entry
         def objective(q):
             g=geometry(model,data,qadr,bq,q,xyz,quat,axis,
                        fixed,moving,bottle,lo,hi)
@@ -287,12 +293,20 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
                   key=lambda k:abs(k['moving_gap_mm'])
                                     +20.*max(0.,k['radial_opposition_cos']+.3))
         margin=float(op['fixed_gap_mm'])
+        valid_moving_stages=[
+            g[k] for k in ('close_25pct','close_50pct','close_75pct','near_closed','closed')
+            if -2.<=g[k]['moving_gap_mm']<=2. and
+               g[k]['radial_opposition_cos']<=-.3]
+        moving_axial=(min(x['moving_witness_axial_offset_mm'] for x in valid_moving_stages)
+                      if valid_moving_stages else None)
+        fixed_middle=(op['fixed_witness_axial_offset_mm']<=args.central_window_mm)
+        moving_middle=(moving_axial is not None and moving_axial<=args.central_window_mm)
         # A true geometric preflight, not a declaration of actual grasp.
         valid=(abs(margin-args.fixed_jaw_gap_mm)<=.5 and op['moving_gap_mm']>=3.
                and g['pinch_path']['pinch_geometry_valid']
                and op['cylinder_center_between_jaws']
                and op['fixed_inner_facing_mm']>0
-               and op['fixed_witness_axial_offset_mm']<=25.
+               and fixed_middle and moving_middle
                and -2.<=close['moving_gap_mm']<=2.
                and close['radial_opposition_cos']<=-.3
                and min(gaps)>=args.min_table_clearance_mm
@@ -300,6 +314,9 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
         refined.append(dict(q=q1,anchor=anchor,geometry=g,
             score=objective(q1),initial_score=score0,
             fixed_inner_surface_gap_mm=margin,
+            fixed_axial_offset_mm=op['fixed_witness_axial_offset_mm'],
+            moving_axial_offset_mm=moving_axial,
+            axial_shift_seed_mm=axial_seed_mm,
             table_min_gap_mm=min(gaps),table_j6_sweep_gap_mm=gaps,
             finger_perpendicular_error_deg=angle,
             j5_solved_deg=float(np.rad2deg(q1[4])),
@@ -312,12 +329,17 @@ def search_pose(model,data,qadr,bq,bid,lo,hi,xyz,quat,axis,fixed,moving,
             pinch_path=g['pinch_path'],
             rejection_reasons=(
                 ([] if abs(margin-args.fixed_jaw_gap_mm)<=.5 else ['FIXED_JAW_NOT_2_TO_3MM'])+
+                ([] if fixed_middle else ['FIXED_CONTACT_NEAR_END'])+
+                ([] if moving_middle else ['MOVING_CONTACT_NEAR_END_OR_ABSENT'])+
                 ([] if g['pinch_path']['open_jaw_encircles_object'] else ['OBJECT_NOT_BETWEEN_OPEN_INNER_FACES'])+
                 ([] if g['pinch_path']['moving_jaw_advances_toward_cylinder'] else ['J6_CLOSURE_NOT_APPROACHING_OBJECT'])+
                 ([] if g['pinch_path']['opposite_side_contact_predicted'] else ['NO_OPPOSING_CLOSURE_CONTACT'])+
                 ([] if min(gaps)>=args.min_table_clearance_mm else ['TABLE_INTERFERENCE'])+
                 ([] if angle<=45. else ['FINGER_AXIS_BAD_ORIENTATION']))))
     refined.sort(key=lambda x:(not x['predicts_paired'],
+                                not (x['fixed_axial_offset_mm']<=args.central_window_mm and
+                                     x['moving_axial_offset_mm'] is not None and
+                                     x['moving_axial_offset_mm']<=args.central_window_mm),
                                 not x['pinch_path']['pinch_geometry_valid'],
                                 len(x['rejection_reasons']),
                                 abs(x['fixed_inner_surface_gap_mm']-2.5),
@@ -806,6 +828,8 @@ def run(args):
                          geometry=best['geometry'],
                          geometric_score=best['score'],
                          fixed_inner_surface_gap_mm=best['fixed_inner_surface_gap_mm'],
+                         fixed_axial_offset_mm=best['fixed_axial_offset_mm'],
+                         moving_axial_offset_mm=best['moving_axial_offset_mm'],
                          lift_ik_diagnostics=ik_lift,
                          requested_lift_mm=args.lift_mm,
                          predicted_bilateral=best['predicts_paired'],
@@ -836,6 +860,8 @@ def run(args):
                deep_penetration=r.get('dynamic',{}).get('deep_penetration_over_3mm'),
                geometric_score=r.get('geometric_score'),
                fixed_inner_surface_gap_mm=r.get('fixed_inner_surface_gap_mm'),
+               fixed_axial_offset_mm=r.get('fixed_axial_offset_mm'),
+               moving_axial_offset_mm=r.get('moving_axial_offset_mm'),
                lift_measured_mm=r.get('dynamic',{}).get('measured_lift_mm'),
                lift_success=r.get('dynamic',{}).get('lift_success'),
                video=r.get('dynamic',{}).get('video'),
@@ -845,7 +871,7 @@ def run(args):
     with (args.out/'comparison.csv').open('w',newline='') as f:
         wr=csv.DictWriter(f,fieldnames=rows[0].keys());wr.writeheader();wr.writerows(rows)
     write_json(args.out/'summary.json',dict(
-        schema='phase7b_parallel_oblique_lift20_v1',simulation_only=True,
+        schema='phase7b_parallel_oblique_lift20_v2',simulation_only=True,
         approach_mode='parallel_oblique_only',
         approach_retract_mm=args.approach_retract_mm,
         approach_raise_mm=args.approach_raise_mm,
@@ -857,6 +883,7 @@ def run(args):
         finger_long_axis_local=faxis.tolist(),
         permitted_perpendicular_error_deg=45.0,
         fixed_inner_jaw_margin_target_mm=[2,3],
+        central_grasp_axial_window_mm=args.central_window_mm,
         fixed_jaw_inner_face_preflight='center between jaws, inner-facing nearest witness and axial offset <= 25mm',
         closing_direction_preflight='J6 must reduce moving jaw gap by >2mm and create opposite-radial-side contact while object is between jaws',
         invalid_candidates_do_not_execute_physics=True,
@@ -889,6 +916,7 @@ def main():
     p.add_argument('--approach-retract-mm',type=float,default=25.0)
     p.add_argument('--approach-raise-mm',type=float,default=35.0)
     p.add_argument('--fixed-jaw-gap-mm',type=float,default=2.5)
+    p.add_argument('--central-window-mm',type=float,default=10.0)
     p.add_argument('--lift-mm',type=float,default=20.0)
     p.add_argument('--j6-torque-limit-nm',type=float,default=0.45)
     p.add_argument('--min-table-clearance-mm',type=float,default=1.0)
@@ -902,6 +930,8 @@ def main():
     p.add_argument('--j6-kd',type=float,default=1.8)
     p.add_argument('--j6-torque',type=float,default=3.)
     a=p.parse_args()
+    if a.central_window_mm<=0 or a.central_window_mm>=25.:
+        p.error('central-window-mm must be in (0,25)')
     if a.approach_retract_mm<=0 or a.approach_raise_mm<=0 or a.lift_mm<=0:
         p.error('Approach retract/raise and lift must be positive')
     # Retain Phase6C's j6-torque argument while setting the conservative
