@@ -436,13 +436,24 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
 
     # Different J1..J4 configurations, rather than only changing J5 seeds:
     # J5 stage must have a real opportunity to fix top-view orientation.
-    seeds=[('upright_seed',q_initial.copy())]
-    for j2,j3,j4 in ((-20,0,0),(20,0,0),(0,-25,0),(0,25,0),
-                     (0,0,-30),(0,0,30),(-20,15,-20),(20,-15,20)):
-        seed=q_initial.copy()
-        seed[1:4]=np.clip(seed[1:4]+np.deg2rad([j2,j3,j4]),
-                          lo[1:4]+.0004,hi[1:4]-.0004)
-        seeds.append((f'arm_{j2:+d}_{j3:+d}_{j4:+d}',seed))
+    # The upright solution put J4 at approximately -95deg, its negative
+    # mechanical limit. That bends the wrist AWAY from the horizontal
+    # center-side target. Start from the opposite (positive) J4 family.
+    # This is SIM-only and deliberately not a joint-limit override.
+    j4_lower=max(float(lo[3])+.0004,np.deg2rad(args.horizontal_j4_min_deg))
+    if j4_lower>=float(hi[3])-.0004:
+        raise ValueError('Positive J4 branch is outside the URDF joint limits')
+    seeds=[]
+    for j4_deg in (5.,25.,45.,65.,85.):
+        for j2_shift,j3_shift in ((0.,0.),(-20.,20.),(20.,-20.)):
+            seed=q_initial.copy()
+            seed[1]=np.clip(seed[1]+np.deg2rad(j2_shift),
+                              lo[1]+.0004,hi[1]-.0004)
+            seed[2]=np.clip(seed[2]+np.deg2rad(j3_shift),
+                              lo[2]+.0004,hi[2]-.0004)
+            seed[3]=np.clip(np.deg2rad(j4_deg),
+                              j4_lower,hi[3]-.0004)
+            seeds.append((f'J4_positive_{j4_deg:g}_J2{j2_shift:+g}_J3{j3_shift:+g}',seed))
     best=None
 
     for label,seed in seeds:
@@ -481,14 +492,20 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                     100.*max(0.,.55-proj),
                     *(np.rad2deg(q4-seed[:4])*.009)
                 ])
-            fit=least_squares(residual,q_first[:4],
-                bounds=(lo[:4]+.0002,hi[:4]-.0002),
+            # Allow J1..J3 to approach; J4 stays in its reverse bend
+            # (nonnegative) family and J5 is LOCKED from stage 1.
+            approach_lo=(lo[:4]+.0002).copy()
+            approach_lo[3]=max(approach_lo[3],j4_lower)
+            fit=least_squares(residual,
+                np.clip(q_first[:4],approach_lo+.00001,hi[:4]-.00021),
+                bounds=(approach_lo,hi[:4]-.0002),
                 max_nfev=args.horizontal_ik_max_nfev,
                 ftol=.005,xtol=.005,gtol=.005)
             q=q_first.copy();q[:4]=fit.x
             (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
                   open_floor,closed_floor)=measure(q)
-            valid=(1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
+            valid=(q[3]>=j4_lower-.00001 and
+                   1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
                    and proj>=.55 and (mg-m80)>=2.
                    and bracket['between_centroids']
                    and bracket['fixed_surface_inward']
@@ -527,6 +544,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  finger_perpendicular_error_deg=angle,
                  top_view_perpendicular_error_deg=angle,
                  finger_horizontal_projection=proj,
+                 j4_reverse_bend_deg=float(np.rad2deg(q[3])),
+                 j4_positive_branch=True,
                  j5_locked_at_deg=float(np.rad2deg(q_first[4])),
                  perpendicular_tolerance_deg=angle_limit,
                  open_clear=bool(1.<=fg<=2.5 and mg>=1.),
@@ -540,6 +559,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  j5_deg=row['j5_locked_at_deg'],
                  top_view_perpendicular_error_deg=angle,
                  fixed_gap_mm=fg,moving_gap_mm=mg,
+                 j4_deg=float(np.rad2deg(q[3])),
                  candidate_valid=bool(valid),q_deg=row['ik_angles_deg']))
             if best is None or (valid,-score)>(best[0],-best[1]):
                 best=(valid,score,q,row,q_first.copy())
@@ -557,7 +577,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         actual_finger_axis_local=finger_local.tolist(),
         bottle_axis_world=object_axis.tolist(),
         top_view_angle_limit_deg=angle_limit,
-        note='Stage 1 only J5, stage 2 J1..J4 with J5 frozen, then J6 physics only if all constraints valid.')
+        j4_approach_min_deg=args.horizontal_j4_min_deg,
+        note='Stage1 J5 top view; Stage2 positive-J4 bend and fixed-J5 center-side approach; Stage3 J6 physics only if all constraints valid.')
     return best[2],report
 
 
@@ -1110,6 +1131,8 @@ def run(args):
        'orientation':args.orientation,
        'central_grasp_half_mm':args.central_grasp_half_mm,
        'central_grasp_required':True,
+       'horizontal_j4_min_deg':args.horizontal_j4_min_deg,
+       'reversed_j4_bend_required':bool(args.orientation=='horizontal'),
        'min_tool_floor_gap_mm':args.min_tool_floor_gap_mm,
        'tool_floor_clearance_required':True,
        'kinematic_video_phase':'close_and_hold_NOT_PHYSICS',
@@ -1164,6 +1187,8 @@ def main():
     p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=8.)
     p.add_argument('--central-grasp-half-mm',type=float,default=10.)
     p.add_argument('--min-tool-floor-gap-mm',type=float,default=2.)
+    p.add_argument('--horizontal-j4-min-deg',type=float,default=5.,
+                   help='For horizontal grasp, force J4 to the opposite bend versus prior -95 deg candidate.')
     p.add_argument('--target-x',type=float,default=.220)
     p.add_argument('--target-y',type=float,default=0.)
     p.add_argument('--table-z',type=float,default=0.)
@@ -1204,6 +1229,8 @@ def main():
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
     if args.object_height_clearance_mm<0: p.error('Object clearance cannot be negative')
+    if not 0<=args.horizontal_j4_min_deg<=70:
+        p.error('horizontal-j4-min-deg must be in [0,70]')
     if args.min_tool_floor_gap_mm<0:
         p.error('min-tool-floor-gap-mm must be nonnegative')
     if not 0<args.central_grasp_half_mm<=15:
