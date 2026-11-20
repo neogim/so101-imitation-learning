@@ -26,6 +26,7 @@ from PIL import Image, ImageDraw
 import physical_grasp_j6_bench as grasp
 import physical_workcell_sim as physical
 import phase6c_upright_reach_grasp as phase6c
+import real_pose_safety as real_safety
 
 JOINTS = ('shoulder_pan','shoulder_lift','elbow_flex','wrist_flex','wrist_roll')
 # Provisional local Z-depth positions, not measured finger-arc percentages.
@@ -348,7 +349,8 @@ def arm_tool_floor_clearance(model,data,floor,tool_geoms):
 
 
 def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
-                                    fixed,moving,bottle,floor,tool_geoms,q_initial,anchor,bid,args,out):
+                                    fixed,moving,bottle,floor,tool_geoms,q_initial,anchor,bid,args,out,
+                                    real_samples):
     """Ordered plan-view grasp: J5 yaw alignment -> J1..J4 approach -> J6.
 
     Critical: J5 is NOT traded away for smaller nearest-geom distance.
@@ -504,7 +506,14 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
             q=q_first.copy();q[:4]=fit.x
             (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
                   open_floor,closed_floor)=measure(q)
-            valid=(q[3]>=j4_lower-.00001 and
+            # Hardware-observed J2/J3/J4 envelope + nonadjacent self collision.
+            # The object (Muhi) is excluded; bottle contact is intentional.
+            safety=real_safety.audit_candidate(model,data,qadr,q,real_samples,
+                ignored_geom_ids=bottle,
+                max_axis_deg=args.real_pose_max_axis_deg,
+                max_l2_deg=args.real_pose_max_l2_deg,
+                penetration_tolerance_mm=args.self_collision_tolerance_mm)
+            valid=(safety['valid'] and q[3]>=j4_lower-.00001 and
                    1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
                    and proj>=.55 and (mg-m80)>=2.
                    and bracket['between_centroids']
@@ -544,6 +553,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  finger_perpendicular_error_deg=angle,
                  top_view_perpendicular_error_deg=angle,
                  finger_horizontal_projection=proj,
+                 real_pose_safety=safety,
                  j4_reverse_bend_deg=float(np.rad2deg(q[3])),
                  j4_positive_branch=True,
                  j5_locked_at_deg=float(np.rad2deg(q_first[4])),
@@ -560,7 +570,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  top_view_perpendicular_error_deg=angle,
                  fixed_gap_mm=fg,moving_gap_mm=mg,
                  j4_deg=float(np.rad2deg(q[3])),
-                 candidate_valid=bool(valid),q_deg=row['ik_angles_deg']))
+                 candidate_valid=bool(valid),
+                 real_pose_safety_valid=bool(safety['valid']),
+                 q_deg=row['ik_angles_deg']))
             if best is None or (valid,-score)>(best[0],-best[1]):
                 best=(valid,score,q,row,q_first.copy())
         except Exception as exc:
@@ -937,6 +949,15 @@ def run(args):
     xyz=np.array([args.target_x,args.target_y,args.table_z+height],dtype=float)
     if not np.isfinite(xyz).all():raise ValueError('Non-finite target')
     args.support_plane_z_m=float(args.table_z)
+    # Fail closed: without actual recorded follower joint states the IK is
+    # not allowed to proceed to a physical MuJoCo grasp simulation.
+    follower_cal=real_safety.load_follower_calibration(args.follower_calibration)
+    real_samples,real_meta=real_safety.recorded_joint_samples(args.dataset_root)
+    dump(args.out/'follower_calibration_audit.json',dict(
+         follower_calibration_source=str(args.follower_calibration),
+         calibration=real_safety.calibration_report(follower_cal),
+         actual_recorded_pose_dataset=real_meta,
+         caveat='Encoder ranges do not prove mechanical safety or servo zero/sign alignment.'))
     model,qadr,vadr,aids,lo,hi,fixed,moving,bottle,floor=phase6c.model_build(args)
     collision_build=args.out/'collision_urdf'/'jaw_collision_build.json'
     try: mesh_report=audit_jaw_meshes(model,fixed,moving,args.out)
@@ -1029,7 +1050,8 @@ def run(args):
             if args.orientation=='horizontal':
                 q,clearance_report=horizontal_jaw_clearance_search(
                     model,data,qadr,bq,lo,hi,xyz,args.object_quat,
-                    fixed,moving,bottle,floor,tool_geoms,q,anchor,bj,args,sub)
+                    fixed,moving,bottle,floor,tool_geoms,q,anchor,bj,args,sub,
+                    real_samples)
                 aligned_deg=clearance_report['stage1_j5_aligned_q_deg']
                 aligned_q=np.deg2rad(np.asarray(aligned_deg,float))
                 render_j5_stage_top_view(model,qadr,bq,aligned_q,xyz,
@@ -1141,6 +1163,9 @@ def run(args):
        'orientation':args.orientation,
        'central_grasp_half_mm':args.central_grasp_half_mm,
        'central_grasp_required':True,
+       'follower_calibration_json':str(args.follower_calibration),
+       'real_joint_samples':real_meta,
+       'real_pose_and_self_collision_preflight_required':True,
        'horizontal_j4_min_deg':args.horizontal_j4_min_deg,
        'reversed_j4_bend_required':bool(args.orientation=='horizontal'),
        'min_tool_floor_gap_mm':args.min_tool_floor_gap_mm,
@@ -1197,6 +1222,10 @@ def main():
     p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=8.)
     p.add_argument('--central-grasp-half-mm',type=float,default=10.)
     p.add_argument('--min-tool-floor-gap-mm',type=float,default=2.)
+    p.add_argument('--follower-calibration',type=Path,default=Path('data/calibration/so101_follower/my_follower_arm.json'))
+    p.add_argument('--real-pose-max-axis-deg',type=float,default=30.)
+    p.add_argument('--real-pose-max-l2-deg',type=float,default=45.)
+    p.add_argument('--self-collision-tolerance-mm',type=float,default=1.)
     p.add_argument('--horizontal-j4-min-deg',type=float,default=5.,
                    help='For horizontal grasp, force J4 to the opposite bend versus prior -95 deg candidate.')
     p.add_argument('--target-x',type=float,default=.220)
@@ -1239,6 +1268,8 @@ def main():
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
     if args.object_height_clearance_mm<0: p.error('Object clearance cannot be negative')
+    if args.real_pose_max_axis_deg<=0 or args.real_pose_max_l2_deg<=0 or args.self_collision_tolerance_mm<0:
+        p.error('Invalid real pose / self collision thresholds')
     if not 0<=args.horizontal_j4_min_deg<=70:
         p.error('horizontal-j4-min-deg must be in [0,70]')
     if args.min_tool_floor_gap_mm<0:
