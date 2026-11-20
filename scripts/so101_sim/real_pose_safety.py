@@ -107,7 +107,7 @@ def _is_adjacent(model,a,b):
 
 
 def nonadjacent_self_collisions(model,data,excluded_body_pairs=(),
-                               penetration_tolerance_mm=1.0):
+                               ignored_geom_ids=(),penetration_tolerance_mm=1.0):
     """Audit non-adjacent collisions irrespective of disabled contact masks.
 
     Adjacent bodies naturally overlap around pivot joints. Exclusions are
@@ -116,8 +116,10 @@ def nonadjacent_self_collisions(model,data,excluded_body_pairs=(),
     ignored={tuple(sorted((str(a),str(b)))) for a,b in excluded_body_pairs}
     gnames=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,i) or ""
             for i in range(model.ngeom)]
+    ignored_geom_ids=set(int(i) for i in ignored_geom_ids)
     ids=[]
     for g in range(model.ngeom):
+        if g in ignored_geom_ids:continue
         if int(model.geom_bodyid[g])==0:continue
         # URDF visual geom is typically group 2, collision geom group 0.
         # Patch geoms are included regardless of group.
@@ -151,7 +153,7 @@ def nonadjacent_self_collisions(model,data,excluded_body_pairs=(),
 
 
 def audit_candidate(model,data,qadr,q,real_samples,
-                    excluded_body_pairs=(),max_axis_deg=30.,
+                    excluded_body_pairs=(),ignored_geom_ids=(),max_axis_deg=30.,
                     max_l2_deg=45.,penetration_tolerance_mm=1.):
     q=np.asarray(q,dtype=float)
     for adr,val in zip(qadr[:5],q[:5]):
@@ -166,8 +168,10 @@ def audit_candidate(model,data,qadr,q,real_samples,
                         lower_deg=float(np.rad2deg(a)),
                         upper_deg=float(np.rad2deg(b)))
     empirical=recorded_j234_proximity(q,real_samples,max_axis_deg,max_l2_deg)
-    collisions=nonadjacent_self_collisions(model,data,excluded_body_pairs,
-                                            penetration_tolerance_mm)
+    collisions=nonadjacent_self_collisions(model,data,
+        excluded_body_pairs=excluded_body_pairs,
+        ignored_geom_ids=ignored_geom_ids,
+        penetration_tolerance_mm=penetration_tolerance_mm)
     return dict(valid=bool(not range_errors and empirical["valid"] and collisions["valid"]),
         urdf_joint_limit_errors=range_errors,
         observed_real_pose_proximity=empirical,
