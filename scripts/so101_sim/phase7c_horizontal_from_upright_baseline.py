@@ -609,6 +609,16 @@ def render_j5_stage_top_view(model,qadr,bq,q,xyz,quat,hi,out):
               'STAGE 1: J5 TOP VIEW ALIGN / J6 OPEN / NO PHYSICS',
               fill='white')
         panel.save(out/'stage1_j5_top_view.png')
+        # Show the J4 bend from the side BEFORE approach, too.
+        camera.azimuth=90.
+        camera.elevation=-15.
+        renderer.update_scene(d,camera=camera)
+        side=Image.new('RGB',(640,492),'#17212c')
+        side.paste(Image.fromarray(renderer.render().copy()),(0,30))
+        ImageDraw.Draw(side).text((10,9),
+              f'STAGE 1: J4={np.rad2deg(q[3]):+.1f} deg / J5={np.rad2deg(q[4]):+.1f} deg',
+              fill='white')
+        side.save(out/'stage1_j4_side_view.png')
     except Exception as exc:
         (out/'stage1_view_error.txt').write_text(repr(exc))
     finally:
