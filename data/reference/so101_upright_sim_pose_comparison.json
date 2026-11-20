@@ -1,0 +1,39 @@
+{
+  "schema": "so101_sim_reference_pose_v1",
+  "source": "https://drive.google.com/drive/folders/1aJT5TR0Q17O3NHCXGlqJai5pPFkgIixS",
+  "note": "SIMULATED upright candidates only; neither has proven safe real hardware motion. Do NOT use as validated physical reference or automatic motor limits.",
+  "order": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll"
+  ],
+  "poses": [
+    {
+      "name": "upright_negative_j4",
+      "q_deg": [
+        -11.292712477872008,
+        31.175992870710367,
+        89.68748734862325,
+        -94.99411060150913,
+        -97.51803875716446
+      ],
+      "bilateral_hold_frames": 500,
+      "xy_displacement_mm": 27.550327651351793,
+      "physical_validated": false
+    },
+    {
+      "name": "upright_positive_j4",
+      "q_deg": [
+        -1.1770587294936357,
+        -87.31494000289779,
+        95.68075999991567,
+        39.246314518933644,
+        -94.9836549253337
+      ],
+      "bilateral_hold_frames": 0,
+      "physical_validated": false
+    }
+  ]
+}
