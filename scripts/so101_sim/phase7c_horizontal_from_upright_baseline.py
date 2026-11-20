@@ -498,10 +498,10 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                   finger_horizontal_projection=first_proj,
                   finger_world_axis=first_axis,
                   q_deg=np.rad2deg(q_first).tolist()))
-            # STEP 2. Fixed J5. Move ONLY J1..J4 to put fixed inner jaw
-            # 1-2mm from the center, with moving jaw opposite and floor clear.
-            def residual(q4):
-                q=q_first.copy();q[:4]=q4
+            # STEP 2. Lock BOTH J4 and J5. Move ONLY J1,J2,J3
+            # toward the bottle; preserve observed wrist bend.
+            def residual(q3):
+                q=q_first.copy();q[:3]=q3
                 (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,
                      opposition,open_floor,closed_floor)=measure(q)
                 return np.array([
@@ -523,20 +523,21 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                     100.*max(0.,.55-proj),
                     # Strongly retain measured real branch rather than
                     # permitting a remote folded IK configuration.
-                    *(np.rad2deg(q4-seed[:4])*.055)
+                    *(np.rad2deg(q3-seed[:3])*.055)
                 ])
-            # Restrict EACH J1..J4 to an observed-pose local neighborhood.
-            # J4 is NOT forced positive: preserving its recorded bend branch
-            # is more important than arbitrary sign constraints.
-            delta=np.deg2rad(args.max_arm_from_recorded_deg)
-            approach_lo=np.maximum(lo[:4]+.0002,seed[:4]-delta)
-            approach_hi=np.minimum(hi[:4]-.0002,seed[:4]+delta)
+            # Expand reach only through J1-J3, not the wrist.
+            # Recorded-pose proximity and collision/path checks still gate
+            # candidates, including along the interpolated approach.
+            delta=np.deg2rad(args.max_approach_j123_deg)
+            approach_lo=np.maximum(lo[:3]+.0002,seed[:3]-delta)
+            approach_hi=np.minimum(hi[:3]-.0002,seed[:3]+delta)
             fit=least_squares(residual,
-                np.clip(q_first[:4],approach_lo+.00001,approach_hi-.00001),
+                np.clip(q_first[:3],approach_lo+.00001,approach_hi-.00001),
                 bounds=(approach_lo,approach_hi),
                 max_nfev=args.horizontal_ik_max_nfev,
                 ftol=.005,xtol=.005,gtol=.005)
-            q=q_first.copy();q[:4]=fit.x
+            q=q_first.copy();q[:3]=fit.x
+            assert np.array_equal(q[3:5],q_first[3:5])
             (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
                   open_floor,closed_floor)=measure(q)
             # Hardware-observed J2/J3/J4 envelope + nonadjacent self collision.
@@ -607,7 +608,10 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  joint_path_validation=path_audit,
                  joint_path_valid=bool(path_valid),
                  j4_reverse_bend_deg=float(np.rad2deg(q[3])),
-                 j4_branch='recorded_follower_no_sign_override',
+                 j4_branch='recorded_follower_locked_during_approach',
+                 j4_j5_locked_during_approach=True,
+                 approach_changed_joints=['shoulder_pan','shoulder_lift','elbow_flex'],
+                 approach_joint_deltas_deg=np.rad2deg(q[:3]-seed[:3]).tolist(),
                  j5_locked_at_deg=float(np.rad2deg(q_first[4])),
                  perpendicular_tolerance_deg=angle_limit,
                  open_clear=bool(1.<=fg<=2.5 and mg>=1.),
@@ -643,7 +647,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         top_view_angle_limit_deg=angle_limit,
         seed_strategy='actual_recorded_follower_kinematically_nearest_diverse',
         j4_sign_override=False,
-        note='Stage1: observed pose + bounded J5; Stage2: bounded J1..J4 with J5 frozen; check both paths for self collision and real pose proximity; J6 only after full acceptance.')
+        note='Stage1: observed pose + bounded J5; Stage2: bounded J1..J3 with J4/J5 locked; check both paths for self collision and real pose proximity; J6 only after full acceptance.')
     return best[2],report
 
 
@@ -1289,7 +1293,10 @@ def main():
     p.add_argument('--self-collision-tolerance-mm',type=float,default=1.)
     p.add_argument('--real-seed-count',type=int,default=8)
     p.add_argument('--seed-diversity-deg',type=float,default=12.)
-    p.add_argument('--max-arm-from-recorded-deg',type=float,default=18.)
+    p.add_argument('--max-arm-from-recorded-deg',type=float,default=18.,
+                   help='Legacy option, not used for horizontal J1..J3 approach')
+    p.add_argument('--max-approach-j123-deg',type=float,default=35.,
+                   help='Max individual J1/J2/J3 deviation from real recorded pose; J4,J5 remain locked')
     p.add_argument('--max-j5-from-recorded-deg',type=float,default=35.)
     p.add_argument('--preflight-path-steps',type=int,default=5)
     p.add_argument('--horizontal-j4-min-deg',type=float,default=5.,
@@ -1336,7 +1343,7 @@ def main():
     if args.object_height_clearance_mm<0: p.error('Object clearance cannot be negative')
     if args.real_pose_max_axis_deg<=0 or args.real_pose_max_l2_deg<=0 or args.self_collision_tolerance_mm<0:
         p.error('Invalid real pose / self collision thresholds')
-    if args.real_seed_count<1 or args.seed_diversity_deg<=0 or args.max_arm_from_recorded_deg<=0 or args.max_j5_from_recorded_deg<=0 or args.preflight_path_steps<2:
+    if args.real_seed_count<1 or args.seed_diversity_deg<=0 or args.max_arm_from_recorded_deg<=0 or args.max_approach_j123_deg<=0 or args.max_j5_from_recorded_deg<=0 or args.preflight_path_steps<2:
         p.error('Invalid recorded-seed / path preflight settings')
     if not 0<=args.horizontal_j4_min_deg<=70:
         p.error('horizontal-j4-min-deg must be in [0,70]')
