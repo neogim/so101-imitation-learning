@@ -69,8 +69,28 @@ def main():
          for n in JOINTS}
     bid={n:mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,n)
          for n in BODIES}
-    if min(*jid.values(),*bid.values())<0:
-        raise ValueError("Missing SO-101 joint/body names in URDF")
+    # MuJoCo imports the fixed root link of a URDF into worldbody. The
+    # original URDF's base_link therefore may have NO corresponding mjBODY.
+    # This is expected, not evidence of a broken joint or missing geometry.
+    root_merged_into_world=False
+    if bid["base_link"]<0:
+        bid["base_link"]=0
+        root_merged_into_world=True
+    missing_joints=[n for n,v in jid.items() if v<0]
+    missing_bodies=[n for n,v in bid.items() if v<0]
+    if missing_joints or missing_bodies:
+        available_joints=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_JOINT,i)
+                          for i in range(model.njnt)]
+        available_bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,i)
+                          for i in range(model.nbody)]
+        raise ValueError(
+            "Missing compiled MuJoCo names: joints="+repr(missing_joints)+
+            ", bodies="+repr(missing_bodies)+
+            "; available joints="+repr(available_joints)+
+            "; available bodies="+repr(available_bodies))
+    if root_merged_into_world:
+        print("INFO: fixed URDF root base_link was merged into MuJoCo worldbody; "
+              "using body id 0 for base_link.",flush=True)
     adr={n:int(model.jnt_qposadr[jid[n]]) for n in JOINTS}
     source=choose_recorded_frames(a.dataset_root,a.episode)
     observations=[];sweeps=[]
@@ -159,6 +179,8 @@ def main():
         # compare the same recorded joint configuration to actual camera video.
         summary=dict(schema="so101_original_urdf_fk_audit_v1",
             urdf=str(xml),source="recorded LeRobot follower observations",
+            base_link_merged_into_world=root_merged_into_world,
+            mujoco_body_id_mapping=bid,mujoco_joint_id_mapping=jid,
             input_episode=a.episode,reference_poses=len(source),
             tested_joint_names=["shoulder_lift","elbow_flex","wrist_flex"],
             delta_deg=a.delta_deg,no_ik=True,no_mj_step=True,no_hardware_control=True,
