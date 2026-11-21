@@ -21,46 +21,40 @@ def _unit(vector):
     return vector / norm
 
 
-def _witness_anchors(model, data, fixed, bottle, goal, moving, limit=4):
-    """Candidate actual collision-surface material points, in body coordinates.
+def _witness_anchors(model, data, fixed, bottle, goal, moving, limit=8):
+    """Select surface points on the FIXED jaw facing the MOVING jaw.
 
-    Each witness is frozen to its geom body's frame for the entire IK.
-    This avoids differentiating through a discontinuous closest-geom switch.
+    A fixed-vs-bottle witness can land on the outside of the fixed jaw.
+    Instead collect fixed-vs-moving collision witnesses on the open aperture.
     """
-    fixed_center = np.mean(np.asarray(data.geom_xpos)[list(fixed)], axis=0)
-    moving_center = np.mean(np.asarray(data.geom_xpos)[list(moving)], axis=0)
-    inward = _unit(moving_center - fixed_center)
+    fc = np.mean(np.asarray(data.geom_xpos)[list(fixed)], axis=0)
+    mc = np.mean(np.asarray(data.geom_xpos)[list(moving)], axis=0)
+    direction = _unit(mc-fc)
     candidates = []
     for gid in fixed:
         body = int(model.geom_bodyid[int(gid)])
-        rot = np.asarray(data.xmat[body]).reshape(3, 3)
-        body_origin = np.asarray(data.xpos[body])
-        for bid in bottle:
-            witness = np.zeros(6, dtype=float)
-            dist = mujoco.mj_geomDistance(
-                model, data, int(gid), int(bid), 0.5, witness)
-            if not np.isfinite(dist):
+        rot = np.asarray(data.xmat[body]).reshape(3,3)
+        origin = np.asarray(data.xpos[body])
+        for mid in moving:
+            witness = np.zeros(6)
+            distance = mujoco.mj_geomDistance(
+                model, data, int(gid), int(mid), .5, witness)
+            if not np.isfinite(distance) or not np.isfinite(witness).all():
                 continue
             point = witness[:3].copy()
-            if not np.isfinite(point).all():
+            if float(np.dot(witness[3:]-point,direction)) <= .001:
                 continue
-            # Prefer the face pointing from fixed to moving jaw.
-            inward_score = float(np.dot(goal - point, inward))
-            local = rot.T @ (point - body_origin)
-            priority = float(np.linalg.norm(point - goal))
-            if inward_score < 0:
-                priority += 0.1
-            candidates.append((priority, body, local, int(gid)))
-    candidates.sort(key=lambda x: x[0])
-    chosen = []
-    # Different collision patches can provide the same point. Deduplicate.
-    for cand in candidates:
-        if any(cand[1] == other[1] and np.linalg.norm(cand[2]-other[2]) < .003
-               for other in chosen):
+            local = rot.T @ (point-origin)
+            candidates.append((float(np.linalg.norm(point-goal)),
+                               body,local,int(gid)))
+    candidates.sort(key=lambda x:x[0])
+    chosen=[]
+    for item in candidates:
+        if any(item[1]==prev[1] and
+               np.linalg.norm(item[2]-prev[2]) < .002 for prev in chosen):
             continue
-        chosen.append(cand)
-        if len(chosen) >= limit:
-            break
+        chosen.append(item)
+        if len(chosen)>=limit: break
     return chosen
 
 
@@ -107,11 +101,25 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 return (np.asarray(data.xpos[body]) +
                         np.asarray(data.xmat[body]).reshape(3, 3) @ local)
 
+            def aperture_alignment(q):
+                point_at(q)
+                fc_now = np.mean(np.asarray(data.geom_xpos)[list(fixed)], axis=0)
+                mc_now = np.mean(np.asarray(data.geom_xpos)[list(moving)], axis=0)
+                vec = mc_now - fc_now
+                sep = float(np.linalg.norm(vec))
+                aperture = _unit(vec)
+                facing = float(np.dot(aperture, -normal))
+                along = float(np.dot(np.asarray(xyz)-fc_now,aperture))
+                return facing, along, sep
+
             def residual(q):
                 point = point_at(q)
-                # Strong direct Cartesian error; weak regularization only.
-                return np.r_[(point - goal) / .002,
-                             np.rad2deg(q - seed) * .003]
+                facing, along, sep = aperture_alignment(q)
+                return np.r_[(point-goal)/.002,
+                             22.*max(0.,.85-facing),
+                             400.*max(0.,.002-along),
+                             400.*max(0.,along-sep+.002),
+                             np.rad2deg(q-seed)*.002]
 
             fit = least_squares(
                 residual, np.clip(aligned, lower + 1e-5, upper - 1e-5),
@@ -119,7 +127,18 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 ftol=1e-5, xtol=1e-5, gtol=1e-5)
             actual = point_at(fit.x)
             error_mm = float(np.linalg.norm(actual - goal) * 1000.)
+            facing, along, separation = aperture_alignment(fit.x)
+            inside_valid = bool(facing>=.85 and .002<=along<=separation-.002)
+            rank = (0 if inside_valid else 1,
+                    error_mm + 100.*max(0.,.85-facing) +
+                    1000.*max(0.,.002-along) +
+                    1000.*max(0.,along-separation+.002))
             trials.append(dict(q=fit.x.copy(), error_mm=error_mm,
+                inward_face_valid=inside_valid,
+                jaw_aperture_alignment_cos=facing,
+                object_between_jaws_along_mm=along*1000.,
+                jaw_centroid_separation_mm=separation*1000.,
+                rank=list(rank),
                 sign=int(sign), target_world_m=goal.tolist(),
                 fixed_surface_world_m=actual.tolist(),
                 fixed_surface_body=int(body), fixed_geom=int(gid),
@@ -127,7 +146,7 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 nfev=int(fit.nfev), solver_success=bool(fit.success)))
     if not trials:
         raise RuntimeError("No fixed-jaw collision witness anchors")
-    trials.sort(key=lambda t: t["error_mm"])
+    trials.sort(key=lambda t: tuple(t["rank"]))
     chosen = trials[0]
     return chosen["q"], {k: v for k, v in chosen.items() if k != "q"}, [
         {k: v for k, v in trial.items() if k != "q"} for trial in trials]
