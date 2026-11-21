@@ -586,10 +586,13 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_j5_deg=args.max_j5_from_recorded_deg,
                 max_nfev=max(120,args.horizontal_ik_max_nfev))
             target_error_mm = center_target['error_mm']
+            inner_face_valid = bool(center_target['inward_face_valid'])
             stages.append(dict(seed=label, stage='3_center_side_cartesian_target',
                 target_world_m=center_target['target_world_m'],
                 fixed_surface_world_m=center_target['fixed_surface_world_m'],
                 position_error_mm=target_error_mm,
+                inward_face_valid=inner_face_valid,
+                aperture_alignment_cos=center_target['jaw_aperture_alignment_cos'],
                 q_deg=np.rad2deg(q).tolist()))
             (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
                   open_floor,closed_floor)=measure(q)
@@ -619,7 +622,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
             path_valid=all(check['valid'] for check in path_audit)
             final_heading_error,final_jaw_xy,_=heading_to_muhi(q)
             valid=(safety['valid'] and path_valid
-                   and target_error_mm<=2. and 1.<=fg<=2. and fw['axial_offset_mm']<=2.
+                   and inner_face_valid and target_error_mm<=2. and 1.<=fg<=2. and fw['axial_offset_mm']<=2.
                    and mg>=1. and angle<=angle_limit
                    and proj>=.55 and (mg-m80)>=2.
                    and bracket['between_centroids']
@@ -629,7 +632,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    and opposition<=-.35
                    and min(open_floor['gap_mm'],closed_floor['gap_mm'])
                        >=args.min_tool_floor_gap_mm)
-            score=(25.*target_error_mm+3.*abs(fg-1.5)+20.*max(0.,1.-mg)+
+            score=(200.*float(not inner_face_valid)+25.*target_error_mm+3.*abs(fg-1.5)+20.*max(0.,1.-mg)+
                    .3*abs(m80)+.1*err+2.*angle+
                    80.*max(0.,.55-proj)+
                    70.*float(not bracket['fixed_surface_inward'])+
@@ -671,7 +674,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  center_target_ik=center_target,
                  center_target_all_anchors=center_trials,
                  center_target_error_mm=target_error_mm,
-                 center_target_valid=bool(target_error_mm<=2.),
+                 center_target_valid=bool(inner_face_valid and target_error_mm<=2.),
+                 fixed_inner_face_valid=inner_face_valid,
                  fixed_target_inner_gap_mm=[1.,2.],
                  fixed_target_axial_center_mm=[-2.,2.],
                  heading_error_deg=float(final_heading_error),
@@ -697,6 +701,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  top_view_perpendicular_error_deg=angle,
                  fixed_gap_mm=fg,moving_gap_mm=mg,
                  center_target_error_mm=target_error_mm,
+                 inward_face_valid=inner_face_valid,
                  j4_deg=float(np.rad2deg(q[3])),
                  candidate_valid=bool(valid),
                  real_pose_safety_valid=bool(safety['valid']),
@@ -720,7 +725,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         top_view_angle_limit_deg=angle_limit,
         seed_strategy='actual_recorded_follower_kinematically_nearest_diverse',
         j4_sign_override=False,
-        note='J1/J5 initialize posture. Stage3 optimizes a body-fixed collision-surface point to an explicit fixed 3-D point 1.5mm outside Muhi center-side cylinder, never end cap; J6 physics only after center-target error <=2mm AND full geometry/path gates pass.')
+        note='J1/J5 initialize pose. Stage3 samples fixed-vs-moving INNER jaw surface points and optimizes 3D cylinder-side target; aperture must face Muhi and Muhi must lie between jaws. Only then apply geometry/path gates and J6 physics.')
     return best[2],report
 
 
