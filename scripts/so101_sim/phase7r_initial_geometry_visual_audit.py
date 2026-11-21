@@ -196,6 +196,104 @@ def penetration_3d_render_montage(model,d,fixed,moving,bottle,floor,
     for i,tile in enumerate(tiles):result.paste(tile,(900*i,0))
     result.save(out)
 
+
+def audit_source_stl_and_generated_patches(original_urdf,build_dir,model,d):
+    """Compare *the exact source STL* with each generated patch in a common world frame.
+
+    A generated convex patch's vertices are selected from clipped source triangles.
+    Their world Z minimum cannot extend below the original source triangle vertices
+    if inherited URDF origin/scale is identical. Comparing an unrelated attached
+    geom (servo housing) is invalid and intentionally avoided.
+    """
+    import xml.etree.ElementTree as ET
+    from scipy.spatial.transform import Rotation
+    import jaw_collision_geometry as generation
+
+    root=ET.parse(original_urdf).getroot()
+    build=json.loads((build_dir/'jaw_collision_build.json').read_text())
+    records=[]
+    for body,asset in generation.TARGETS.items():
+        link=next((x for x in root.findall('link') if x.get('name')==body),None)
+        if link is None:raise ValueError('Missing link '+body)
+        src_collision=None
+        for collision in link.findall('collision'):
+            mesh=collision.find('./geometry/mesh')
+            if mesh is not None and Path(mesh.get('filename','')).name==asset:
+                src_collision=collision
+                break
+        if src_collision is None:raise ValueError('Missing matching source STL collision '+body)
+        mesh=src_collision.find('./geometry/mesh')
+        src=(original_urdf.parent/mesh.get('filename')).resolve(strict=True)
+        scale=np.array([float(a) for a in mesh.get('scale','1 1 1').split()])
+        if scale.shape!=(3,):raise ValueError('Unexpected STL scale '+str(scale))
+        org=src_collision.find('origin')
+        local_xyz=np.array([float(a) for a in ((org.get('xyz') if org is not None else None) or '0 0 0').split()])
+        local_rpy=np.array([float(a) for a in ((org.get('rpy') if org is not None else None) or '0 0 0').split()])
+        Rlocal=Rotation.from_euler('xyz',local_rpy).as_matrix()
+        bid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,body)
+        if bid<0:raise ValueError('Missing compiled body '+body)
+        Rworld=d.xmat[bid].reshape(3,3)
+        translation=d.xpos[bid]
+        def in_world(vertices):
+            return (((vertices*scale)@Rlocal.T+local_xyz)@Rworld.T)+translation
+        original=generation.read_stl_triangles(src).reshape(-1,3)
+        original_world=in_world(original)
+        original_min=float(original_world[:,2].min())
+        original_point=original_world[np.argmin(original_world[:,2])].tolist()
+        parts=build['jaw_parts'][body]['parts']
+        patches=[];lowest=(float('inf'),None,None)
+        for part in parts:
+            pfile=build_dir/'jaw_collision'/part['file']
+            points=generation.read_stl_triangles(pfile).reshape(-1,3)
+            world=in_world(points)
+            z=float(world[:,2].min())
+            point=world[np.argmin(world[:,2])].tolist()
+            patches.append(dict(file=part['file'],min_world_z_mm=1000*z))
+            if z<lowest[0]:lowest=(z,point,part['file'])
+        delta_mm=1000*(lowest[0]-original_min)
+        records.append(dict(
+            jaw=body,source_stl=asset,source_stl_world_min_z_mm=1000*original_min,
+            patch_world_min_z_mm=1000*lowest[0],
+            patch_minus_source_min_z_mm=delta_mm,
+            source_stl_lowest_point_world_m=original_point,
+            patch_lowest_point_world_m=lowest[1],
+            worst_patch_file=lowest[2],
+            orig_collision_xyz_m=local_xyz.tolist(),orig_collision_rpy_rad=local_rpy.tolist(),
+            mesh_scale=scale.tolist(),n_patches=len(parts),
+            conclusion=('PATCH_EXTENDS_BELOW_SOURCE' if delta_mm < -.25 else
+                        'PATCH_AND_SOURCE_SAME_MIN_Z_WITHIN_TOLERANCE' if abs(delta_mm)<=.25
+                        else 'PATCH_WITHIN_SOURCE_VERTICAL_EXTENT'),
+            limitation='Raw STL triangle extrema vs generated patch triangle extrema; same URDF origin and world pose. This is NOT the compiled convex contact penetration depth.'
+        ))
+    return records
+
+
+def plot_exact_stl_height_audit(records,table_z,out):
+    import matplotlib.pyplot as plt
+    fig,axs=plt.subplots(1,2,figsize=(13,5.5),sharey=True)
+    for ax,r in zip(axs,records):
+        origin=float(table_z)*1000
+        vals=[r['source_stl_world_min_z_mm']-origin,
+              r['patch_world_min_z_mm']-origin]
+        ax.axhspan(min(-50,min(vals)-12),0,facecolor='#fee2e2')
+        ax.axhspan(0,max(50,max(vals)+12),facecolor='#eff6ff')
+        ax.axhline(0,color='black',linewidth=2,label='Assumed tabletop Z')
+        for i,(v,c) in enumerate(zip(vals,['#2563eb','#dc2626'])):
+            ax.plot([i,i],[0,v],color=c,lw=8,alpha=.65)
+            ax.scatter([i],[v],color=c,s=140)
+            ax.annotate(f'{v:+.2f} mm',(i,v),
+                        xytext=(0,-20 if v<0 else 12),
+                        textcoords='offset points',ha='center',color=c,fontweight='bold')
+        ax.set_xticks([0,1],['Original jaw STL','Generated collision patches'])
+        ax.set_title(r['jaw'],fontsize=12)
+        ax.grid(axis='y',alpha=.28)
+    axs[0].set_ylabel('World Z relative to assumed tabletop (mm)')
+    fig.suptitle('Exact source jaw STL vs generated patches: lowest raw mesh vertices',fontsize=14)
+    fig.text(.5,.025,'Same FK pose, same source collision origin. Does not assert the real tabletop height.',ha='center')
+    fig.tight_layout(rect=(0,.055,1,.94))
+    fig.savefig(out,dpi=160,facecolor='white')
+    plt.close(fig)
+
 def draw_tile(img, title, subtitle):
     w,h=img.size
     tile=Image.new('RGB',(w,h+58),'#182532');tile.paste(img,(0,58))
@@ -286,6 +384,13 @@ def run(args):
         report['other_attached_geom_audit']=attachment_audit
         report['visual_geometry_caveat']='mj_geomDistance uses convex mesh interpretation, not exact rendered STL triangles'
         phase7q.write_csv(args.out/'jaw_other_attached_geom_table_distances.csv',attachment_audit)
+        # Compare actual jaw STL triangles (not the unrelated servo-housing geom).
+        stl_records=audit_source_stl_and_generated_patches(args.urdf.resolve(),args.out/'collision_urdf',model,d)
+        report['exact_source_stl_vs_patch_world_extrema']=stl_records
+        with (args.out/'exact_source_stl_vs_patch_world_extrema.json').open('w') as fp:
+            json.dump(stl_records,fp,indent=2)
+        plot_exact_stl_height_audit(stl_records,args.table_z,
+            args.out/'exact_jaw_stl_vs_patch_height.png')
         # Show explicit min-gap geoms as highlights; no force or dynamics evaluation.
         original_rgba=model.geom_rgba.copy()
         shown=list(fixed)+list(moving)+list(bottle)+[floor]
