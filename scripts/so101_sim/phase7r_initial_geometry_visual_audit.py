@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 7R â visual-vs-collision inspection of Phase7Q's stopped initial state.
+"""Phase 7R - visual-vs-collision inspection of Phase7Q's stopped initial state.
 
 Uses identical Episode015 actions, unverified motor/URDF map, jaw proxy model,
 and synthetic bottle locator as Phase7Q. No physics integration, robot hardware,
