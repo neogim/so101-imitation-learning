@@ -120,12 +120,16 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 finger_world = _unit(finger_rot @ finger_axis_local)
                 # Upright Muhi: finger runs approximately parallel to table.
                 # Horizontal Muhi: finger runs approximately perpendicular.
-                axial_vertical = abs(float(np.dot(finger_world, vertical)))
-                axial_target = 0. if upright else 1.
-                elevation_error = float(np.degrees(np.arccos(np.clip(
-                    axial_vertical, -1., 1.))))
+                axial_vertical = float(np.dot(finger_world, vertical))
                 if upright:
-                    elevation_error = abs(90. - elevation_error)
+                    # A horizontal jaw-tip axis can point either horizontal way.
+                    elevation_error = float(np.degrees(np.arcsin(
+                        np.clip(abs(axial_vertical), 0., 1.))))
+                else:
+                    # For a horizontal object the jaw-tip MUST point down,
+                    # not merely be parallel to the table normal.
+                    elevation_error = float(np.degrees(np.arccos(
+                        np.clip(-axial_vertical, -1., 1.))))
                 finger_object_dot = abs(float(np.dot(finger_world, axis)))
                 aperture_object_dot = abs(float(np.dot(aperture, axis)))
                 finger_object_error = float(np.degrees(np.arcsin(np.clip(
