@@ -62,7 +62,8 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
           xyz, quat, object_axis, fixed, moving, bottle, radius,
           max_j1_deg=65., max_j23_deg=45., max_j4_deg=35.,
           max_j5_deg=35., max_nfev=160, finger_body=None,
-          finger_axis_local=None, orientation_tolerance_deg=15.):
+          finger_axis_local=None, orientation_tolerance_deg=15.,
+          fixed_jaw_floor_gap_mm=None, floor_target_mm=.5):
     """Solve explicit 3D position AND task-oriented end-effector orientation.
 
     Physics eligibility, real-recorded envelope, collision and full path gates
@@ -144,16 +145,22 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 point = point_at(q)
                 (facing, along, sep, elev, finger_cross, aperture_cross,
                  finger_world, aperture) = pose_metrics(q)
-                # The three orientation conditions are optimized SIMULTANEOUSLY
-                # with Cartesian position, not checked after IK only.
-                return np.r_[(point-goal)/.002,
-                             22.*max(0.,.85-facing),
-                             400.*max(0.,.002-along),
-                             400.*max(0.,along-sep+.002),
-                             1.8*elev,
-                             1.2*finger_cross,
-                             1.2*aperture_cross,
-                             np.rad2deg(q-seed)*.002]
+                # Strongly prioritize the ACTUAL center-side point (x,y,z).
+                # Only penalize angular errors once they exceed a good range;
+                # never trade 40 mm of position for a few degrees of attitude.
+                terms = [(point-goal)/.001,
+                         22.*max(0.,.85-facing),
+                         400.*max(0.,.002-along),
+                         400.*max(0.,along-sep+.002),
+                         .5*max(0.,elev-8.),
+                         .4*max(0.,finger_cross-8.),
+                         .4*max(0.,aperture_cross-8.)]
+                if fixed_jaw_floor_gap_mm is not None and not upright:
+                    gap_mm = float(fixed_jaw_floor_gap_mm())
+                    terms.extend([1.5*max(0.,gap_mm-1.),
+                                  10.*max(0.,-gap_mm)])
+                terms.append(np.rad2deg(q-seed)*.001)
+                return np.r_[tuple(terms)]
 
             fit = least_squares(
                 residual, np.clip(aligned, lower + 1e-5, upper - 1e-5),
@@ -168,14 +175,24 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 elev<=orientation_tolerance_deg and
                 finger_cross<=orientation_tolerance_deg and
                 aperture_cross<=orientation_tolerance_deg)
-            rank = (0 if inside_valid and orientation_valid else 1,
-                    error_mm + 100.*max(0.,.85-facing) +
+            floor_gap_mm = (None if fixed_jaw_floor_gap_mm is None
+                            else float(fixed_jaw_floor_gap_mm()))
+            floor_valid = bool(floor_gap_mm is None or
+                               (0. <= floor_gap_mm <= 1.))
+            rank = (0 if inside_valid and orientation_valid and floor_valid
+                    and error_mm<=2. else 1,
+                    25.*error_mm + 100.*max(0.,.85-facing) +
                     1000.*max(0.,.002-along) +
                     1000.*max(0.,along-separation+.002) +
-                    5.*elev + 3.*finger_cross + 3.*aperture_cross)
+                    3.*elev + 2.*finger_cross + 2.*aperture_cross +
+                    (0. if floor_gap_mm is None else
+                     5.*max(0.,floor_gap_mm-1.) +
+                     30.*max(0.,-floor_gap_mm)))
             trials.append(dict(q=fit.x.copy(), error_mm=error_mm,
                 inward_face_valid=inside_valid,
                 orientation_valid=orientation_valid,
+                fixed_jaw_floor_gap_mm=floor_gap_mm,
+                fixed_jaw_floor_near_contact_valid=floor_valid,
                 orientation_mode="upright_horizontal_finger" if upright else "horizontal_vertical_finger",
                 finger_table_elevation_error_deg=elev,
                 finger_to_muhi_axis_perpendicular_error_deg=finger_cross,
