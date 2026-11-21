@@ -72,6 +72,130 @@ def mark_points(scene, entries):
         scene.ngeom+=1
 
 
+
+def add_3d_penetration_arrows(scene, worst_pairs):
+    """Append actual world-coordinate arrows to an mjvScene (render-only)."""
+    for item, color in worst_pairs:
+        table=np.asarray(item['table_point_world_m'],float)
+        jaw=np.asarray(item['jaw_point_world_m'],float)
+        if scene.ngeom + 3 > scene.maxgeom:
+            break
+        geom=scene.geoms[scene.ngeom]
+        mujoco.mjv_initGeom(geom,mujoco.mjtGeom.mjGEOM_ARROW,
+                           np.ones(3)*.004,table,np.eye(3).reshape(-1),
+                           np.asarray(color,float))
+        mujoco.mjv_connector(geom,mujoco.mjtGeom.mjGEOM_ARROW,.0038,table,jaw)
+        scene.ngeom+=1
+        for point,radius in ((table,.0035),(jaw,.005)):
+            sphere=scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(sphere,mujoco.mjtGeom.mjGEOM_SPHERE,
+                               np.array([radius]*3),point,np.eye(3).reshape(-1),
+                               np.asarray(color,float))
+            scene.ngeom+=1
+
+
+def penetration_3d_coordinate_figure(fixed_item,moving_item,table_z,out):
+    """A clear, genuinely 3D location chart from the exact collision query points."""
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    items=[('FIXED',fixed_item,'#dc2626'),('MOVING',moving_item,'#9333ea')]
+    # All axes in millimetres, in the unchanged URDF/world coordinate frame.
+    pts=np.array([v['table_point_world_m'] for _,v,_ in items],float)*1000.
+    mid=pts[:,:2].mean(axis=0)
+    fig=plt.figure(figsize=(15,7),facecolor='white')
+    for i,(elev,azim,subtitle) in enumerate([(23,-63,'Oblique 3D'),(10,-93,'Near-side 3D')]):
+        ax=fig.add_subplot(1,2,i+1,projection='3d')
+        ax.set_facecolor('white')
+        span=90
+        xx=np.linspace(mid[0]-span/2,mid[0]+span/2,10)
+        yy=np.linspace(mid[1]-span/2,mid[1]+span/2,10)
+        X,Y=np.meshgrid(xx,yy)
+        Z=np.ones_like(X)*table_z*1000.
+        ax.plot_surface(X,Y,Z,color='#a9d9ef',alpha=.20,edgecolor='#6b7280',linewidth=.65,
+                        rstride=1,cstride=1,shade=False)
+        for tag,v,color in items:
+            table=np.asarray(v['table_point_world_m'],float)*1000
+            jaw=np.asarray(v['jaw_point_world_m'],float)*1000
+            ax.quiver(table[0],table[1],table[2],jaw[0]-table[0],jaw[1]-table[1],
+                      jaw[2]-table[2],color=color,linewidth=3,arrow_length_ratio=.16,
+                      normalize=False)
+            ax.scatter(*table,s=75,color=color,marker='o')
+            ax.scatter(*jaw,s=120,color=color,marker='X')
+            ax.text(jaw[0],jaw[1],jaw[2]-5,f'{tag}\n{v["gap_mm"]:+.2f} mm',
+                    color=color,fontsize=10,fontweight='bold')
+        ax.set_title(subtitle,fontsize=12)
+        ax.set_xlabel('World X (mm)',labelpad=8)
+        ax.set_ylabel('World Y (mm)',labelpad=8)
+        ax.set_zlabel('World Z (mm)',labelpad=8)
+        ax.set_xlim(mid[0]-span/2,mid[0]+span/2)
+        ax.set_ylim(mid[1]-span/2,mid[1]+span/2)
+        ax.set_zlim(-45,35)
+        ax.set_box_aspect((90,90,80),zoom=.88)
+        ax.view_init(elev=elev,azim=azim)
+    fig.suptitle('Phase 7R: jaw/table penetration in the actual simulated world coordinates',
+                 fontsize=14,fontweight='bold')
+    fig.text(.5,.025,'Grid = assumed table Z=0 | circles = tabletop points | X = jaw points below table | arrows = penetration',
+             ha='center',fontsize=10)
+    fig.tight_layout(rect=(0,.055,1,.94))
+    fig.savefig(out,dpi=170,facecolor='white')
+    plt.close(fig)
+
+
+def penetration_3d_render_montage(model,d,fixed,moving,bottle,floor,
+                                fixed_item,moving_item,out,table_z):
+    """Two high-contrast MuJoCo 3D insets of the actual geometry and 3D arrows."""
+    cases=[('FIXED JAW',fixed_item,(.95,.15,.12,1.),90.,-15.),
+           ('MOVING JAW',moving_item,(.68,.15,.88,1.),160.,-18.)]
+    original=model.geom_rgba.copy()
+    model.vis.global_.offwidth=max(model.vis.global_.offwidth,900)
+    model.vis.global_.offheight=max(model.vis.global_.offheight,610)
+    try:
+        # Brighter, less specular lighting for collision geometry inspection.
+        model.vis.headlight.ambient[:]=[.78,.78,.78]
+        model.vis.headlight.diffuse[:]=[.5,.5,.5]
+        model.vis.headlight.specular[:]=[.04,.04,.04]
+    except (AttributeError,TypeError):
+        pass
+    renderer=mujoco.Renderer(model,width=900,height=610)
+    tiles=[]
+    try:
+        cam=mujoco.MjvCamera()
+        cam.type=mujoco.mjtCamera.mjCAMERA_FREE
+        for label,item,color,az,el in cases:
+            model.geom_rgba[:]=original
+            # De-emphasize unrelated robot geometry; emphasize only jaw proxies.
+            model.geom_rgba[floor]=[.78,.86,.90,.18]
+            for g in fixed:model.geom_rgba[g]=[.93,.40,.14,.34]
+            for g in moving:model.geom_rgba[g]=[.62,.32,.90,.34]
+            for g in bottle:model.geom_rgba[g]=[.22,.65,.85,.85]
+            model.geom_rgba[item['geom_id']]=color
+            table=np.asarray(item['table_point_world_m'],float)
+            jaw=np.asarray(item['jaw_point_world_m'],float)
+            cam.lookat[:]=(table+jaw)*.5
+            cam.azimuth=az
+            cam.elevation=el
+            cam.distance=.17
+            renderer.update_scene(d,camera=cam)
+            add_3d_penetration_arrows(renderer.scene,[(item,color)])
+            pic=Image.fromarray(renderer.render().copy())
+            tile=Image.new('RGB',(900,710),'#ffffff')
+            tile.paste(pic,(0,76))
+            drawer=ImageDraw.Draw(tile)
+            drawer.text((20,15),f'{label} | penetration {abs(item["gap_mm"]):.2f} mm',
+                        fill='#171717',stroke_width=0)
+            drawer.text((20,41),
+                        f'Arrow: tabletop Z={table_z*1000:.1f} mm -> jaw Z={jaw[2]*1000:.1f} mm',
+                        fill='#3f3f46')
+            drawer.text((20,690),'Red/purple 3D arrow follows actual geomDistance query points',
+                        fill='#52525b')
+            tiles.append(tile)
+    finally:
+        renderer.close()
+        model.geom_rgba[:]=original
+    result=Image.new('RGB',(900*len(tiles),710),'#ffffff')
+    for i,tile in enumerate(tiles):result.paste(tile,(900*i,0))
+    result.save(out)
+
 def draw_tile(img, title, subtitle):
     w,h=img.size
     tile=Image.new('RGB',(w,h+58),'#182532');tile.paste(img,(0,58))
@@ -205,6 +329,12 @@ def run(args):
             renderer.close()
             model.geom_rgba[:]=original_rgba
         make_montage(imgs,3,args.out/'initial_geometry_visual_vs_collision_3views.png')
+        # Clear 3D penetration evidence with world-coordinate arrows and mm labels.
+        penetration_3d_coordinate_figure(fixed_table[0],moving_table[0],
+            args.table_z,args.out/'penetration_3d_world_coordinates.png')
+        penetration_3d_render_montage(model,d,fixed,moving,bottle,floor,
+            fixed_table[0],moving_table[0],
+            args.out/'penetration_3d_mujoco_arrows.png',args.table_z)
         # Gap summaries, with per-patch extremes to explain which collision proxy penetrates the plane.
         import matplotlib
         matplotlib.use('Agg')
