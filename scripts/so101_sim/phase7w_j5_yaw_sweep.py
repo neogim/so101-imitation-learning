@@ -81,6 +81,7 @@ def make_graphs(rows,out):
     j5=[r.get('selected_j5_deg',float('nan')) for r in rows]
     fig,ax=plt.subplots(figsize=(10,5.5))
     ax.plot(yaw,j5,'o-',label='Selected J5 (pre-grasp)')
+    ax.plot(yaw,[BASE_J5_DEG+x for x in yaw],'--',label='J5 baseline + bottle yaw (axis-aligned prediction)')
     ax.axhline(BASE_J5_DEG,color='gray',ls=':',label='Successful Phase7V J5 baseline')
     ax.set(xlabel='Muhi tabletop yaw angle (deg)',ylabel='J5 / wrist_roll angle (deg)',
            title='Phase7W: J5-only adaptation to bottle yaw (J1-J4 fixed)')
@@ -160,11 +161,16 @@ def main():
         candidates=[]
         sweep=np.arange(math.degrees(lim[0])+0.5,math.degrees(lim[1])-.5,
                         args.coarse_j5_step_deg)
-        trial_angles=np.unique(np.concatenate([sweep,[BASE_J5_DEG]]))
+        predicted=BASE_J5_DEG+yaw
+        # When J5 axis is nearly vertical, +yaw roughly tracks world bottle yaw.
+        # Include this exact target and its +/-5 degree neighbors in the sweep.
+        trial_angles=np.unique(np.concatenate([sweep,[BASE_J5_DEG,predicted],
+                    np.arange(predicted-5.,predicted+5.1,1.)]))
         for v in trial_angles:
             c=metrics(model,d,qadr,q0,bq,pose,float(v),j5,lim,fixed,moving,bottle,floor,args.center_tolerance_mm)
             if c is not None:candidates.append(c)
-        good=sorted((c for c in candidates if c['eligible']),key=lambda c:c['score'])
+        good=sorted((c for c in candidates if c['eligible']),
+                    key=lambda c:c['score']+.025*abs(c['j5_deg']-predicted))
         # Refine around the best coarse feasible candidates using +/-3 deg in steps of 1 deg.
         near=[]
         for item in good[:4]:
@@ -172,9 +178,11 @@ def main():
                 c=metrics(model,d,qadr,q0,bq,pose,float(v),j5,lim,fixed,moving,bottle,floor,args.center_tolerance_mm)
                 if c is not None:near.append(c)
         candidates+=near
-        good=sorted((c for c in candidates if c['eligible']),key=lambda c:c['score'])
+        good=sorted((c for c in candidates if c['eligible']),
+                    key=lambda c:c['score']+.025*abs(c['j5_deg']-predicted))
         nearest=min(candidates,key=lambda c:c['geometry_violation_mm']) if candidates else None
-        case=dict(yaw_deg=int(yaw),j1_j4_constant=True,muhi_xyz_constant=True,
+        case=dict(yaw_deg=int(yaw),expected_j5_deg=float(predicted),
+                  j1_j4_constant=True,muhi_xyz_constant=True,
                   geometric_candidates_tested=len(candidates),eligible_j5_candidates=len(good),
                   closest_infeasible_candidate=nearest,chosen_geometric_candidate=good[0] if good else None,
                   initial_pose=pose,selected_j5_deg=good[0]['j5_deg'] if good else None,
