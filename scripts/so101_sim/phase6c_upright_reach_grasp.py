@@ -94,6 +94,13 @@ def model_build(args):
     spec=mujoco.MjSpec.from_file(str(effective))
     spec.compiler.discardvisual=False
     physical.install_dynamic_muhi(spec)
+    # Phase8: attach optional visualization-only camera to J5/J6 gripper_link.
+    # The original camera placement is photo-based and NOT calibration.
+    wrist_cam_enabled=bool(getattr(args,'wrist_camera',False))
+    if wrist_cam_enabled:
+        import wrist_camera_sim as wrist
+        wrist.install(spec)
+
     # Place support plane BEFORE MjSpec.compile(): moving a compiled static
     # world geom can leave its collision acceleration structures stale.
     support_z = getattr(args, 'support_plane_z_m', None)
@@ -116,6 +123,19 @@ def model_build(args):
         a.forcelimited=True;a.forcerange[:]=[-cap,cap]
         a.ctrllimited=False
     model=spec.compile()
+    if wrist_cam_enabled:
+        import wrist_camera_sim as wrist
+        # Visualization only in Phase8: exclude fixture collisions and inertia
+        # so a camera addition does not silently alter earlier grasp physics.
+        for geom_name in wrist.COLLISION_NAMES:
+            gid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,geom_name)
+            if gid >= 0:
+                model.geom_contype[gid]=0
+                model.geom_conaffinity[gid]=0
+        rig_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,wrist.RIG_BODY)
+        if rig_id >= 0:
+            model.body_mass[rig_id]=0.0
+            model.body_inertia[rig_id]=0.0
     model.opt.integrator=mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     model.opt.timestep=args.dt
     qadr=[];vadr=[];aids=[];low=[];high=[]
