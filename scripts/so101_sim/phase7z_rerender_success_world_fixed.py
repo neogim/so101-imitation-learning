@@ -43,6 +43,7 @@ def main():
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--angles', nargs='+', type=int, default=list(ROOTS))
     p.add_argument('--fps', type=int, default=8)
+    p.add_argument('--wrist-camera', action='store_true',help='Phase8 extra J5/J6 camera view')
     args = p.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     p7v = Path(__file__).with_name('phase7v_minus35_physical_grasp.py')
@@ -74,12 +75,14 @@ def main():
                '--table-z-mm', str(prior['table_z_mm']), '--lift-mm', '50',
                '--fps', str(args.fps), '--center-tolerance-mm', '12',
                '--j5-preset-deg', str(j5), '--fixed-pose-json', str(pose_path)]
+        if args.wrist_camera:
+            cmd.append('--wrist-camera')
         proc = subprocess.run(cmd, capture_output=True, text=True)
         (out/'process_stdout.txt').write_text(proc.stdout)
         (out/'process_stderr.txt').write_text(proc.stderr)
         report_path = out/'phase7v_summary.json'
         report = json.loads(report_path.read_text()) if report_path.is_file() else {}
-        video = out/'phase7v_grasp_3views.mp4'
+        video = out/('phase7v_grasp_4views.mp4' if args.wrist_camera else 'phase7v_grasp_3views.mp4')
         record = {'yaw_deg':yaw, 'source_dir':str(old), 'j5_deg':j5,
                   'exit_code':proc.returncode, 'status':report.get('status','ERROR'),
                   'rise_mm':report.get('metrics',{}).get('final_bottle_rise_mm'),
