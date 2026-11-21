@@ -203,10 +203,33 @@ def run(args):
         open_r=np.clip(np.deg2rad(args.j6_initial_open_deg),lo[5]+.001,hi[5]-.001)
         close_r=np.clip(np.deg2rad(args.j6_command_closed_deg),lo[5]+.001,hi[5]-.001)
         q0[5]=open_r
+        if args.j5_preset_deg is not None:
+            j5_value=np.deg2rad(args.j5_preset_deg)
+            if not (lo[4]+.001 <= j5_value <= hi[4]-.001):
+                raise ValueError('J5 preset outside URDF limits')
+            q0[4]=j5_value
         d.qpos[qadr]=q0
         d.ctrl[aids]=q0
         mujoco.mj_forward(model,d)
-        pose=scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,args.table_z_mm/1000.,args.scan_step_mm,args.scan_radius_mm,args.center_tolerance_mm)
+        if args.fixed_pose_json is None:
+            pose=scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,
+                args.table_z_mm/1000.,args.scan_step_mm,args.scan_radius_mm,args.center_tolerance_mm)
+        else:
+            pose=json.loads(args.fixed_pose_json.read_text())
+            if pose.get('placement')!='sideways_on_table' or len(pose.get('xyz_m',[]))!=3 or len(pose.get('quat_wxyz',[]))!=4:
+                raise ValueError('fixed_pose_json must specify sideways_on_table and xyz_m/quat_wxyz')
+            d.qpos[bq:bq+3]=pose['xyz_m'];d.qpos[bq+3:bq+7]=pose['quat_wxyz']
+            mujoco.mj_forward(model,d)
+            pose['fixed_gap_mm']=jaw_gap(model,d,fixed,bottle)
+            pose['moving_gap_mm']=jaw_gap(model,d,moving,bottle)
+            pose['fixed_jaw_contact_long_axis_offset_mm']=bottle_center_grasp_offset_mm(
+                model,d,fixed,bottle,pose['quat_wxyz'])
+            pose['grasp_center_tolerance_mm']=args.center_tolerance_mm
+            if (abs(pose['fixed_jaw_contact_long_axis_offset_mm'])>args.center_tolerance_mm or
+                not(.6<=pose['fixed_gap_mm']<=8. and .6<=pose['moving_gap_mm']<=45.)):
+                summary.update(status='BLOCKED_FIXED_BOTTLE_J5_GEOMETRY',
+                    initial_bottle_pose=pose)
+                return
         if pose is None:
             summary.update(status='BLOCKED_NO_CENTRAL_SIDEWAYS_BOTTLE_POSE',note='No nonpenetrating central fixed-jaw target. Do not substitute end grip.')
             return
@@ -331,6 +354,10 @@ def main():
     p.add_argument('--lift-s',type=float,default=2.4)
     p.add_argument('--retain-s',type=float,default=.9)
     p.add_argument('--lift-mm',type=float,default=50.)
+    p.add_argument('--fixed-pose-json',type=Path,default=None,
+        help='Exact bottle pose for Phase7W J5 yaw tests; bypass XY/orientation scan')
+    p.add_argument('--j5-preset-deg',type=float,default=None,
+        help='Change wrist_roll only, preserving Episode015 J1-J4 initial positions')
     p.add_argument('--no-video',action='store_true')
     args=p.parse_args()
     if args.table_z_mm!=-35.:print('NOTE: overriding the Phase7V experimental table -35mm',file=sys.stderr)
