@@ -61,14 +61,20 @@ def _witness_anchors(model, data, fixed, bottle, goal, moving, limit=8):
 def solve(model, data, qadr, bq, seed, aligned, lo, hi,
           xyz, quat, object_axis, fixed, moving, bottle, radius,
           max_j1_deg=65., max_j23_deg=45., max_j4_deg=35.,
-          max_j5_deg=35., max_nfev=160):
-    """Return candidate with smallest explicit central-side 3D position error.
+          max_j5_deg=35., max_nfev=160, finger_body=None,
+          finger_axis_local=None, orientation_tolerance_deg=15.):
+    """Solve explicit 3D position AND task-oriented end-effector orientation.
 
     Physics eligibility, real-recorded envelope, collision and full path gates
     MUST still be checked by the caller; this is purely kinematic.
     """
     axis = _unit(object_axis)
-    lateral = _unit(np.cross(axis, [0., 0., 1.]))
+    vertical = np.array([0., 0., 1.])
+    upright = abs(float(np.dot(axis, vertical))) >= .8
+    lateral = _unit(np.cross(axis, [1., 0., 0.] if upright else vertical))
+    if finger_body is None or finger_axis_local is None:
+        raise ValueError("Explicit finger body and measured finger STL axis are required")
+    finger_axis_local = _unit(finger_axis_local)
     widths = np.deg2rad([max_j1_deg, max_j23_deg, max_j23_deg,
                         max_j4_deg, max_j5_deg])
     lower = np.maximum(lo[:5] + .0002, seed - widths)
@@ -101,7 +107,7 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 return (np.asarray(data.xpos[body]) +
                         np.asarray(data.xmat[body]).reshape(3, 3) @ local)
 
-            def aperture_alignment(q):
+            def pose_metrics(q):
                 point_at(q)
                 fc_now = np.mean(np.asarray(data.geom_xpos)[list(fixed)], axis=0)
                 mc_now = np.mean(np.asarray(data.geom_xpos)[list(moving)], axis=0)
@@ -109,16 +115,40 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 sep = float(np.linalg.norm(vec))
                 aperture = _unit(vec)
                 facing = float(np.dot(aperture, -normal))
-                along = float(np.dot(np.asarray(xyz)-fc_now,aperture))
-                return facing, along, sep
+                along = float(np.dot(np.asarray(xyz)-fc_now, aperture))
+                finger_rot = np.asarray(data.xmat[int(finger_body)]).reshape(3, 3)
+                finger_world = _unit(finger_rot @ finger_axis_local)
+                # Upright Muhi: finger runs approximately parallel to table.
+                # Horizontal Muhi: finger runs approximately perpendicular.
+                axial_vertical = abs(float(np.dot(finger_world, vertical)))
+                axial_target = 0. if upright else 1.
+                elevation_error = float(np.degrees(np.arccos(np.clip(
+                    axial_vertical, -1., 1.))))
+                if upright:
+                    elevation_error = abs(90. - elevation_error)
+                finger_object_dot = abs(float(np.dot(finger_world, axis)))
+                aperture_object_dot = abs(float(np.dot(aperture, axis)))
+                finger_object_error = float(np.degrees(np.arcsin(np.clip(
+                    finger_object_dot, 0., 1.))))
+                aperture_object_error = float(np.degrees(np.arcsin(np.clip(
+                    aperture_object_dot, 0., 1.))))
+                return (facing, along, sep, elevation_error,
+                        finger_object_error, aperture_object_error,
+                        finger_world.copy(), aperture.copy())
 
             def residual(q):
                 point = point_at(q)
-                facing, along, sep = aperture_alignment(q)
+                (facing, along, sep, elev, finger_cross, aperture_cross,
+                 finger_world, aperture) = pose_metrics(q)
+                # The three orientation conditions are optimized SIMULTANEOUSLY
+                # with Cartesian position, not checked after IK only.
                 return np.r_[(point-goal)/.002,
                              22.*max(0.,.85-facing),
                              400.*max(0.,.002-along),
                              400.*max(0.,along-sep+.002),
+                             1.8*elev,
+                             1.2*finger_cross,
+                             1.2*aperture_cross,
                              np.rad2deg(q-seed)*.002]
 
             fit = least_squares(
@@ -127,14 +157,27 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
                 ftol=1e-5, xtol=1e-5, gtol=1e-5)
             actual = point_at(fit.x)
             error_mm = float(np.linalg.norm(actual - goal) * 1000.)
-            facing, along, separation = aperture_alignment(fit.x)
+            (facing, along, separation, elev, finger_cross,
+             aperture_cross, finger_world, aperture_world) = pose_metrics(fit.x)
             inside_valid = bool(facing>=.85 and .002<=along<=separation-.002)
-            rank = (0 if inside_valid else 1,
+            orientation_valid = bool(
+                elev<=orientation_tolerance_deg and
+                finger_cross<=orientation_tolerance_deg and
+                aperture_cross<=orientation_tolerance_deg)
+            rank = (0 if inside_valid and orientation_valid else 1,
                     error_mm + 100.*max(0.,.85-facing) +
                     1000.*max(0.,.002-along) +
-                    1000.*max(0.,along-separation+.002))
+                    1000.*max(0.,along-separation+.002) +
+                    5.*elev + 3.*finger_cross + 3.*aperture_cross)
             trials.append(dict(q=fit.x.copy(), error_mm=error_mm,
                 inward_face_valid=inside_valid,
+                orientation_valid=orientation_valid,
+                orientation_mode="upright_horizontal_finger" if upright else "horizontal_vertical_finger",
+                finger_table_elevation_error_deg=elev,
+                finger_to_muhi_axis_perpendicular_error_deg=finger_cross,
+                aperture_to_muhi_axis_perpendicular_error_deg=aperture_cross,
+                finger_world_axis=finger_world.tolist(),
+                aperture_world_axis=aperture_world.tolist(),
                 jaw_aperture_alignment_cos=facing,
                 object_between_jaws_along_mm=along*1000.,
                 jaw_centroid_separation_mm=separation*1000.,
