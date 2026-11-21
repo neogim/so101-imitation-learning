@@ -576,6 +576,11 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
             # Unlike mj_geomDistance against the whole bottle, the target
             # cannot drift from the cylindrical center toward an end cap.
             import fixed_jaw_center_target_ik as center_ik
+            # Use actual fixed-jaw collision patches for tabletop tip clearance.
+            # This is a near-touch target (0..1 mm), not a 2 mm avoidance margin.
+            def fixed_jaw_table_gap_mm():
+                return arm_tool_floor_clearance(model,data,floor,fixed)['gap_mm']
+
             q, center_target, center_trials = center_ik.solve(
                 model, data, qadr, bq, seed, q_first, lo, hi,
                 xyz, quat, object_axis, fixed, moving, bottle,
@@ -587,10 +592,14 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_nfev=max(120,args.horizontal_ik_max_nfev),
                 # STL principal axis is unsigned; the tip lies at negative local Z.
                 finger_body=bid, finger_axis_local=-finger_local,
-                orientation_tolerance_deg=12.)
+                orientation_tolerance_deg=12.,
+                fixed_jaw_floor_gap_mm=fixed_jaw_table_gap_mm,
+                floor_target_mm=.5)
             target_error_mm = center_target['error_mm']
             inner_face_valid = bool(center_target['inward_face_valid'])
             orientation_valid = bool(center_target['orientation_valid'])
+            fixed_floor_gap_mm = center_target['fixed_jaw_floor_gap_mm']
+            fixed_floor_valid = bool(center_target['fixed_jaw_floor_near_contact_valid'])
             elevation_error = float(center_target['finger_table_elevation_error_deg'])
             axis_perp_error = float(center_target['finger_to_muhi_axis_perpendicular_error_deg'])
             aperture_perp_error = float(center_target['aperture_to_muhi_axis_perpendicular_error_deg'])
@@ -600,6 +609,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 position_error_mm=target_error_mm,
                 inward_face_valid=inner_face_valid,
                 orientation_valid=orientation_valid,
+                fixed_jaw_floor_gap_mm=fixed_floor_gap_mm,
+                fixed_jaw_floor_near_contact_valid=fixed_floor_valid,
                 finger_table_elevation_error_deg=elevation_error,
                 finger_muhi_perpendicular_error_deg=axis_perp_error,
                 aperture_muhi_perpendicular_error_deg=aperture_perp_error,
@@ -633,7 +644,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
             path_valid=all(check['valid'] for check in path_audit)
             final_heading_error,final_jaw_xy,_=heading_to_muhi(q)
             valid=(safety['valid'] and path_valid
-                   and inner_face_valid and orientation_valid
+                   and inner_face_valid and orientation_valid and fixed_floor_valid
                    and target_error_mm<=2. and 1.<=fg<=2. and fw['axial_offset_mm']<=2.
                    and mg>=1. and (mg-m80)>=2.
                    and bracket['between_centroids']
@@ -642,8 +653,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    and mw['axial_offset_mm']<=central_half_mm
                    and opposition<=-.35
                    and min(open_floor['gap_mm'],closed_floor['gap_mm'])
-                       >=args.min_tool_floor_gap_mm)
-            score=(200.*float(not inner_face_valid)+25.*target_error_mm+3.*abs(fg-1.5)+20.*max(0.,1.-mg)+
+                       >=0.)
+            score=(200.*float(not inner_face_valid)+200.*float(not fixed_floor_valid)
+                   +25.*target_error_mm+3.*abs(fg-1.5)+20.*max(0.,1.-mg)+
                    .3*abs(m80)+.1*err+
                    3.*elevation_error+3.*axis_perp_error+3.*aperture_perp_error+
                    70.*float(not bracket['fixed_surface_inward'])+
@@ -663,7 +675,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  open_tool_floor_clearance=open_floor,
                  closed_tool_floor_clearance=closed_floor,
                  tool_floor_ok=bool(min(open_floor['gap_mm'],
-                    closed_floor['gap_mm'])>=args.min_tool_floor_gap_mm),
+                    closed_floor['gap_mm'])>=0.),
                  center_band_half_mm=central_half_mm,
                  both_contacts_central=bool(fw['axial_offset_mm']<=central_half_mm
                        and mw['axial_offset_mm']<=central_half_mm),
@@ -691,6 +703,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  finger_muhi_perpendicular_error_deg=axis_perp_error,
                  aperture_muhi_perpendicular_error_deg=aperture_perp_error,
                  fixed_inner_face_valid=inner_face_valid,
+                 fixed_jaw_floor_gap_mm=fixed_floor_gap_mm,
+                 fixed_jaw_floor_near_contact_valid=fixed_floor_valid,
                  fixed_target_inner_gap_mm=[1.,2.],
                  fixed_target_axial_center_mm=[-2.,2.],
                  heading_error_deg=float(final_heading_error),
@@ -719,6 +733,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  inward_face_valid=inner_face_valid,
                  orientation_valid=orientation_valid,
                  finger_table_elevation_error_deg=elevation_error,
+                 fixed_jaw_floor_gap_mm=fixed_floor_gap_mm,
                  j4_deg=float(np.rad2deg(q[3])),
                  candidate_valid=bool(valid),
                  real_pose_safety_valid=bool(safety['valid']),
@@ -742,7 +757,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         top_view_angle_limit_deg=angle_limit,
         seed_strategy='actual_recorded_follower_kinematically_nearest_diverse',
         j4_sign_override=False,
-        note='J1/J5 initialize pose. Task-frame IK jointly optimizes fixed inner jaw 3D position, finger vertical for horizontal Muhi (horizontal for upright), both finger and aperture perpendicular to Muhi long axis, inward-facing aperture and Muhi between jaws. 5DOF cannot guarantee arbitrary full 6D pose. All geometry/path gates precede J6.')
+        note='Horizontal grasp: match fixed inner jaw to Muhi longitudinal center XYZ, optimize physical fixed-jaw tip clearance to table 0..1mm, orient jaw tip down, preserve aperture and object bracketing. No physical J6 unless zero-penetration floor + position/orientation and inner-jaw gates pass.')
     return best[2],report
 
 
