@@ -25,5 +25,11 @@ class Phase8DispatchTests(unittest.TestCase):
         cmd=command_for_strategy(a,'upright')
         self.assertIn('--depth-only',cmd)
         self.assertIn('--wrist-camera',cmd)
+        # The old required dataset-root path did not exist in Drive and was
+        # never read by the upright physics bench. It must be optional.
+        a.dataset_root=None
+        cmd_without_dataset=command_for_strategy(a,'upright')
+        self.assertIn('--lift-mm',cmd_without_dataset)
+        self.assertNotIn('--dataset-root',cmd_without_dataset)
 
 if __name__ == '__main__': unittest.main()
