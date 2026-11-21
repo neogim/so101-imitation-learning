@@ -326,7 +326,20 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
     d.ctrl[aids]=np.r_[q,hi[5]]
     mujoco.mj_forward(model,d)
     support_start=float(xyz[2]-physical.MUHI_LENGTH/2)
+    # Phase8B: calculate arm-side 50mm target, without moving the upright bottle.
+    # This must not be interpreted as a grasp success until physical lift metrics pass.
+    lift_mm=float(getattr(args,'lift_mm',0.0))
+    lift_s=float(getattr(args,'lift_s',2.4))
+    retain_s=float(getattr(args,'retain_s',.9))
+    lift_q=q.copy()
+    lift_ik=None
+    if lift_mm>0:
+        import phase7v_minus35_physical_grasp as p7v
+        finger_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,grasp.FINGER_BODY)
+        if finger_id<0:raise ValueError('Fixed-finger body not found')
+        lift_q,lift_ik=p7v.lift_target(model,d,qadr,finger_id,np.r_[q,hi[5]],lift_mm)
     phases=[('settle',args.settle_s),('close',args.close_s),('hold',args.hold_s)]
+    if lift_mm>0:phases.extend([('lift',lift_s),('retain',retain_s)])
     total=sum(t for _,t in phases);steps=int(math.ceil(total/args.dt))
     stride=max(1,int(round(1/(args.dt*args.fps))))
     rows=[];frames=[]
@@ -349,8 +362,18 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
             elif t<args.settle_s+args.close_s:
                 phase='close';u=(t-args.settle_s)/args.close_s
                 j6=hi[5]+(lo[5]-hi[5])*u
+            elif t<args.settle_s+args.close_s+args.hold_s:
+                phase='hold';j6=lo[5]
+            elif lift_mm>0 and t<args.settle_s+args.close_s+args.hold_s+lift_s:
+                phase='lift';j6=lo[5]
+            elif lift_mm>0:phase='retain';j6=lo[5]
             else:phase='hold';j6=lo[5]
-            ctrl=np.r_[q,j6];d.ctrl[aids]=ctrl
+            arm_goal=q.copy()
+            if phase=='lift':
+                u=np.clip((t-args.settle_s-args.close_s-args.hold_s)/lift_s,0,1)
+                arm_goal=q+(lift_q-q)*u
+            elif phase=='retain':arm_goal=lift_q
+            ctrl=np.r_[arm_goal,j6];d.ctrl[aids]=ctrl
             if k:mujoco.mj_step(model,d)
             if not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all():bad=True;break
             fc,mc,depth=grasp.jaw_contact_counts(model,d,bottle,fixed,moving)
@@ -404,9 +427,10 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                  'bottle_x_m':float(d.qpos[bq]),'bottle_y_m':float(d.qpos[bq+1]),
                  'bottle_z_m':float(d.qpos[bq+2]),
                  'bottle_xy_displacement_mm':float(1000*np.linalg.norm(d.qpos[bq:bq+2]-xyz[:2])),
+                 'bottle_rise_mm':float(1000*(d.qpos[bq+2]-xyz[2])),
                  'bottle_tilt_deg':float(np.rad2deg(2*math.acos(min(1,abs(float(d.qpos[bq+3])))))),
                  'j6_target_deg':float(np.rad2deg(j6)),'j6_actual_deg':float(np.rad2deg(d.qpos[qadr[5]])),
-                 'max_arm_error_deg':float(np.max(np.abs(np.rad2deg(q-d.qpos[qadr[:5]]))))}
+                 'max_arm_error_deg':float(np.max(np.abs(np.rad2deg(arm_goal-d.qpos[qadr[:5]]))))}
             rows.append(row)
             if renderer is not None and (k%stride==0 or k==steps):
                 renderer.update_scene(d,camera=camera,scene_option=scene_options)
@@ -441,8 +465,22 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
     holdrows=[r for r in rows if r['phase']=='hold']
     bilateral=sum(r['bilateral'] for r in holdrows)
     initial_bottom=support_start
+    retainrows=[r for r in rows if r['phase']=='retain']
+    last=rows[-1] if rows else {}
+    retain_bilateral_fraction=sum(r['bilateral'] for r in retainrows)/max(1,len(retainrows))
+    rise_mm=last.get('bottle_rise_mm')
+    final_drift_mm=last.get('bottle_xy_displacement_mm')
+    # Strict physical success: lift completed, still gripped, did not skid or deeply penetrate.
+    lift_success=bool(lift_mm>0 and not bad and retainrows
+        and rise_mm is not None and rise_mm>=max(0,lift_mm-10)
+        and final_drift_mm is not None and final_drift_mm<=10.
+        and retain_bilateral_fraction>=.8 and not deep)
     summary={'status':'NUMERIC_FAILURE' if bad else 'DYNAMIC_TEST_COMPLETED',
        'bilateral_hold_steps':bilateral,'hold_steps':len(holdrows),
+       'lift_requested_mm':lift_mm,'lift_ik':lift_ik,
+       'lift_final_bottle_rise_mm':rise_mm,'lift_final_xy_drift_mm':final_drift_mm,
+       'retain_bilateral_fraction':retain_bilateral_fraction,
+       'lift_success':lift_success,'lift_status':('PASS' if lift_success else 'FAIL') if lift_mm>0 else 'NOT_TESTED',
        'bilateral_hold_fraction':bilateral/max(1,len(holdrows)),
        'max_contact_count':maxcontact,'deep_penetration_over_3mm':deep,
        'max_xy_displacement_mm':max((r['bottle_xy_displacement_mm'] for r in rows),default=None),
@@ -454,7 +492,7 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
        'video':'grasp.mp4' if (out/'grasp.mp4').exists() else None,
        'contact_force_plot':'jaw_push_direction.png' if (out/'jaw_push_direction.png').exists() else None,
        'force_frame':'world XYZ; signed force on bottle, excluding table support',
-       'note':'Bilateral contact is NOT stable lift. World normal sign depends on contact geom ordering.'}
+       'note':'Bilateral contact is NOT stable lift; strict lift_success also requires <=10mm drift, <3mm penetration, >=80% retain bilateral contacts. World normal sign depends on contact geom ordering.'}
     dump(out/'physical_summary.json',summary)
     return summary
 
@@ -691,6 +729,9 @@ def main():
                    help='Prefer an IK seed raised at J2 by this angle (auto-select world-Z-positive sign); 0 disables')
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
+    p.add_argument('--lift-mm',type=float,default=0.,help='Phase8B: lift while keeping J6 closed; 0 preserves baseline')
+    p.add_argument('--lift-s',type=float,default=2.4)
+    p.add_argument('--retain-s',type=float,default=.9)
     p.add_argument('--wrist-camera',action='store_true',help='Optional visualization-only J5/J6 camera')
     p.add_argument('--settle-s',type=float,default=.4)
     p.add_argument('--close-s',type=float,default=1.3)
@@ -702,6 +743,7 @@ def main():
     p.add_argument('--j6-kd',type=float,default=.08)
     p.add_argument('--j6-torque',type=float,default=.4)
     args=p.parse_args()
+    if args.lift_mm<0 or args.lift_s<=0 or args.retain_s<=0:p.error('Invalid lift args')
     if args.dt<=0 or args.fps<=0 or args.max_ik_error_mm<=0 or args.j2_raise_deg<0 or not 2<=args.jaw_collision_slabs<=32 or not 1<=args.jaw_collision_cross_bands<=8 or not 0<=args.j4_nonnegative_min_deg<=95:p.error('Invalid args')
     run(args)
 
