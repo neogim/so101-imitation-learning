@@ -663,8 +663,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    5.*max(0.,fw['axial_offset_mm']-central_half_mm)+
                    5.*max(0.,mw['axial_offset_mm']-central_half_mm)+
                    50.*max(0.,opposition+.35)+
-                   8.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm'])+
-                   8.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm'])+
+                   8.*max(0.,-open_floor['gap_mm'])+
+                   8.*max(0.,-closed_floor['gap_mm'])+
                    0.*max(0.,abs(final_heading_error)-args.max_j1_heading_error_deg))
             row=dict(seed=label,score=float(score),
                  stage='2_five_dof_inner_face_contact_IK',
