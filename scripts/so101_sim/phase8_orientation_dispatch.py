@@ -53,10 +53,10 @@ def command_for_strategy(args, orientation):
                '--mapping', str(args.mapping), '--urdf', str(args.urdf),
                '--out', str(args.out/'horizontal'), '--angles', str(nearest)]
     elif orientation == 'upright':
-        if args.dataset_root is None or args.urdf is None:
-            raise ValueError('Upright runner requires --dataset-root and --urdf')
+        if args.urdf is None:
+            raise ValueError('Upright runner requires --urdf')
         cmd = [sys.executable, str(here/'phase6g_fixed_workspace_grasp_depth.py'),
-               '--dataset-root', str(args.dataset_root), '--urdf', str(args.urdf),
+               '--urdf', str(args.urdf),
                '--out', str(args.out/'upright'), '--depth-only', 'middle',
                '--lift-mm', str(getattr(args,'lift_mm',50.))]
     else:
