@@ -234,6 +234,32 @@ def run(args):
         ax.set_ylabel('Minimum patch-to-table signed gap (mm)')
         ax.set_title('Which jaw collision patches intersect the tabletop?')
         ax.legend();ax.grid(alpha=.25);fig.tight_layout();fig.savefig(args.out/'patch_table_penetration_distribution.png',dpi=150);plt.close(fig)
+        # Clear table-referenced height comparison: readable even when 3D patches are occluded.
+        other=next((v for v in attachment_audit if v.get('jaw')=='fixed' and 'min_gap_mm' in v), None)
+        items=[('Fixed collision patch',fixed_table[0]['gap_mm'],'#c2410c'),
+               ('Moving collision patch',moving_table[0]['gap_mm'],'#9333ea')]
+        if other is not None:
+            items.append(('Original jaw-linked geom',other['min_gap_mm'],'#0284c7'))
+        fig,ax=plt.subplots(figsize=(11,6))
+        zs=[float(v[1]) for v in items]
+        ax.axhspan(min(-45,min(zs)-12),0,color='#fee2e2',zorder=0)
+        ax.axhspan(0,max(60,max(zs)+12),color='#eff6ff',zorder=0)
+        ax.axhline(0,color='#111827',linewidth=3)
+        for i,(label,z,col) in enumerate(items):
+            ax.vlines(i,0,z,linewidth=10,color=col,alpha=.8)
+            ax.scatter(i,z,s=220,color=col,edgecolors='white',zorder=5)
+            ax.annotate(f'{z:+.2f} mm',(i,z),xytext=(0,-23 if z<0 else 12),
+                        textcoords='offset points',ha='center',fontweight='bold',color=col)
+        ax.set_xticks(range(len(items)),[v[0] for v in items])
+        ax.set_xlim(-.55,max(2.7,len(items)-.25))
+        ax.set_ylim(min(-45,min(zs)-12),max(60,max(zs)+12))
+        ax.set_ylabel('World Z relative to assumed table plane (mm)')
+        ax.set_title('Phase7R: jaw collision patches vs original attached geom')
+        ax.grid(axis='y',alpha=.3)
+        fig.text(.04,.01,'Different XY nearest points; this is not a literal continuous cross-section.',fontsize=9)
+        fig.tight_layout(rect=(0,.035,1,1))
+        fig.savefig(args.out/'initial_height_comparison_clear.png',dpi=170)
+        plt.close(fig)
         return report
     except Exception as exc:
         report.update(status='ERROR',error=repr(exc))
