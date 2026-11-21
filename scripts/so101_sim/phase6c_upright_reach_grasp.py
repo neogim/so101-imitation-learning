@@ -109,6 +109,24 @@ def model_build(args):
     spec.worldbody.add_geom(name='phase6c_support', type=mujoco.mjtGeom.mjGEOM_PLANE,
                             pos=[0,0,support_z],size=[1,1,.1],rgba=[.64,.71,.76,1],
                             contype=1,conaffinity=1,friction=[.9,.01,.001])
+    # Phase9 optional uncalibrated visual proxy for the destination box.
+    # No physical wall contacts: prevents a synthetic marker from silently
+    # changing the Phase8C grasp physics. Actual box placement requires calibration.
+    box=getattr(args,'transport_box_proxy',None)
+    if box is not None:
+        bx,by=map(float,box['xy'])
+        hx,hy=map(float,box['half_size'])
+        height=float(box['height'])
+        if hx<=0 or hy<=0 or height<=0:
+            raise ValueError('Invalid phase9 box proxy dimensions')
+        wall_z=support_z+height/2
+        for name,pos,size in (
+            ('phase9_box_left',[bx-hx,by,wall_z],[.004,hy,height/2]),
+            ('phase9_box_right',[bx+hx,by,wall_z],[.004,hy,height/2]),
+            ('phase9_box_front',[bx,by-hy,wall_z],[hx,.004,height/2]),
+            ('phase9_box_back',[bx,by+hy,wall_z],[hx,.004,height/2])):
+            spec.worldbody.add_geom(name=name,type=mujoco.mjtGeom.mjGEOM_BOX,
+                 pos=pos,size=size,rgba=[.20,.57,.85,.42],contype=0,conaffinity=0)
     for n in NAMES:
         if spec.joint(n) is None: raise ValueError('Missing joint: '+n)
         a=spec.add_actuator(name='phase6c_pd_'+n,target=n)
