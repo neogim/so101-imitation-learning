@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase7V: experimental -35 mm tabletop, upright Muhi, open->close J6, DLS lift.
+"""Phase7V: experimental -35 mm tabletop, sideways Muhi, open->close J6, DLS lift.
 
 Simulation-only pragmatic grasp bench. LeRobot motor->URDF mapping, tabletop and
 bottle pose are NOT independently calibrated. No real robot access.
@@ -28,36 +28,41 @@ def jaw_gap(model,data,jaw,bottle):
     return p7q.geom_gap(model,data,bottle,jaw)*1000
 
 
-def scan_upright(model,d,bq,qadr,q0,fixed,moving,bottle,table_z,step_mm=5,radius_mm=50):
+def scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,table_z,step_mm=5,radius_mm=50):
     """Choose one synthetic near-fixed-jaw pose, with moving jaw initially clear.
 
-    World upright cylinder center is .0485m above the tabletop. No pose fit to
-    real camera is performed. If no usable location is found, report blocked.
+    Muhi lies on its side: the cylinder local Z axis is horizontal. The center
+    is one radius above the table. No real-camera pose fit is claimed.
     """
     d.qpos[qadr]=q0
     mujoco.mj_forward(model,d)
     # Prefer center of fixed-jaw collision patch endpoints rather than all-robot bounding box.
     origin=np.mean(d.geom_xpos[list(fixed)],axis=0)
-    z=table_z+physical.MUHI_LENGTH/2+.0005
+    z=table_z+physical.MUHI_RADIUS+.0005
+    # Rotate cylinder long axis (local Z) into the tabletop XY plane.
+    # Try X- and Y-aligned Muhi, preserving the horizontal orientation.
+    orientations=[('along_x',[2**-.5,0.,2**-.5,0.]),
+                  ('along_y',[.5,-.5,.5,.5])]
     offs=np.arange(-radius_mm,radius_mm+step_mm/2,step_mm)*.001
     ranked=[];fallback=[]
-    for dx in offs:
-        for dy in offs:
-            xy=origin[:2]+[dx,dy]
-            if not (0.03<=xy[0]<=.42 and -.30<=xy[1]<=.30):continue
-            d.qpos[bq:bq+3]=[xy[0],xy[1],z]
-            d.qpos[bq+3:bq+7]=[1.,0.,0.,0.]
-            mujoco.mj_forward(model,d)
-            fg=jaw_gap(model,d,fixed,bottle)
-            mg=jaw_gap(model,d,moving,bottle)
-            # Keep clearance from both jaws; find the closest viable point to fixed jaw.
-            if fg>=.6 and mg>=.6:
-                score=abs(fg-1.5)+.045*abs(mg-12)+.03*math.hypot(dx,dy)
-                item=dict(xyz_m=[float(xy[0]),float(xy[1]),float(z)],
-                    quat_wxyz=[1,0,0,0],fixed_gap_mm=fg,moving_gap_mm=mg,
-                    offset_from_fixed_center_mm=[float(dx),float(dy)])
-                fallback.append((score,item))
-                if fg<=8 and mg<=45:ranked.append((score,item))
+    for orientation,quat in orientations:
+        for dx in offs:
+            for dy in offs:
+                xy=origin[:2]+[dx,dy]
+                if not (0.03<=xy[0]<=.42 and -.30<=xy[1]<=.30):continue
+                d.qpos[bq:bq+3]=[xy[0],xy[1],z]
+                d.qpos[bq+3:bq+7]=quat
+                mujoco.mj_forward(model,d)
+                fg=jaw_gap(model,d,fixed,bottle)
+                mg=jaw_gap(model,d,moving,bottle)
+                if fg>=.6 and mg>=.6:
+                    score=abs(fg-1.5)+.045*abs(mg-12)+.03*math.hypot(dx,dy)
+                    item=dict(xyz_m=[float(xy[0]),float(xy[1]),float(z)],
+                        quat_wxyz=quat,orientation=orientation,
+                        placement='sideways_on_table',fixed_gap_mm=fg,moving_gap_mm=mg,
+                        offset_from_fixed_center_mm=[float(dx),float(dy)])
+                    fallback.append((score,item))
+                    if fg<=8 and mg<=45:ranked.append((score,item))
     if ranked:return min(ranked,key=lambda t:t[0])[1]
     if fallback:
         item=min(fallback,key=lambda t:t[0])[1]
@@ -124,9 +129,9 @@ def run(args):
     summary=dict(status='STARTED',table_z_mm=args.table_z_mm,episode_time_s=args.time,
                  physics_integrated=True,real_table_calibrated=False,
                  motor_to_urdf_mapping_verified=False,real_bottle_pose_measured=False,
-                 objective='upright bottle: settle -> J6 close -> lift, simulated -35mm table',
+                 objective='sideways bottle: settle -> J6 close -> lift, simulated -35mm table',
                  limitations=['Table height is experimental, not actual robot calibration',
-                              'Bottle XY is synthetically selected near fixed jaw',
+                              'Sideways bottle XY and horizontal yaw are synthetic candidates near fixed jaw',
                               'Unverified motor sign/offset and J6 degrees',
                               'Base/link mounting may differ from physical 3D printed parts'])
     try:
@@ -150,9 +155,9 @@ def run(args):
         d.qpos[qadr]=q0
         d.ctrl[aids]=q0
         mujoco.mj_forward(model,d)
-        pose=scan_upright(model,d,bq,qadr,q0,fixed,moving,bottle,args.table_z_mm/1000.,args.scan_step_mm,args.scan_radius_mm)
+        pose=scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,args.table_z_mm/1000.,args.scan_step_mm,args.scan_radius_mm)
         if pose is None:
-            summary.update(status='BLOCKED_NO_INITIAL_UPRIGHT_BOTTLE_POSE',note='Try wider XY search or inspect jaw approach orientation; no simulated lift attempted.')
+            summary.update(status='BLOCKED_NO_INITIAL_SIDEWAYS_BOTTLE_POSE',note='Try wider XY search or inspect jaw approach orientation; no simulated lift attempted.')
             return
         d.qpos[bq:bq+3]=pose['xyz_m'];d.qpos[bq+3:bq+7]=pose['quat_wxyz']
         d.qvel[:]=0
