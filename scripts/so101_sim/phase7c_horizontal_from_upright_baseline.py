@@ -593,7 +593,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                     40.*max(0.,opposition+.35),
                     7.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm']),
                     7.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm']),
-                    # Preserve plan-view perpendicularity with J5 LOCKED.
+                    # Preserve plan-view perpendicularity while allowing J5 to adjust.
                     12.*angle,
                     100.*max(0.,.55-proj),
                     # Stay reasonably close to actual recorded configurations.
@@ -663,7 +663,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    50.*max(0.,opposition+.35)+
                    8.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm'])+
                    8.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm'])+
-                   3.*max(0.,abs(final_heading_error)-args.max_j1_heading_error_deg))
+                   0.*max(0.,abs(final_heading_error)-args.max_j1_heading_error_deg))
             row=dict(seed=label,score=float(score),
                  stage='2_five_dof_inner_face_contact_IK',
                  open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
@@ -689,7 +689,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  joint_path_validation=path_audit,
                  joint_path_valid=bool(path_valid),
                  j4_reverse_bend_deg=float(np.rad2deg(q[3])),
-                 j4_branch='recorded_follower_locked_during_approach',
+                 j4_branch='recorded_follower_bounded_5dof_contact_ik',
                  j1_j4_j5_locked_during_reach=False,
                  ik_method='full_5DOF_collision_witness_inner_fixed_jaw',
                  fixed_target_inner_gap_mm=[1.,2.],
@@ -701,7 +701,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  approach_changed_joints=list(JOINTS),
                  reach_joint_deltas_deg=np.rad2deg(q[1:3]-seed[1:3]).tolist(),
                  all_joint_deltas_deg=np.rad2deg(q-seed).tolist(),
-                 j5_locked_at_deg=float(np.rad2deg(q_first[4])),
+                 j5_initial_alignment_deg=float(np.rad2deg(q_first[4])),
+                 j5_solved_deg=float(np.rad2deg(q[4])),
+                 j5_locked_at_deg=float(np.rad2deg(q[4])),
                  perpendicular_tolerance_deg=angle_limit,
                  open_clear=bool(1.<=fg<=2. and mg>=1.),
                  direction_clear=bool(angle<=angle_limit and proj>=.55),
@@ -727,7 +729,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
     dump(out/'ordered_j5_then_approach_stages.json',stages)
     if best is None:
         raise RuntimeError('Ordered J5 alignment did not yield a candidate')
-    report=dict(method='ordered_J5_top_view_then_fixed_J5_approach_then_J6',
+    report=dict(method='5DOF_fixed_jaw_inner_face_collision_IK_then_J6',
         chosen=best[3],n_candidates=len(seeds),
         stage1_j1_heading_q_deg=np.rad2deg(best[5]).tolist(),
         stage1_j5_aligned_q_deg=np.rad2deg(best[4]).tolist(),
@@ -1260,7 +1262,7 @@ def run(args):
                  ik['anchor_error_mm']<=args.max_ik_error_mm))
             phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {
                 'status':'GEOMETRY_DIAGNOSTIC_ONLY',
-                'reason':'Floor clearance (open/closed 2mm), central 20mm, opposed inner jaws, J5 perpendicularity, or open geometry invalid; inspect horizontal_jaw_ik_candidates.json',
+                'reason':'5DOF fixed-inner-jaw 1-2mm target, center +/-2mm, clearance, opposition, geometry or recorded-pose path not satisfied; inspect horizontal_jaw_ik_candidates.json',
                 'bilateral_hold_steps':None}
         except Exception as exc:
             ik={};geo={};phys={'status':'EXECUTION_ERROR','reason':repr(exc),'bilateral_hold_steps':0}
@@ -1367,7 +1369,7 @@ def run(args):
        'jaw_mesh_figure':'jaw_mesh_vs_convex_hull.png' if (args.out/'jaw_mesh_vs_convex_hull.png').exists() else None,
        'target_is_provisional_not_measured':True,
        'depth_local_z_provisional_not_actual_finger_arc_percent':True,
-       'method':'5DoF soft IK per jaw-depth, stationary-arm J6 physical close and hold; no approach/lift',
+       'method':'horizontal: recorded-seed 5DOF collision witness inner-face IK, then stationary-arm J6 physical close and hold; no dynamic approach/lift',
        'grasp_not_verified_by_contact_alone':True,
        'contact_normal_sign_warning':'MuJoCo contact normals use geom order; interpret axis after checking geom IDs',
        'results':[info for _,info in results]}
