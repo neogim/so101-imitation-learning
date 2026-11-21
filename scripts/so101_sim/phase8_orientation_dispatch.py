@@ -57,7 +57,8 @@ def command_for_strategy(args, orientation):
             raise ValueError('Upright runner requires --dataset-root and --urdf')
         cmd = [sys.executable, str(here/'phase6g_fixed_workspace_grasp_depth.py'),
                '--dataset-root', str(args.dataset_root), '--urdf', str(args.urdf),
-               '--out', str(args.out/'upright'), '--depth-only', 'middle']
+               '--out', str(args.out/'upright'), '--depth-only', 'middle',
+               '--lift-mm', str(getattr(args,'lift_mm',50.))]
     else:
         raise ValueError('Unsupported posture: tilted object needs a separate strategy')
     if args.wrist_camera:
@@ -77,6 +78,7 @@ def main(argv=None):
     p.add_argument('--urdf', type=Path)
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--wrist-camera', action='store_true', help='Visualization-only J5/J6 fixture')
+    p.add_argument('--lift-mm',type=float,default=50.0,help='Upright target lift; success requires physical evidence')
     p.add_argument('--dry-run', action='store_true', help='Inspect routing without MuJoCo execution')
     args = p.parse_args(argv)
     if args.orientation == 'auto':
@@ -113,6 +115,29 @@ def main(argv=None):
     result = subprocess.run(cmd, text=True)
     payload.update(status='RUNNER_COMPLETED' if result.returncode == 0 else 'RUNNER_FAILED',
                    exit_code=result.returncode)
+    if orientation == 'upright':
+        report_path=args.out/'upright'/'summary.json'
+        if report_path.is_file():
+            report=json.loads(report_path.read_text())
+            upright=[]
+            for case in report.get('results',[]):
+                physics=case.get('physics',{})
+                upright.append({
+                    'name':case.get('name'),
+                    'j4_deg':case.get('ik',{}).get('j4_wrist_flex_deg'),
+                    'j5_deg':case.get('ik',{}).get('ik_angles_deg',{}).get('wrist_roll'),
+                    'bilateral_hold_steps':physics.get('bilateral_hold_steps'),
+                    'lift_status':physics.get('lift_status','NOT_TESTED'),
+                    'lift_success':bool(physics.get('lift_success',False)),
+                    'final_rise_mm':physics.get('lift_final_bottle_rise_mm'),
+                    'final_xy_drift_mm':physics.get('lift_final_xy_drift_mm'),
+                    'deep_penetration':physics.get('deep_penetration_over_3mm'),
+                    'video':str(args.out/'upright'/case.get('name','')/'grasp.mp4')})
+            payload['upright_cases']=upright
+            payload['physical_success_count']=sum(x['lift_success'] for x in upright)
+            payload['physical_success_confirmed']=payload['physical_success_count']>0
+            if result.returncode==0 and not payload['physical_success_confirmed']:
+                payload['status']='PHYSICS_RAN_NO_STABLE_LIFT'
     (args.out/'phase8_summary.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2)+'\n')
     print(json.dumps({k:payload[k] for k in ('status','orientation','strategy','exit_code')}, ensure_ascii=False))
     return result.returncode
