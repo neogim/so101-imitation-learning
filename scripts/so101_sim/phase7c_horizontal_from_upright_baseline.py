@@ -970,7 +970,11 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
     d.ctrl[aids]=np.r_[q,hi[5]]
     mujoco.mj_forward(model,d)
     support_start=float(args.table_z)
-    phases=[('settle',args.settle_s),('close',args.close_s),('hold',args.hold_s)]
+    close_delay=float(getattr(args,'j6_command_delay_s',0.0))
+    if close_delay < 0:
+        raise ValueError('j6_command_delay_s must be nonnegative')
+    phases=[('settle',args.settle_s),('command_delay',close_delay),
+            ('close',args.close_s),('hold',args.hold_s)]
     total=sum(t for _,t in phases);steps=int(math.ceil(total/args.dt))
     stride=max(1,int(round(1/(args.dt*args.fps))))
     rows=[];frames=[]
@@ -991,8 +995,9 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
         for k in range(steps+1):
             t=min(k*args.dt,total)
             if t<args.settle_s:phase='settle';j6=hi[5]
-            elif t<args.settle_s+args.close_s:
-                phase='close';u=(t-args.settle_s)/args.close_s
+            elif t<args.settle_s+close_delay:phase='command_delay';j6=hi[5]
+            elif t<args.settle_s+close_delay+args.close_s:
+                phase='close';u=(t-args.settle_s-close_delay)/args.close_s
                 j6=hi[5]+(lo[5]-hi[5])*u
             else:phase='hold';j6=lo[5]
             ctrl=np.r_[q,j6];d.ctrl[aids]=ctrl
@@ -1117,6 +1122,12 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
        'final_bottle_z_m':rows[-1]['bottle_z_m'] if rows else None,
        'support_plane_z_m':initial_bottom,
        'maximum_arm_tracking_error_deg':max((r['max_arm_error_deg'] for r in rows),default=None),
+       'maximum_fixed_jaw_rise_mm':max((r['fixed_jaw_centroid_delta_z_mm'] for r in rows),default=None),
+       'minimum_fixed_jaw_delta_z_mm':min((r['fixed_jaw_centroid_delta_z_mm'] for r in rows),default=None),
+       'maximum_joint_tracking_error_deg':{
+          name:max((abs(r[f'{name}_error_deg']) for r in rows),default=None)
+          for name in JOINTS},
+       'j6_command_delay_s':close_delay,
        'max_normal_contact_force_n':max((r['fixed_normal_force_n']+r['moving_normal_force_n'] for r in rows),default=None),
        'video':'grasp.mp4' if (out/'grasp.mp4').exists() else None,
        'contact_force_plot':'jaw_push_direction.png' if (out/'jaw_push_direction.png').exists() else None,

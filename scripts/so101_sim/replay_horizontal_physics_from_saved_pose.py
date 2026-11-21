@@ -38,6 +38,11 @@ def main():
     p.add_argument('--j6-kp',type=float,default=2.)
     p.add_argument('--j6-kd',type=float,default=.08)
     p.add_argument('--j6-torque',type=float,default=.4)
+    p.add_argument('--close-s',type=float,default=1.3)
+    p.add_argument('--hold-s',type=float,default=.6)
+    p.add_argument('--j6-command-delay-s',type=float,default=0.)
+    p.add_argument('--servo-profile',choices=('baseline','recorded-hold-candidate'),default='baseline',
+                   help='Opt-in measured-trace-informed candidate; gains remain sensitivity values, not identified hardware constants')
     p.add_argument('--jaw-sliding-friction',type=float,default=None)
     p.add_argument('--muhi-sliding-friction',type=float,default=None)
     p.add_argument('--table-sliding-friction',type=float,default=None)
@@ -48,6 +53,16 @@ def main():
     p.add_argument('--jaw-table-contact',choices=('on','off'),default='on',
                    help='Enable actual fixed/moving jaw vs tabletop contacts; default ON.')
     args=p.parse_args()
+    if args.servo_profile=='recorded-hold-candidate':
+        # The 53-episode trace measured a 1.40 s median full-close command and
+        # 0.35 s 10%% response time.  MuJoCo baseline already contributes about
+        # 0.17 s response, so 0.18 s is added as a command-path delay.  The arm
+        # gain is a sensitivity candidate selected for stationary hold parity;
+        # it is not a torque-derived hardware identification.
+        args.arm_kp,args.arm_kd=60.,6.
+        args.close_s,args.j6_command_delay_s=1.4,.18
+    if args.close_s<=0 or args.hold_s<=0 or args.j6_command_delay_s<0:
+        p.error('close/hold must be positive and command delay nonnegative')
     if args.out.exists():
         raise FileExistsError(args.out)
     args.out.mkdir(parents=True)
@@ -67,11 +82,12 @@ def main():
         jaw_collision_slabs=12,jaw_collision_cross_bands=3,
         support_plane_z_m=args.table_z,table_z=args.table_z,
         object_quat=quat.tolist(),dt=args.dt,fps=args.fps,
-        settle_s=.3,close_s=1.3,hold_s=.6,
+        settle_s=.3,close_s=args.close_s,hold_s=args.hold_s,
         arm_kp=args.arm_kp,arm_kd=args.arm_kd,
         arm_torque=args.arm_torque,j6_kp=args.j6_kp,
         j6_kd=args.j6_kd,j6_torque=args.j6_torque,
-        arm_gravity_compensation=args.arm_gravity_compensation)
+        arm_gravity_compensation=args.arm_gravity_compensation,
+        j6_command_delay_s=args.j6_command_delay_s)
     (model,qadr,vadr,aids,lo,hi,fixed,moving,bottle,floor)=phase6c.model_build(setup)
     # Update only the compiled physics model. Original URDF and collision
     # patches remain unchanged; baseline stays reproducible by default.
@@ -125,6 +141,9 @@ def main():
            arm_torque_n_m=args.arm_torque,
            j6_kp=args.j6_kp,j6_kd=args.j6_kd,
            j6_torque_n_m=args.j6_torque,
+           servo_profile=args.servo_profile,
+           close_duration_s=args.close_s,
+           j6_command_delay_s=args.j6_command_delay_s,
            jaw_sliding_friction=args.jaw_sliding_friction,
            muhi_sliding_friction=args.muhi_sliding_friction,
            table_sliding_friction=args.table_sliding_friction,
