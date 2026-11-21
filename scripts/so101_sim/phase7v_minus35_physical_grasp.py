@@ -157,6 +157,8 @@ def generate_video(model,frames,out,fps,bq,stages):
                                float(anchor_qpos[bq+1]),
                                float(anchor_qpos[bq+2])])
         cam.lookat[:]=camera_lookat
+        wrist_camera_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,'r2s_wrist_rgb')
+        has_wrist_view=wrist_camera_id>=0
         for i,(qpos,qvel,tt,phase,fc,mc) in enumerate(frames):
             rd.qpos[:]=qpos;rd.qvel[:]=qvel
             mujoco.mj_forward(model,rd)
@@ -169,11 +171,18 @@ def generate_video(model,frames,out,fps,bq,stages):
                 tile=Image.new('RGB',(640,450),'#111827');tile.paste(img,(0,40))
                 ImageDraw.Draw(tile).text((12,10),f'{name} | WORLD-FIXED | {phase} | t={tt:.2f}s | contacts F={fc} M={mc}',fill='white')
                 views.append(tile)
-            combined=Image.new('RGB',(1920,450))
+            if has_wrist_view:
+                renderer.update_scene(rd,camera=wrist_camera_id)
+                wrist_image=Image.fromarray(renderer.render().copy())
+                wrist_tile=Image.new('RGB',(640,450),'#111827')
+                wrist_tile.paste(wrist_image,(0,40))
+                ImageDraw.Draw(wrist_tile).text((12,10),f'WRIST J5/J6 | {phase} | t={tt:.2f}s',fill='white')
+                views.append(wrist_tile)
+            combined=Image.new('RGB',(640*len(views),450))
             for k,tile in enumerate(views):combined.paste(tile,(k*640,0))
             combined.save(tmp/f'{i:05d}.png')
         subprocess.run(['ffmpeg','-y','-loglevel','error','-framerate',str(fps),'-i',str(tmp/'%05d.png'),
-                        '-c:v','libx264','-pix_fmt','yuv420p',str(out/'phase7v_grasp_3views.mp4')],check=True)
+                        '-c:v','libx264','-pix_fmt','yuv420p',str(out/('phase7v_grasp_4views.mp4' if has_wrist_view else 'phase7v_grasp_3views.mp4'))],check=True)
         return 'SAVED'
     except Exception as exc:
         (out/'render_error.txt').write_text(repr(exc))
@@ -202,7 +211,8 @@ def run(args):
             jaw_collision_mode='axial_cross_convex_patches',jaw_collision_slabs=12,
             jaw_collision_cross_bands=3,jaw_table_contact=True,
             support_plane_z_m=args.table_z_mm/1000.,arm_kp=18.,arm_kd=1.8,
-            arm_torque=3.,j6_kp=2.,j6_kd=.08,j6_torque=.4)
+            arm_torque=3.,j6_kp=2.,j6_kd=.08,j6_torque=.4,
+            wrist_camera=bool(getattr(args,'wrist_camera',False)))
         model,qadr,vadr,aids,lo,hi,fixed,moving,bottle,floor=phase6c.model_build(opts)
         model.opt.timestep=args.dt
         d=mujoco.MjData(model);mujoco.mj_resetData(model,d)
@@ -366,6 +376,7 @@ def main():
         help='Exact bottle pose for Phase7W J5 yaw tests; bypass XY/orientation scan')
     p.add_argument('--j5-preset-deg',type=float,default=None,
         help='Change wrist_roll only, preserving Episode015 J1-J4 initial positions')
+    p.add_argument('--wrist-camera',action='store_true',help='Phase8 visual-only J5/J6 mount and fourth view')
     p.add_argument('--no-video',action='store_true')
     args=p.parse_args()
     if args.table_z_mm!=-35.:print('NOTE: overriding the Phase7V experimental table -35mm',file=sys.stderr)
