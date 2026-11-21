@@ -47,7 +47,7 @@ def render_fk(urdf,episode,mapping,out,fps=8):
     model=spec.compile()
     d=mujoco.MjData(model)
     qadr=np.asarray([model.jnt_qposadr[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n)] for n in JOINTS],int)
-    snapshots=[(int(round(t/.05)),t) for t in (8.9,9.45,9.75,10.05,10.6,11.0)]
+    snapshots=[(int(round(t/.05)),t) for t in (14.5,15.0,15.5,16.0,17.0,18.0)]
     rows=[]
     frames=[]
     renderer=None
@@ -102,6 +102,8 @@ def physics_replay(urdf,episode,mapping,bottle,out,dt=.002,fps=8):
         return dict(status="BLOCKED_UNVERIFIED_FK_OR_BOTTLE_POSE")
     if mapping.get("j6_normalization_verified") is not True:
         return dict(status="BLOCKED_UNVERIFIED_J6_MAPPING")
+    if mapping.get("j6_closes_at_lower_norm") is not True:
+        return dict(status="BLOCKED_J6_DIRECTION_NOT_CONFIRMED")
     xyz=np.asarray(bottle["xyz_m"],float)
     quat=np.asarray(bottle["quat_wxyz"],float)
     if xyz.shape!=(3,) or quat.shape!=(4,) or not np.isfinite(np.r_[xyz,quat]).all():
@@ -116,15 +118,18 @@ def physics_replay(urdf,episode,mapping,bottle,out,dt=.002,fps=8):
     jid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     bq=int(model.jnt_qposadr[jid])
     d=mujoco.MjData(model)
-    # Replay 0.25s before close, then close, then 0.5s hold.
-    start,end=9.2,11.1
+    # Replay the observed closure (~15.0-16.0s) and subsequent lift (~17-18s).
+    start,end=14.8,18.3
     records=[r for r in episode if start<=r["t"]<=end]
     if not records:raise ValueError("No records inside replay window")
     q0=joint_map(records[0]["state"],mapping)
     fails=clip_preflight(model,qadr,q0)
     if fails:return dict(status="BLOCKED_URDF_JOINT_LIMITS",joint_errors=fails)
     # Map J6 percentage to URDF qpos only after explicit independent validation.
-    def gripper_angle(norm):return hi[5]+(lo[5]-hi[5])*float(norm)/100.
+    def gripper_angle(norm):
+        # Episode015 visual review: normalized J6 decreases when jaws close.
+        # Angle endpoints still require independent verification before physics.
+        return lo[5]+(hi[5]-lo[5])*float(norm)/100.
     d.qpos[qadr[:5]]=q0;d.qpos[qadr[5]]=gripper_angle(records[0]["state"][5])
     d.qpos[bq:bq+3]=xyz;d.qpos[bq+3:bq+7]=quat
     mujoco.mj_forward(model,d)
