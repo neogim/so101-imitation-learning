@@ -99,7 +99,8 @@ def main():
             phase7.horizontal_pose_preview(model,qadr,bq,q,xyz,quat,lo,hi,
                                            folder,args.fps)
             from PIL import Image, ImageDraw
-            with mujoco.Renderer(model,width=640,height=460) as renderer:
+            renderer=mujoco.Renderer(model,width=640,height=460)
+            if True:
                 cam=mujoco.MjvCamera()
                 cam.type=mujoco.mjtCamera.mjCAMERA_FREE
                 cam.lookat[:]=xyz
@@ -125,6 +126,7 @@ def main():
                     mode.upper()+' COLLISION GEOMS HIGHLIGHTED IN ORANGE',
                     fill='white')
                 strip.save(folder/'collision_geoms_3views.png')
+                renderer.close()
         except Exception as exc:
             (folder/'render_error.txt').write_text(repr(exc),encoding='utf-8')
         reports.append(dict(mode=mode,fixed_geoms=len(fixed),
