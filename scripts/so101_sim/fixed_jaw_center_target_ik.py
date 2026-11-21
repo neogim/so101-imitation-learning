@@ -91,6 +91,12 @@ def solve(model, data, qadr, bq, seed, aligned, lo, hi,
     signs = [1., -1.] if np.dot(fc - xyz, lateral) >= 0 else [-1., 1.]
     trials = []
     for sign in signs:
+        # Each side must start from the same recorded/aligned posture.
+        data.qpos[qadr[:5]] = aligned
+        data.qpos[qadr[5]] = hi[5]
+        data.qpos[bq:bq+3] = xyz
+        data.qpos[bq+3:bq+7] = quat
+        mujoco.mj_forward(model, data)
         normal = sign * lateral
         goal = np.asarray(xyz) + (radius + .0015) * normal
         for _, body, local, gid in _witness_anchors(
