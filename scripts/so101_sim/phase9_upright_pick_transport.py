@@ -133,7 +133,7 @@ def run(args):
         if reachable:
             qhome,home_ik,retreat,raise_mm=reachable[0]
             print(f'HOME_IK_FALLBACK: retreat={retreat}mm, raise={raise_mm}mm, error={home_ik["error_mm"]:.3f}mm',flush=True)
-        lift_data=mujoco.MjData(model);mujoco.mj_resetData(model,lift_data)
+    lift_data=mujoco.MjData(model);mujoco.mj_resetData(model,lift_data)
     lift_data.qpos[qadr[:5]]=qgrasp
     mujoco.mj_forward(model,lift_data)
     qlift,lift_ik=p7v.lift_target(model,lift_data,qadr,bid,np.r_[qgrasp,hi[5]],args.lift_mm)
