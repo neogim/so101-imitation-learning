@@ -94,11 +94,37 @@ def main():
                 moving_to_table_signed_mm=1000*floor_m[0],
                 fixed_nearest_geom=fg[1],moving_nearest_geom=mg[1])
             rows.append(row)
-        # Render two *different collision models* at the SAME q.
-        # Both still show the ORIGINAL visual STLs, so also save geom profiles.
+        # Render original visuals plus collision-highlighted overlay.
         try:
             phase7.horizontal_pose_preview(model,qadr,bq,q,xyz,quat,lo,hi,
                                            folder,args.fps)
+            from PIL import Image, ImageDraw
+            with mujoco.Renderer(model,width=640,height=460) as renderer:
+                cam=mujoco.MjvCamera()
+                cam.type=mujoco.mjtCamera.mjCAMERA_FREE
+                cam.lookat[:]=xyz
+                cam.distance=.5
+                for gid in (*fixed,*moving):
+                    model.geom_rgba[int(gid)]=[1.,.38,.07,.92]
+                    model.geom_group[int(gid)]=0
+                d.qpos[qadr[:5]]=q
+                d.qpos[qadr[5]]=hi[5]
+                d.qpos[bq:bq+3]=xyz
+                d.qpos[bq+3:bq+7]=quat
+                mujoco.mj_forward(model,d)
+                images=[]
+                for az,el in ((90.,-15.),(270.,-15.),(120.,-80.)):
+                    cam.azimuth=az
+                    cam.elevation=el
+                    renderer.update_scene(d,camera=cam)
+                    images.append(Image.fromarray(renderer.render().copy()))
+                strip=Image.new('RGB',(1920,490),'#15222c')
+                for k,img in enumerate(images):
+                    strip.paste(img,(640*k,30))
+                ImageDraw.Draw(strip).text((10,8),
+                    mode.upper()+' COLLISION GEOMS HIGHLIGHTED IN ORANGE',
+                    fill='white')
+                strip.save(folder/'collision_geoms_3views.png')
         except Exception as exc:
             (folder/'render_error.txt').write_text(repr(exc),encoding='utf-8')
         reports.append(dict(mode=mode,fixed_geoms=len(fixed),
