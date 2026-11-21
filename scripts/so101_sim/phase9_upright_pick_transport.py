@@ -119,7 +119,21 @@ def run(args):
     # pregrasp and initial (home-like) pose; do not assume an unsafe URDF-zero home.
     qpre,pre_ik=solve_relative_ik(model,qadr,bid,qgrasp,[-args.pregrasp_mm/1000,0,0.025])
     qhome,home_ik=solve_relative_ik(model,qadr,bid,qpre,[-args.home_retreat_mm/1000,0,args.home_raise_mm/1000])
-    lift_data=mujoco.MjData(model);mujoco.mj_resetData(model,lift_data)
+    # The nominal 60mm retreat + 80mm rise is unreachable for some Phase8C poses.
+    # Search smaller, reachable home-like offsets before rejecting the whole run.
+    home_candidates=[(qhome,home_ik,args.home_retreat_mm,args.home_raise_mm)]
+    if home_ik['error_mm']>args.ik_max_error_mm:
+        for retreat,raise_mm in ((45,60),(30,40),(15,20),(0,0)):
+            if retreat==0 and raise_mm==0:
+                home_candidates.append((qpre,dict(pre_ik,home_fallback_to_pregrasp=True),0,0))
+            else:
+                qc,ic=solve_relative_ik(model,qadr,bid,qpre,[-retreat/1000,0,raise_mm/1000])
+                home_candidates.append((qc,ic,retreat,raise_mm))
+        reachable=[c for c in home_candidates if c[1]['error_mm']<=args.ik_max_error_mm]
+        if reachable:
+            qhome,home_ik,retreat,raise_mm=reachable[0]
+            print(f'HOME_IK_FALLBACK: retreat={retreat}mm, raise={raise_mm}mm, error={home_ik["error_mm"]:.3f}mm',flush=True)
+        lift_data=mujoco.MjData(model);mujoco.mj_resetData(model,lift_data)
     lift_data.qpos[qadr[:5]]=qgrasp
     mujoco.mj_forward(model,lift_data)
     qlift,lift_ik=p7v.lift_target(model,lift_data,qadr,bid,np.r_[qgrasp,hi[5]],args.lift_mm)
