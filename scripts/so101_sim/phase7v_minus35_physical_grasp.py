@@ -28,23 +28,43 @@ def jaw_gap(model,data,jaw,bottle):
     return p7q.geom_gap(model,data,bottle,jaw)*1000
 
 
-def scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,table_z,step_mm=5,radius_mm=50):
-    """Choose one synthetic near-fixed-jaw pose, with moving jaw initially clear.
+def bottle_center_grasp_offset_mm(model,d,fixed,bottle,quat):
+    """Closest bottle surface point to fixed jaw, projected onto bottle's long axis."""
+    fromto=np.zeros(6)
+    best=(float('inf'),None)
+    for jaw_geom in fixed:
+        for bottle_geom in bottle:
+            separation=float(mujoco.mj_geomDistance(
+                model,d,int(jaw_geom),int(bottle_geom),.20,fromto))
+            if separation<best[0]:
+                # geomDistance writes closest points for geom1 and geom2.
+                best=(separation,np.asarray(fromto[3:6]).copy())
+    if best[1] is None or not np.isfinite(best[0]):
+        return float('inf')
+    # The Muhi's long axis is the rotated local +Z.
+    w,x,y,z=map(float,quat)
+    axis=np.array([2*(x*z+w*y),2*(y*z-w*x),1-2*(x*x+y*y)])
+    axis/=np.linalg.norm(axis)
+    body_center=np.asarray(d.qpos[freejoint_adr(model):freejoint_adr(model)+3])
+    return float(1000*np.dot(best[1]-body_center,axis))
 
-    Muhi lies on its side: the cylinder local Z axis is horizontal. The center
-    is one radius above the table. No real-camera pose fit is claimed.
+
+def scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,table_z,
+                  step_mm=5,radius_mm=60,center_tolerance_mm=12.0):
+    """Select horizontal Muhi whose *actual closest jaw contact* is near long-axis center.
+
+    Never prefer an end cap just because the fixed jaw is nearby.
+    Selection uses MuJoCo closest points; if no central solution, report blocked.
     """
     d.qpos[qadr]=q0
     mujoco.mj_forward(model,d)
-    # Prefer center of fixed-jaw collision patch endpoints rather than all-robot bounding box.
     origin=np.mean(d.geom_xpos[list(fixed)],axis=0)
     z=table_z+physical.MUHI_RADIUS+.0005
-    # Rotate cylinder long axis (local Z) into the tabletop XY plane.
-    # Try X- and Y-aligned Muhi, preserving the horizontal orientation.
     orientations=[('along_x',[2**-.5,0.,2**-.5,0.]),
                   ('along_y',[.5,-.5,.5,.5])]
     offs=np.arange(-radius_mm,radius_mm+step_mm/2,step_mm)*.001
-    ranked=[];fallback=[]
+    ranked=[]
+    candidate_count=0
     for orientation,quat in orientations:
         for dx in offs:
             for dy in offs:
@@ -55,36 +75,67 @@ def scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,table_z,step_mm=5,radiu
                 mujoco.mj_forward(model,d)
                 fg=jaw_gap(model,d,fixed,bottle)
                 mg=jaw_gap(model,d,moving,bottle)
-                if fg>=.6 and mg>=.6:
-                    score=abs(fg-1.5)+.045*abs(mg-12)+.03*math.hypot(dx,dy)
-                    item=dict(xyz_m=[float(xy[0]),float(xy[1]),float(z)],
-                        quat_wxyz=quat,orientation=orientation,
-                        placement='sideways_on_table',fixed_gap_mm=fg,moving_gap_mm=mg,
-                        offset_from_fixed_center_mm=[float(dx),float(dy)])
-                    fallback.append((score,item))
-                    if fg<=8 and mg<=45:ranked.append((score,item))
-    if ranked:return min(ranked,key=lambda t:t[0])[1]
-    if fallback:
-        item=min(fallback,key=lambda t:t[0])[1]
-        item['fallback_no_close_fixed_jaw_pose']=True
-        return item
-    return None
+                if not (.6<=fg<=8. and .6<=mg<=45.):continue
+                candidate_count+=1
+                center_offset=bottle_center_grasp_offset_mm(model,d,fixed,bottle,quat)
+                if not np.isfinite(center_offset) or abs(center_offset)>center_tolerance_mm:
+                    continue
+                # Prefer centered surface contact over a superficially close end grip.
+                score=(abs(center_offset)*0.45 + abs(fg-1.5) +
+                       .045*abs(mg-12) + .003*math.hypot(dx,dy))
+                item=dict(xyz_m=[float(xy[0]),float(xy[1]),float(z)],
+                    quat_wxyz=quat,orientation=orientation,
+                    placement='sideways_on_table',
+                    fixed_gap_mm=float(fg),moving_gap_mm=float(mg),
+                    fixed_jaw_contact_long_axis_offset_mm=center_offset,
+                    grasp_center_tolerance_mm=float(center_tolerance_mm),
+                    eligible_geometric_candidates=candidate_count,
+                    offset_from_fixed_center_mm=[float(dx),float(dy)])
+                ranked.append((score,item))
+    return min(ranked,key=lambda x:x[0])[1] if ranked else None
 
 
 def lift_target(model,d,qadr,ref_body,base,amount_mm):
-    """One-shot damped least squares for vertical jaw motion, J1..J5 only."""
-    jacp=np.zeros((3,model.nv));jacr=np.zeros((3,model.nv))
-    mujoco.mj_jacBody(model,d,jacp,jacr,ref_body)
+    """Iterative position IK in isolated scratch MjData; actual physics remains mj_step.
+
+    Recomputes the Jacobian along the 50 mm path (unlike the one-shot 15mm IK).
+    """
+    scratch=mujoco.MjData(model)
+    scratch.qpos[:]=d.qpos
+    scratch.qvel[:]=0
+    mujoco.mj_forward(model,scratch)
+    ref_start=np.asarray(scratch.xpos[ref_body]).copy()
+    target=ref_start+np.array([0.,0.,amount_mm/1000])
     cols=[]
     for k in range(5):
-        j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,p7q.NAMES[k])
-        cols.append(int(model.jnt_dofadr[j]))
-    J=jacp[:,cols]
-    vec=np.array([0.,0.,amount_mm/1000])
-    damp=.06
-    dq=J.T@np.linalg.solve(J@J.T+damp*damp*np.eye(3),vec)
-    dq=np.clip(dq,-np.deg2rad(8),np.deg2rad(8))
-    return base[:5]+dq,dict(jacobian_xyz_m_per_rad=J.tolist(),delta_joint_deg=np.rad2deg(dq).tolist())
+        joint=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,p7q.NAMES[k])
+        cols.append(int(model.jnt_dofadr[joint]))
+    q=base[:5].copy()
+    jids=[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,p7q.NAMES[k]) for k in range(5)]
+    limits=np.asarray(model.jnt_range[jids],float)
+    history=[]
+    for step in range(45):
+        scratch.qpos[qadr[:5]]=q
+        mujoco.mj_forward(model,scratch)
+        error=target-np.asarray(scratch.xpos[ref_body])
+        error_mm=float(np.linalg.norm(error)*1000)
+        history.append(error_mm)
+        if error_mm<.5:break
+        jp=np.zeros((3,model.nv));jr=np.zeros((3,model.nv))
+        mujoco.mj_jacBody(model,scratch,jp,jr,ref_body)
+        J=jp[:,cols]
+        damp=.04
+        dq=J.T@np.linalg.solve(J@J.T+damp*damp*np.eye(3),error)
+        dq=np.clip(dq,-np.deg2rad(4),np.deg2rad(4))
+        q=np.clip(q+dq,limits[:,0]+.001,limits[:,1]-.001)
+    scratch.qpos[qadr[:5]]=q
+    mujoco.mj_forward(model,scratch)
+    achieved=(float(scratch.xpos[ref_body,2])-ref_start[2])*1000
+    return q,dict(target_lift_mm=float(amount_mm),
+       predicted_fk_vertical_lift_mm=achieved,
+       predicted_final_xyz_error_mm=float(np.linalg.norm(target-scratch.xpos[ref_body])*1000),
+       iterations=len(history),last_error_mm=history[-1],
+       delta_joint_deg=np.rad2deg(q-base[:5]).tolist())
 
 
 def generate_video(model,frames,out,fps,bq,stages):
@@ -129,7 +180,7 @@ def run(args):
     summary=dict(status='STARTED',table_z_mm=args.table_z_mm,episode_time_s=args.time,
                  physics_integrated=True,real_table_calibrated=False,
                  motor_to_urdf_mapping_verified=False,real_bottle_pose_measured=False,
-                 objective='sideways bottle: settle -> J6 close -> lift, simulated -35mm table',
+                 objective='center-grasp sideways bottle, J6 close -> 50mm lift; experimental -35mm table',
                  limitations=['Table height is experimental, not actual robot calibration',
                               'Sideways bottle XY and horizontal yaw are synthetic candidates near fixed jaw',
                               'Unverified motor sign/offset and J6 degrees',
@@ -155,9 +206,9 @@ def run(args):
         d.qpos[qadr]=q0
         d.ctrl[aids]=q0
         mujoco.mj_forward(model,d)
-        pose=scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,args.table_z_mm/1000.,args.scan_step_mm,args.scan_radius_mm)
+        pose=scan_sideways(model,d,bq,qadr,q0,fixed,moving,bottle,args.table_z_mm/1000.,args.scan_step_mm,args.scan_radius_mm,args.center_tolerance_mm)
         if pose is None:
-            summary.update(status='BLOCKED_NO_INITIAL_SIDEWAYS_BOTTLE_POSE',note='Try wider XY search or inspect jaw approach orientation; no simulated lift attempted.')
+            summary.update(status='BLOCKED_NO_CENTRAL_SIDEWAYS_BOTTLE_POSE',note='No nonpenetrating central fixed-jaw target. Do not substitute end grip.')
             return
         d.qpos[bq:bq+3]=pose['xyz_m'];d.qpos[bq+3:bq+7]=pose['quat_wxyz']
         d.qvel[:]=0
@@ -272,13 +323,14 @@ def main():
     p.add_argument('--j6-initial-open-deg',type=float,default=80.)
     p.add_argument('--j6-command-closed-deg',type=float,default=0.)
     p.add_argument('--scan-step-mm',type=int,default=5)
-    p.add_argument('--scan-radius-mm',type=int,default=50)
+    p.add_argument('--scan-radius-mm',type=int,default=60)
+    p.add_argument('--center-tolerance-mm',type=float,default=12.)
     p.add_argument('--settle-s',type=float,default=.4)
     p.add_argument('--closing-s',type=float,default=1.4)
     p.add_argument('--hold-s',type=float,default=.5)
-    p.add_argument('--lift-s',type=float,default=1.1)
-    p.add_argument('--retain-s',type=float,default=.6)
-    p.add_argument('--lift-mm',type=float,default=15.)
+    p.add_argument('--lift-s',type=float,default=2.4)
+    p.add_argument('--retain-s',type=float,default=.9)
+    p.add_argument('--lift-mm',type=float,default=50.)
     p.add_argument('--no-video',action='store_true')
     args=p.parse_args()
     if args.table_z_mm!=-35.:print('NOTE: overriding the Phase7V experimental table -35mm',file=sys.stderr)
