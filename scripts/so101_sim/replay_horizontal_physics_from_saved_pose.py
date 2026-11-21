@@ -32,6 +32,18 @@ def main():
     p.add_argument('--object-height-clearance-mm',type=float,default=.5)
     p.add_argument('--fps',type=int,default=8)
     p.add_argument('--dt',type=float,default=.002)
+    p.add_argument('--arm-kp',type=float,default=18.)
+    p.add_argument('--arm-kd',type=float,default=1.8)
+    p.add_argument('--arm-torque',type=float,default=3.)
+    p.add_argument('--j6-kp',type=float,default=2.)
+    p.add_argument('--j6-kd',type=float,default=.08)
+    p.add_argument('--j6-torque',type=float,default=.4)
+    p.add_argument('--jaw-sliding-friction',type=float,default=None)
+    p.add_argument('--muhi-sliding-friction',type=float,default=None)
+    p.add_argument('--table-sliding-friction',type=float,default=None)
+    p.add_argument('--muhi-mass-kg',type=float,default=None)
+    p.add_argument('--arm-gravity-compensation',action='store_true',
+                   help='Idealized bias-force compensation, for diagnosis only')
     p.add_argument('--max-start-penetration-mm',type=float,default=3.)
     p.add_argument('--jaw-table-contact',choices=('on','off'),default='on',
                    help='Enable actual fixed/moving jaw vs tabletop contacts; default ON.')
@@ -56,9 +68,29 @@ def main():
         support_plane_z_m=args.table_z,table_z=args.table_z,
         object_quat=quat.tolist(),dt=args.dt,fps=args.fps,
         settle_s=.3,close_s=1.3,hold_s=.6,
-        arm_kp=18.,arm_kd=1.8,arm_torque=3.,
-        j6_kp=2.,j6_kd=.08,j6_torque=.4)
+        arm_kp=args.arm_kp,arm_kd=args.arm_kd,
+        arm_torque=args.arm_torque,j6_kp=args.j6_kp,
+        j6_kd=args.j6_kd,j6_torque=args.j6_torque,
+        arm_gravity_compensation=args.arm_gravity_compensation)
     (model,qadr,vadr,aids,lo,hi,fixed,moving,bottle,floor)=phase6c.model_build(setup)
+    # Update only the compiled physics model. Original URDF and collision
+    # patches remain unchanged; baseline stays reproducible by default.
+    for label,group,mu in (
+        ('jaw',(*fixed,*moving),args.jaw_sliding_friction),
+        ('muhi',bottle,args.muhi_sliding_friction),
+        ('table',(floor,),args.table_sliding_friction)):
+        if mu is not None:
+            if not np.isfinite(mu) or mu<=0: raise ValueError(label+' friction must be positive')
+            for gid in group: model.geom_friction[int(gid),0]=float(mu)
+    original_muhi_mass=sum(float(model.body_mass[bid])
+        for bid in {int(model.geom_bodyid[g]) for g in bottle})
+    if args.muhi_mass_kg is not None:
+        if args.muhi_mass_kg<=0: raise ValueError('muhi mass must be positive')
+        if original_muhi_mass<=0: raise ValueError('original Muhi mass is zero')
+        scale=args.muhi_mass_kg/original_muhi_mass
+        for bid in {int(model.geom_bodyid[g]) for g in bottle}:
+            model.body_mass[bid]*=scale
+            model.body_inertia[bid]*=scale
     jid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,physical.DYNAMIC_JOINT)
     bq=int(model.jnt_qposadr[jid]);bd=int(model.jnt_dofadr[jid])
     d=mujoco.MjData(model)
@@ -88,6 +120,17 @@ def main():
        initial_jaw_bottle_penetration_mm=start_pen,
        threshold_mm=args.max_start_penetration_mm,
        jaw_table_physical_contacts=bool(setup.jaw_table_contact),
+       physics_parameters=dict(
+           arm_kp=args.arm_kp,arm_kd=args.arm_kd,
+           arm_torque_n_m=args.arm_torque,
+           j6_kp=args.j6_kp,j6_kd=args.j6_kd,
+           j6_torque_n_m=args.j6_torque,
+           jaw_sliding_friction=args.jaw_sliding_friction,
+           muhi_sliding_friction=args.muhi_sliding_friction,
+           table_sliding_friction=args.table_sliding_friction,
+           muhi_mass_kg=float(sum(model.body_mass[bid]
+             for bid in {int(model.geom_bodyid[g]) for g in bottle})),
+           arm_gravity_compensation=args.arm_gravity_compensation),
        note='Diagnostic replay only. Read per-joint servo torque and jaw-Z time traces; no lift or grasp-success claim.')
     if start_pen>args.max_start_penetration_mm:
         meta['status']='SKIPPED_SEVERE_INITIAL_INTERPENETRATION'
