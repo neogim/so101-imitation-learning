@@ -380,6 +380,58 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
             np.clip(abs(np.dot(unit,obj_xy)),0.,1.))))
         return error,proj,world.tolist()
 
+    def heading_to_muhi(q):
+        """Signed plan-view heading error of base->FIXED JAW versus base->Muhi.
+
+        Use the real collision patch centers instead of the synthetic IK
+        anchor. Zero error means the J1 ray faces Muhi; it does NOT mean
+        that the jaws themselves touch the cylinder.
+        """
+        data.qpos[qadr[:5]]=q
+        data.qpos[qadr[5]]=hi[5]
+        data.qpos[bq:bq+3]=xyz
+        data.qpos[bq+3:bq+7]=quat
+        mujoco.mj_forward(model,data)
+        base=np.asarray(data.xanchor[mujoco.mj_name2id(
+            model,mujoco.mjtObj.mjOBJ_JOINT,'shoulder_pan')],float)[:2]
+        jaw=np.mean([np.asarray(data.geom_xpos[int(g)],float)
+                     for g in fixed],axis=0)[:2]
+        target=np.asarray(xyz[:2],float)
+        ray=jaw-base
+        goal=target-base
+        if min(np.linalg.norm(ray),np.linalg.norm(goal))<.005:
+            return 180.,jaw.tolist(),target.tolist()
+        ray/=np.linalg.norm(ray)
+        goal/=np.linalg.norm(goal)
+        angle=np.degrees(np.arctan2(
+            ray[0]*goal[1]-ray[1]*goal[0],np.dot(ray,goal)))
+        return float(angle),jaw.tolist(),target.tolist()
+
+    def aim_j1(seed):
+        """Stage 1: adjust ONLY J1, preserving recorded J2/J3/J4/J5."""
+        from scipy.optimize import minimize_scalar
+        width=np.deg2rad(args.max_j1_heading_from_recorded_deg)
+        lower=max(float(lo[0]+.0002),float(seed[0]-width))
+        upper=min(float(hi[0]-.0002),float(seed[0]+width))
+        if upper<=lower:raise ValueError('J1 heading interval empty')
+        def objective(j1):
+            q=seed.copy();q[0]=j1
+            error,_,_=heading_to_muhi(q)
+            # Small tie-break favoring less change from observed pose.
+            return error*error + .002*np.rad2deg(j1-seed[0])**2
+        grid=np.linspace(lower,upper,25)
+        ranked=sorted((objective(float(v)),float(v)) for v in grid)
+        step=(upper-lower)/24.
+        candidates=[ranked[0][1]]
+        for _,v in ranked[:3]:
+            fit=minimize_scalar(objective,
+                 bounds=(max(lower,v-step),min(upper,v+step)),
+                 method='bounded',options={'maxiter':40,'xatol':1e-4})
+            candidates.append(float(fit.x))
+        best=min(candidates,key=objective)
+        result=seed.copy();result[0]=best
+        return result
+
     def align_j5(q):
         """Stage 1: only J5 is swept and adjusted; J1..J4 remain fixed."""
         # Limit J5 rotation around the actually observed joint configuration.
@@ -470,7 +522,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
 
     for label,seed in seeds:
         try:
-            # STEP 1. Top view: rotate only J5 near RECORDED hardware state.
+            # STEP 1: J1 aims the whole arm at Muhi, before reach IK.
+            # Keep J2/J3/J4/J5 at recorded values during rotation.
             # Reject recorded seed with nonadjacent self-intersection.
             recorded_safety=real_safety.audit_candidate(model,data,qadr,seed,
                 real_samples,ignored_geom_ids=bottle,
@@ -481,7 +534,26 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 trials.append(dict(seed=label,status='RECORDED_SEED_SELF_COLLISION_OR_LIMIT',
                     real_pose_safety=recorded_safety,valid_for_physics=False))
                 continue
-            q_first=align_j5(seed)
+            q_heading=aim_j1(seed)
+            heading_error,jaw_xy,goal_xy=heading_to_muhi(q_heading)
+            heading_safety=real_safety.audit_candidate(model,data,qadr,q_heading,
+                real_samples,ignored_geom_ids=bottle,
+                max_axis_deg=args.real_pose_max_axis_deg,
+                max_l2_deg=args.real_pose_max_l2_deg,
+                penetration_tolerance_mm=args.self_collision_tolerance_mm)
+            if not heading_safety['valid']:
+                trials.append(dict(seed=label,status='J1_HEADING_COLLISION',
+                    heading_error_deg=heading_error,
+                    real_pose_safety=heading_safety,valid_for_physics=False))
+                continue
+            stages.append(dict(seed=label,stage='1_J1_heading',
+                heading_error_deg=heading_error,
+                fixed_jaw_xy_m=jaw_xy,muhi_center_xy_m=goal_xy,
+                j1_start_deg=float(np.rad2deg(seed[0])),
+                j1_aligned_deg=float(np.rad2deg(q_heading[0])),
+                q_deg=np.rad2deg(q_heading).tolist()))
+            # STEP 2: J5 re-aligns the finger after the J1 yaw.
+            q_first=align_j5(q_heading)
             aligned_safety=real_safety.audit_candidate(model,data,qadr,q_first,
                 real_samples,ignored_geom_ids=bottle,
                 max_axis_deg=args.real_pose_max_axis_deg,
@@ -498,10 +570,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                   finger_horizontal_projection=first_proj,
                   finger_world_axis=first_axis,
                   q_deg=np.rad2deg(q_first).tolist()))
-            # STEP 2. Lock BOTH J4 and J5. Move ONLY J1,J2,J3
-            # toward the bottle; preserve observed wrist bend.
-            def residual(q3):
-                q=q_first.copy();q[:3]=q3
+            # STEP 3: J1, J4, J5 LOCKED. Optimize J2/J3 reach ONLY.
+            def residual(q23):
+                q=q_first.copy();q[1:3]=q23
                 (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,
                      opposition,open_floor,closed_floor)=measure(q)
                 return np.array([
@@ -521,23 +592,20 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                     # Preserve plan-view perpendicularity with J5 LOCKED.
                     12.*angle,
                     100.*max(0.,.55-proj),
-                    # Strongly retain measured real branch rather than
-                    # permitting a remote folded IK configuration.
-                    *(np.rad2deg(q3-seed[:3])*.055)
+                    # Keep the arm on the observed elbow branch.
+                    *(np.rad2deg(q23-seed[1:3])*.03)
                 ])
-            # Expand reach only through J1-J3, not the wrist.
-            # Recorded-pose proximity and collision/path checks still gate
-            # candidates, including along the interpolated approach.
+            # Do not let J2/J3 change the yaw. Reach is now a 2-DOF IK.
             delta=np.deg2rad(args.max_approach_j123_deg)
-            approach_lo=np.maximum(lo[:3]+.0002,seed[:3]-delta)
-            approach_hi=np.minimum(hi[:3]-.0002,seed[:3]+delta)
+            approach_lo=np.maximum(lo[1:3]+.0002,seed[1:3]-delta)
+            approach_hi=np.minimum(hi[1:3]-.0002,seed[1:3]+delta)
             fit=least_squares(residual,
-                np.clip(q_first[:3],approach_lo+.00001,approach_hi-.00001),
+                np.clip(q_first[1:3],approach_lo+.00001,approach_hi-.00001),
                 bounds=(approach_lo,approach_hi),
                 max_nfev=args.horizontal_ik_max_nfev,
                 ftol=.005,xtol=.005,gtol=.005)
-            q=q_first.copy();q[:3]=fit.x
-            assert np.array_equal(q[3:5],q_first[3:5])
+            q=q_first.copy();q[1:3]=fit.x
+            assert np.array_equal(q[[0,3,4]],q_first[[0,3,4]])
             (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
                   open_floor,closed_floor)=measure(q)
             # Hardware-observed J2/J3/J4 envelope + nonadjacent self collision.
@@ -547,10 +615,11 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_axis_deg=args.real_pose_max_axis_deg,
                 max_l2_deg=args.real_pose_max_l2_deg,
                 penetration_tolerance_mm=args.self_collision_tolerance_mm)
-            # Check intermediate poses as well, not just the final IK q.
+            # Audit J1 yaw first, then J5, then J2/J3 reach.
             path_audit=[]
             for stage,start,finish in (
-                ('J5_align',seed,q_first),('arm_approach',q_first,q)):
+                ('J1_heading',seed,q_heading),('J5_align',q_heading,q_first),
+                ('J2_J3_reach',q_first,q)):
                 for alpha in np.linspace(0.,1.,args.preflight_path_steps):
                     intermediate=start+(finish-start)*float(alpha)
                     checkpoint=real_safety.audit_candidate(model,data,qadr,intermediate,
@@ -563,7 +632,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                         penetrating_pairs=checkpoint['nonadjacent_self_collision']['penetrating_pairs'],
                         real_pose_distance_deg=checkpoint['observed_real_pose_proximity']['joint234_euclidean_difference_deg']))
             path_valid=all(check['valid'] for check in path_audit)
-            valid=(safety['valid'] and path_valid and
+            final_heading_error,final_jaw_xy,_=heading_to_muhi(q)
+            valid=(safety['valid'] and path_valid
+                   and abs(final_heading_error)<=args.max_j1_heading_error_deg and
                    1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
                    and proj>=.55 and (mg-m80)>=2.
                    and bracket['between_centroids']
@@ -582,7 +653,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    5.*max(0.,mw['axial_offset_mm']-central_half_mm)+
                    50.*max(0.,opposition+.35)+
                    8.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm'])+
-                   8.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm']))
+                   8.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm'])+
+                   3.*max(0.,abs(final_heading_error)-args.max_j1_heading_error_deg))
             row=dict(seed=label,score=float(score),
                  stage='2_fixed_j5_approach',
                  open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
@@ -609,9 +681,13 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  joint_path_valid=bool(path_valid),
                  j4_reverse_bend_deg=float(np.rad2deg(q[3])),
                  j4_branch='recorded_follower_locked_during_approach',
-                 j4_j5_locked_during_approach=True,
-                 approach_changed_joints=['shoulder_pan','shoulder_lift','elbow_flex'],
-                 approach_joint_deltas_deg=np.rad2deg(q[:3]-seed[:3]).tolist(),
+                 j1_j4_j5_locked_during_reach=True,
+                 heading_error_deg=float(final_heading_error),
+                 heading_valid=bool(abs(final_heading_error)<=args.max_j1_heading_error_deg),
+                 heading_jaw_xy_m=final_jaw_xy,
+                 j1_heading_deg=float(np.rad2deg(q_heading[0])),
+                 approach_changed_joints=['shoulder_lift','elbow_flex'],
+                 reach_joint_deltas_deg=np.rad2deg(q[1:3]-seed[1:3]).tolist(),
                  j5_locked_at_deg=float(np.rad2deg(q_first[4])),
                  perpendicular_tolerance_deg=angle_limit,
                  open_clear=bool(1.<=fg<=2.5 and mg>=1.),
@@ -621,7 +697,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  ik_angles_deg=np.rad2deg(q).tolist(),
                  optimizer_evaluations=int(fit.nfev))
             trials.append(row)
-            stages.append(dict(seed=label,stage='2_fixed_j5_approach',
+            stages.append(dict(seed=label,stage='3_J2_J3_reach_J1_locked',
                  j5_deg=row['j5_locked_at_deg'],
                  top_view_perpendicular_error_deg=angle,
                  fixed_gap_mm=fg,moving_gap_mm=mg,
@@ -647,7 +723,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         top_view_angle_limit_deg=angle_limit,
         seed_strategy='actual_recorded_follower_kinematically_nearest_diverse',
         j4_sign_override=False,
-        note='Stage1: observed pose + bounded J5; Stage2: bounded J1..J3 with J4/J5 locked; check both paths for self collision and real pose proximity; J6 only after full acceptance.')
+        note='Stage1 J1 heading, Stage2 J5 alignment, Stage3 J2/J3 reach with J1/J4/J5 locked, then J6 only if all gates pass.')
     return best[2],report
 
 
@@ -1295,7 +1371,9 @@ def main():
     p.add_argument('--seed-diversity-deg',type=float,default=12.)
     p.add_argument('--max-arm-from-recorded-deg',type=float,default=18.,
                    help='Legacy option, not used for horizontal J1..J3 approach')
-    p.add_argument('--max-approach-j123-deg',type=float,default=35.,
+    p.add_argument('--max-j1-heading-from-recorded-deg',type=float,default=65.)
+    p.add_argument('--max-j1-heading-error-deg',type=float,default=10.)
+    p.add_argument('--max-approach-j123-deg',type=float,default=45.,
                    help='Max individual J1/J2/J3 deviation from real recorded pose; J4,J5 remain locked')
     p.add_argument('--max-j5-from-recorded-deg',type=float,default=35.)
     p.add_argument('--preflight-path-steps',type=int,default=5)
@@ -1343,7 +1421,7 @@ def main():
     if args.object_height_clearance_mm<0: p.error('Object clearance cannot be negative')
     if args.real_pose_max_axis_deg<=0 or args.real_pose_max_l2_deg<=0 or args.self_collision_tolerance_mm<0:
         p.error('Invalid real pose / self collision thresholds')
-    if args.real_seed_count<1 or args.seed_diversity_deg<=0 or args.max_arm_from_recorded_deg<=0 or args.max_approach_j123_deg<=0 or args.max_j5_from_recorded_deg<=0 or args.preflight_path_steps<2:
+    if args.real_seed_count<1 or args.seed_diversity_deg<=0 or args.max_arm_from_recorded_deg<=0 or args.max_approach_j123_deg<=0 or args.max_j5_from_recorded_deg<=0 or args.max_j1_heading_from_recorded_deg<=0 or not 0<args.max_j1_heading_error_deg<90 or args.preflight_path_steps<2:
         p.error('Invalid recorded-seed / path preflight settings')
     if not 0<=args.horizontal_j4_min_deg<=70:
         p.error('horizontal-j4-min-deg must be in [0,70]')
