@@ -694,7 +694,7 @@ def run(args):
        'jaw_mesh_figure':'jaw_mesh_vs_convex_hull.png' if (args.out/'jaw_mesh_vs_convex_hull.png').exists() else None,
        'target_is_provisional_not_measured':True,
        'depth_local_z_provisional_not_actual_finger_arc_percent':True,
-       'method':'5DoF soft IK per jaw-depth, stationary-arm J6 physical close and hold; no approach/lift',
+       'method':'5DoF soft IK per jaw-depth; J6 physical close/hold and optional DLS 50mm arm-side lift with bilateral retain validation; no approach path',
        'grasp_not_verified_by_contact_alone':True,
        'contact_normal_sign_warning':'MuJoCo contact normals use geom order; interpret axis after checking geom IDs',
        'results':[info for _,info in results]}
