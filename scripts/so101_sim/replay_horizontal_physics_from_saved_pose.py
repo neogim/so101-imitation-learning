@@ -33,6 +33,8 @@ def main():
     p.add_argument('--fps',type=int,default=8)
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--max-start-penetration-mm',type=float,default=3.)
+    p.add_argument('--jaw-table-contact',choices=('on','off'),default='on',
+                   help='Enable actual fixed/moving jaw vs tabletop contacts; default ON.')
     args=p.parse_args()
     if args.out.exists():
         raise FileExistsError(args.out)
@@ -49,6 +51,7 @@ def main():
     setup=SimpleNamespace(
         urdf=args.urdf.resolve(),out=args.out,
         jaw_collision_mode='axial_cross_convex_patches',
+        jaw_table_contact=(args.jaw_table_contact=='on'),
         jaw_collision_slabs=12,jaw_collision_cross_bands=3,
         support_plane_z_m=args.table_z,table_z=args.table_z,
         object_quat=quat.tolist(),dt=args.dt,fps=args.fps,
@@ -84,8 +87,8 @@ def main():
             .get('chosen',{}).get('valid_for_physics'),
        initial_jaw_bottle_penetration_mm=start_pen,
        threshold_mm=args.max_start_penetration_mm,
-       jaw_table_physical_contacts=False,
-       note='No physical grasp success should be inferred from contact or movement alone')
+       jaw_table_physical_contacts=bool(setup.jaw_table_contact),
+       note='Diagnostic replay only. Read per-joint servo torque and jaw-Z time traces; no lift or grasp-success claim.')
     if start_pen>args.max_start_penetration_mm:
         meta['status']='SKIPPED_SEVERE_INITIAL_INTERPENETRATION'
     else:
