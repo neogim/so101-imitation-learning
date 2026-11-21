@@ -986,6 +986,7 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
     camera=mujoco.MjvCamera();camera.type=mujoco.mjtCamera.mjCAMERA_FREE
     camera.lookat[:]=xyz;camera.distance=.56;camera.azimuth=110;camera.elevation=-20
     deep=False;bad=False;maxcontact=0
+    fixed_centroid_initial_z=float(np.asarray(d.geom_xpos[list(fixed)])[:,2].mean())
     try:
         for k in range(steps+1):
             t=min(k*args.dt,total)
@@ -1051,6 +1052,26 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                  'bottle_tilt_deg':float(np.rad2deg(2*math.acos(min(1,abs(float(d.qpos[bq+3])))))),
                  'j6_target_deg':float(np.rad2deg(j6)),'j6_actual_deg':float(np.rad2deg(d.qpos[qadr[5]])),
                  'max_arm_error_deg':float(np.max(np.abs(np.rad2deg(q-d.qpos[qadr[:5]]))))}
+            # Time-aligned 6-axis control telemetry for identifying whether
+            # gripper contact actually drives the arm upward, and through
+            # which joint. All positions are WORLD coordinates.
+            for i,name in enumerate(JOINTS):
+                row[f'{name}_target_deg']=float(np.rad2deg(q[i]))
+                row[f'{name}_actual_deg']=float(np.rad2deg(d.qpos[qadr[i]]))
+                row[f'{name}_error_deg']=float(np.rad2deg(q[i]-d.qpos[qadr[i]]))
+                row[f'{name}_actuator_force_n_m']=float(d.actuator_force[aids[i]])
+            row['j6_actuator_force_n_m']=float(d.actuator_force[aids[5]])
+            jaw_xyz=np.asarray(d.geom_xpos[list(fixed)],dtype=float)
+            row['fixed_jaw_centroid_z_m']=float(jaw_xyz[:,2].mean())
+            row['fixed_jaw_centroid_delta_z_mm']=float(
+                1000.*(jaw_xyz[:,2].mean()-fixed_centroid_initial_z))
+            row['arm_gravity_compensated']=False
+            jaw_table_contacts=0
+            for c in d.contact[:d.ncon]:
+                pair={int(c.geom1),int(c.geom2)}
+                if floor in pair and (pair.intersection(fixed) or pair.intersection(moving)):
+                    jaw_table_contacts+=1
+            row['jaw_table_contacts']=int(jaw_table_contacts)
             rows.append(row)
             if renderer is not None and (k%stride==0 or k==steps):
                 panels=[]
