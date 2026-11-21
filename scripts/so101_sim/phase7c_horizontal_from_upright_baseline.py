@@ -351,12 +351,14 @@ def arm_tool_floor_clearance(model,data,floor,tool_geoms):
 def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                                     fixed,moving,bottle,floor,tool_geoms,q_initial,anchor,bid,args,out,
                                     real_samples):
-    """Ordered plan-view grasp: J5 yaw alignment -> J1..J4 approach -> J6.
+    """Contact-first 5-DOF IK for the horizontal Muhi grasp -> J6.
 
     Critical: J5 is NOT traded away for smaller nearest-geom distance.
     The horizontal projection of the actual STL finger axis must be 90 deg
     from the horizontal bottle long axis, and have nonzero projection.
-    Stage 2 optimizes only J1..J4 while J5 is locked; J6 stays OPEN.
+    After using J1/J5 for initialization, refine ALL five arm joints against
+    the fixed jaw's actual inner collision face. J6 stays open until geometry
+    and measured joint-path preflight pass.
     """
     from scipy.optimize import least_squares
     finger_local=actual_finger_long_axis_local(args)
@@ -570,9 +572,11 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                   finger_horizontal_projection=first_proj,
                   finger_world_axis=first_axis,
                   q_deg=np.rad2deg(q_first).tolist()))
-            # STEP 3: J1, J4, J5 LOCKED. Optimize J2/J3 reach ONLY.
-            def residual(q23):
-                q=q_first.copy();q[1:3]=q23
+            # STEP 3: solve contact-first 5-DOF IK. Do not freeze J1/J4/J5:
+            # their kinematic coupling can make a 2-DOF contact target impossible.
+            # Use real collision witnesses, NOT the synthetic grasp-body anchor.
+            def residual(q5):
+                q=np.asarray(q5,dtype=float).copy()
                 (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,
                      opposition,open_floor,closed_floor)=measure(q)
                 return np.array([
@@ -581,31 +585,36 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                     .12*max(0.,mg-15.),
                     .4*np.clip(m80,-12.,25.),
                     .4*max(0.,m100+1.),
-                    .10*err,
+                    .005*err,
                     8.*max(0.,2.-bracket['along_mm']),
                     10.*max(0.,1.5-bracket['fixed_surface_inward_projection_mm']),
-                    4.*max(0.,fw['axial_offset_mm']-6.),
-                    3.*max(0.,mw['axial_offset_mm']-6.),
+                    6.*max(0.,fw['axial_offset_mm']-2.),
+                    3.*max(0.,mw['axial_offset_mm']-10.),
                     40.*max(0.,opposition+.35),
                     7.*max(0.,args.min_tool_floor_gap_mm-open_floor['gap_mm']),
                     7.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm']),
                     # Preserve plan-view perpendicularity with J5 LOCKED.
                     12.*angle,
                     100.*max(0.,.55-proj),
-                    # Keep the arm on the observed elbow branch.
-                    *(np.rad2deg(q23-seed[1:3])*.03)
+                    # Stay reasonably close to actual recorded configurations.
+                    *(np.rad2deg(q-seed)*np.array([.012,.02,.02,.02,.015]))
                 ])
-            # Do not let J2/J3 change the yaw. Reach is now a 2-DOF IK.
-            delta=np.deg2rad(args.max_approach_j123_deg)
-            approach_lo=np.maximum(lo[1:3]+.0002,seed[1:3]-delta)
-            approach_hi=np.minimum(hi[1:3]-.0002,seed[1:3]+delta)
+            # Optimization over J1..J5, using measured follower states as seeds.
+            # Bounds are exploration limits, NOT verified mechanical safety.
+            widths=np.deg2rad(np.array([
+                args.max_j1_heading_from_recorded_deg,
+                args.max_approach_j123_deg,args.max_approach_j123_deg,
+                35.,args.max_j5_from_recorded_deg]))
+            approach_lo=np.maximum(lo[:5]+.0002,seed-widths)
+            approach_hi=np.minimum(hi[:5]-.0002,seed+widths)
+            if np.any(approach_hi<=approach_lo):
+                raise ValueError('Empty 5-DOF contact IK joint interval')
             fit=least_squares(residual,
-                np.clip(q_first[1:3],approach_lo+.00001,approach_hi-.00001),
+                np.clip(q_first,approach_lo+.00001,approach_hi-.00001),
                 bounds=(approach_lo,approach_hi),
-                max_nfev=args.horizontal_ik_max_nfev,
-                ftol=.005,xtol=.005,gtol=.005)
-            q=q_first.copy();q[1:3]=fit.x
-            assert np.array_equal(q[[0,3,4]],q_first[[0,3,4]])
+                max_nfev=max(120,args.horizontal_ik_max_nfev),
+                ftol=.001,xtol=.001,gtol=.001)
+            q=fit.x.copy()
             (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
                   open_floor,closed_floor)=measure(q)
             # Hardware-observed J2/J3/J4 envelope + nonadjacent self collision.
@@ -615,11 +624,11 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_axis_deg=args.real_pose_max_axis_deg,
                 max_l2_deg=args.real_pose_max_l2_deg,
                 penetration_tolerance_mm=args.self_collision_tolerance_mm)
-            # Audit J1 yaw first, then J5, then J2/J3 reach.
+            # Audit the initialization and final 5-DOF IK path.
             path_audit=[]
             for stage,start,finish in (
                 ('J1_heading',seed,q_heading),('J5_align',q_heading,q_first),
-                ('J2_J3_reach',q_first,q)):
+                ('five_dof_inner_face_IK',q_first,q)):
                 for alpha in np.linspace(0.,1.,args.preflight_path_steps):
                     intermediate=start+(finish-start)*float(alpha)
                     checkpoint=real_safety.audit_candidate(model,data,qadr,intermediate,
@@ -634,8 +643,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
             path_valid=all(check['valid'] for check in path_audit)
             final_heading_error,final_jaw_xy,_=heading_to_muhi(q)
             valid=(safety['valid'] and path_valid
-                   and abs(final_heading_error)<=args.max_j1_heading_error_deg and
-                   1.<=fg<=2.5 and mg>=1. and angle<=angle_limit
+                   and 1.<=fg<=2. and fw['axial_offset_mm']<=2.
+                   and mg>=1. and angle<=angle_limit
                    and proj>=.55 and (mg-m80)>=2.
                    and bracket['between_centroids']
                    and bracket['fixed_surface_inward']
@@ -656,7 +665,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    8.*max(0.,args.min_tool_floor_gap_mm-closed_floor['gap_mm'])+
                    3.*max(0.,abs(final_heading_error)-args.max_j1_heading_error_deg))
             row=dict(seed=label,score=float(score),
-                 stage='2_fixed_j5_approach',
+                 stage='2_five_dof_inner_face_contact_IK',
                  open_fixed_gap_mm=fg,open_moving_gap_mm=mg,
                  fixed_jaw_inside_bracketing=bracket,
                  fixed_contact_witness=fw,moving_contact_witness=mw,
@@ -681,23 +690,27 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  joint_path_valid=bool(path_valid),
                  j4_reverse_bend_deg=float(np.rad2deg(q[3])),
                  j4_branch='recorded_follower_locked_during_approach',
-                 j1_j4_j5_locked_during_reach=True,
+                 j1_j4_j5_locked_during_reach=False,
+                 ik_method='full_5DOF_collision_witness_inner_fixed_jaw',
+                 fixed_target_inner_gap_mm=[1.,2.],
+                 fixed_target_axial_center_mm=[-2.,2.],
                  heading_error_deg=float(final_heading_error),
                  heading_valid=bool(abs(final_heading_error)<=args.max_j1_heading_error_deg),
                  heading_jaw_xy_m=final_jaw_xy,
                  j1_heading_deg=float(np.rad2deg(q_heading[0])),
-                 approach_changed_joints=['shoulder_lift','elbow_flex'],
+                 approach_changed_joints=list(JOINTS),
                  reach_joint_deltas_deg=np.rad2deg(q[1:3]-seed[1:3]).tolist(),
+                 all_joint_deltas_deg=np.rad2deg(q-seed).tolist(),
                  j5_locked_at_deg=float(np.rad2deg(q_first[4])),
                  perpendicular_tolerance_deg=angle_limit,
-                 open_clear=bool(1.<=fg<=2.5 and mg>=1.),
+                 open_clear=bool(1.<=fg<=2. and mg>=1.),
                  direction_clear=bool(angle<=angle_limit and proj>=.55),
                  moving_closes_toward_muhi=bool((mg-m80)>=2.),
                  valid_for_physics=bool(valid),
                  ik_angles_deg=np.rad2deg(q).tolist(),
                  optimizer_evaluations=int(fit.nfev))
             trials.append(row)
-            stages.append(dict(seed=label,stage='3_J2_J3_reach_J1_locked',
+            stages.append(dict(seed=label,stage='3_five_dof_fixed_jaw_contact_IK',
                  j5_deg=row['j5_locked_at_deg'],
                  top_view_perpendicular_error_deg=angle,
                  fixed_gap_mm=fg,moving_gap_mm=mg,
@@ -724,7 +737,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         top_view_angle_limit_deg=angle_limit,
         seed_strategy='actual_recorded_follower_kinematically_nearest_diverse',
         j4_sign_override=False,
-        note='Stage1 J1 heading, Stage2 J5 alignment, Stage3 J2/J3 reach with J1/J4/J5 locked, then J6 only if all gates pass.')
+        note='J1/J5 are initialization only. Stage3 re-optimizes ALL five arm joints for actual fixed-jaw INNER collision surface 1-2mm from Muhi near longitudinal center (+/-2mm); J6 physics only if all geometry and path checks pass.')
     return best[2],report
 
 
@@ -1371,7 +1384,7 @@ def main():
     p.add_argument('--orientation',choices=('horizontal','upright'),default='horizontal')
     p.add_argument('--yaw-deg',type=float,default=0.)
     p.add_argument('--object-height-clearance-mm',type=float,default=.5)
-    p.add_argument('--horizontal-ik-max-nfev',type=int,default=45)
+    p.add_argument('--horizontal-ik-max-nfev',type=int,default=160)
     p.add_argument('--max-finger-perpendicular-error-deg',type=float,default=8.)
     p.add_argument('--central-grasp-half-mm',type=float,default=10.)
     p.add_argument('--min-tool-floor-gap-mm',type=float,default=2.)
