@@ -149,17 +149,25 @@ def generate_video(model,frames,out,fps,bq,stages):
         rd=mujoco.MjData(model)
         cam=mujoco.MjvCamera();cam.type=mujoco.mjtCamera.mjCAMERA_FREE
         cam.distance=.50
+        # Lock camera to the world at the INITIAL bottle location.
+        # Following bottle qpos each frame made the stationary SO-101 base look
+        # like it slid when the bottle was pushed during failed grasps.
+        anchor_qpos=np.asarray(frames[0][0],dtype=float)
+        camera_lookat=np.array([float(anchor_qpos[bq]),
+                               float(anchor_qpos[bq+1]),
+                               float(anchor_qpos[bq+2])])
+        cam.lookat[:]=camera_lookat
         for i,(qpos,qvel,tt,phase,fc,mc) in enumerate(frames):
             rd.qpos[:]=qpos;rd.qvel[:]=qvel
             mujoco.mj_forward(model,rd)
-            cam.lookat[:]=[float(qpos[bq]),float(qpos[bq+1]),float(qpos[bq+2])]
+            # Camera lookat stays fixed in world coordinates for every frame.
             views=[]
             for az,el,name in [(90,-15,'SIDE'),(270,-18,'OPPOSITE'),(105,-68,'OVERHEAD')]:
                 cam.azimuth=az;cam.elevation=el
                 renderer.update_scene(rd,camera=cam)
                 img=Image.fromarray(renderer.render().copy())
                 tile=Image.new('RGB',(640,450),'#111827');tile.paste(img,(0,40))
-                ImageDraw.Draw(tile).text((12,10),f'{name} | {phase} | t={tt:.2f}s | contacts F={fc} M={mc}',fill='white')
+                ImageDraw.Draw(tile).text((12,10),f'{name} | WORLD-FIXED | {phase} | t={tt:.2f}s | contacts F={fc} M={mc}',fill='white')
                 views.append(tile)
             combined=Image.new('RGB',(1920,450))
             for k,tile in enumerate(views):combined.paste(tile,(k*640,0))
