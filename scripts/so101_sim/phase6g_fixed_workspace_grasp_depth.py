@@ -413,6 +413,17 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                 im=Image.fromarray(renderer.render().copy())
                 canvas=Image.new('RGB',(640,496),'#192532');canvas.paste(im,(0,30))
                 ImageDraw.Draw(canvas).text((10,9),f'{out.name} {phase} {t:.2f}s F{fc}/M{mc} | jaw->bottle Fxy=({jaw_force_world[0]:+.2f},{jaw_force_world[1]:+.2f})N',fill='white')
+                if getattr(args,'wrist_camera',False):
+                    wrist_id=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_CAMERA,'r2s_wrist_rgb')
+                    if wrist_id >= 0:
+                        renderer.update_scene(d,camera=wrist_id,scene_option=scene_options)
+                        wrist_im=Image.fromarray(renderer.render().copy())
+                        wrist_tile=Image.new('RGB',(640,496),'#192532')
+                        wrist_tile.paste(wrist_im,(0,30))
+                        ImageDraw.Draw(wrist_tile).text((10,9),f'WRIST J5/J6 {phase} {t:.2f}s',fill='white')
+                        both=Image.new('RGB',(1280,496))
+                        both.paste(canvas,(0,0));both.paste(wrist_tile,(640,0))
+                        canvas=both
                 frames.append(canvas)
     finally:
         if renderer:renderer.close()
@@ -680,6 +691,7 @@ def main():
                    help='Prefer an IK seed raised at J2 by this angle (auto-select world-Z-positive sign); 0 disables')
     p.add_argument('--dt',type=float,default=.002)
     p.add_argument('--fps',type=int,default=8)
+    p.add_argument('--wrist-camera',action='store_true',help='Optional visualization-only J5/J6 camera')
     p.add_argument('--settle-s',type=float,default=.4)
     p.add_argument('--close-s',type=float,default=1.3)
     p.add_argument('--hold-s',type=float,default=1.0)
