@@ -705,7 +705,8 @@ def run(args):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--dataset-root',required=True,type=Path)
+    p.add_argument('--dataset-root',type=Path,default=None,
+                   help='Legacy compatibility only; Phase6G geometry and physics do not read this dataset')
     p.add_argument('--urdf',required=True,type=Path)
     p.add_argument('--out',required=True,type=Path)
     p.add_argument('--target-x',type=float,default=.220)
