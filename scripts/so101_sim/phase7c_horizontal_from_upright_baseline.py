@@ -584,7 +584,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_j23_deg=args.max_approach_j123_deg,
                 max_j4_deg=35.,
                 max_j5_deg=args.max_j5_from_recorded_deg,
-                max_nfev=args.horizontal_ik_max_nfev)
+                max_nfev=max(120,args.horizontal_ik_max_nfev))
             target_error_mm = center_target['error_mm']
             stages.append(dict(seed=label, stage='3_center_side_cartesian_target',
                 target_world_m=center_target['target_world_m'],
