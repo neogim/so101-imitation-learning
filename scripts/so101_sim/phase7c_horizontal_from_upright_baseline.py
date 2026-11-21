@@ -585,7 +585,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_j4_deg=35.,
                 max_j5_deg=args.max_j5_from_recorded_deg,
                 max_nfev=max(120,args.horizontal_ik_max_nfev),
-                finger_body=bid, finger_axis_local=finger_local,
+                # STL principal axis is unsigned; the tip lies at negative local Z.
+                finger_body=bid, finger_axis_local=-finger_local,
                 orientation_tolerance_deg=12.)
             target_error_mm = center_target['error_mm']
             inner_face_valid = bool(center_target['inward_face_valid'])
