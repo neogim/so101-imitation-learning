@@ -615,11 +615,16 @@ def run(args):
              'open_moving_gap_mm':geo.get('open_moving_gap_mm'),
              'sweep_moving_min_gap_mm':geo.get('closing_moving_min_gap_mm'),
              'status':phys.get('status'),'bilateral_hold_steps':phys.get('bilateral_hold_steps'),
+             'lift_status':phys.get('lift_status','NOT_TESTED'),
+             'lift_success':phys.get('lift_success',False),
+             'final_bottle_rise_mm':phys.get('lift_final_bottle_rise_mm'),
+             'final_xy_drift_mm':phys.get('lift_final_xy_drift_mm'),
+             'retain_bilateral_fraction':phys.get('retain_bilateral_fraction'),
              'max_xy_displacement_mm':phys.get('max_xy_displacement_mm'),
              'max_normal_contact_force_n':phys.get('max_normal_contact_force_n'),
              'video':name+'/grasp.mp4' if (sub/'grasp.mp4').exists() else None}
         results.append((row,info))
-        print(f" {name}: IK={row['ik_error_mm']} mm; status={row['status']}; bilateral={row['bilateral_hold_steps']}",flush=True)
+        print(f" {name}: IK={row['ik_error_mm']} mm; physics={row['status']}; hold bilateral={row['bilateral_hold_steps']}; lift={row['lift_status']} rise={row['final_bottle_rise_mm']}mm drift={row['final_xy_drift_mm']}mm",flush=True)
     rows=[r for r,_ in results]
     with (args.out/'comparison.csv').open('w',newline='',encoding='utf-8') as f:
         w=csv.DictWriter(f,fieldnames=rows[0].keys());w.writeheader();w.writerows(rows)
@@ -666,6 +671,8 @@ def run(args):
        'target_world_xyz_m':xyz.tolist(),'support_z_m':args.table_z,
        'target_reused_across_cases':True,
        'depth_subset':args.depth_only,
+       'requested_lift_mm':float(args.lift_mm),
+       'lift_verdict_rule':'PASS requires last bottle rise >= target-10mm, final XY drift <=10mm, >=80% bilateral during retain, no >3mm penetration',
        'j4_sign_comparison_enabled':args.j4_compare,
        'j4_contact_search_enabled':args.j4_contact_search,
        'j4_bilateral_refinement_enabled':args.j4_bilateral_refine,
