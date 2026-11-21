@@ -996,6 +996,11 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
                 j6=hi[5]+(lo[5]-hi[5])*u
             else:phase='hold';j6=lo[5]
             ctrl=np.r_[q,j6];d.ctrl[aids]=ctrl
+            if bool(getattr(args,'arm_gravity_compensation',False)):
+                # Ideal bias compensation is a DIAGNOSTIC upper bound, NOT a
+                # claim about the actual STS3215 or implemented feedforward.
+                mujoco.mj_forward(model,d)
+                d.qfrc_applied[vadr[:5]]=d.qfrc_bias[vadr[:5]]
             if k:mujoco.mj_step(model,d)
             if not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all():bad=True;break
             fc,mc,depth=grasp.jaw_contact_counts(model,d,bottle,fixed,moving)
@@ -1065,7 +1070,7 @@ def physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,arg
             row['fixed_jaw_centroid_z_m']=float(jaw_xyz[:,2].mean())
             row['fixed_jaw_centroid_delta_z_mm']=float(
                 1000.*(jaw_xyz[:,2].mean()-fixed_centroid_initial_z))
-            row['arm_gravity_compensated']=False
+            row['arm_gravity_compensated']=bool(getattr(args,'arm_gravity_compensation',False))
             jaw_table_contacts=0
             for c in d.contact[:d.ncon]:
                 pair={int(c.geom1),int(c.geom2)}
