@@ -137,6 +137,31 @@ def run(args):
             used_mapping=mapping)
         for filename,vals in [('fixed_collision_geoms.csv',fixed_table),('moving_collision_geoms.csv',moving_table)]:
             phase7q.write_csv(args.out/filename,vals)
+
+        # Inspect every other geom rigidly attached to each jaw body, including
+        # the original visual STL and disabled original collision geoms.
+        # mj_geomDistance on mesh uses MuJoCo's convexified mesh representation;
+        # this is a geometric lower bound/approximation, not exact visual triangles.
+        def attached_geom_audit(jaw_ids, label):
+            bodyids={int(model.geom_bodyid[g]) for g in jaw_ids}
+            candidates=[]
+            for gid in range(model.ngeom):
+                if int(model.geom_bodyid[gid]) not in bodyids or gid in jaw_ids: continue
+                name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,gid) or ''
+                try:
+                    gap,point_a,point_b=closest(model,d,gid,floor)
+                    candidates.append(dict(jaw=label,geom_id=int(gid),geom_name=name,
+                        geom_type=int(model.geom_type[gid]),group=int(model.geom_group[gid]),
+                        alpha=float(model.geom_rgba[gid,3]),
+                        contype=int(model.geom_contype[gid]),conaffinity=int(model.geom_conaffinity[gid]),
+                        min_gap_mm=float(gap*1000),point_world_m=point_a.tolist()))
+                except Exception as exc:
+                    candidates.append(dict(jaw=label,geom_id=int(gid),geom_name=name,error=repr(exc)))
+            return sorted(candidates,key=lambda q:q.get('min_gap_mm',float('inf')))
+        attachment_audit=attached_geom_audit(fixed,'fixed')+attached_geom_audit(moving,'moving')
+        report['other_attached_geom_audit']=attachment_audit
+        report['visual_geometry_caveat']='mj_geomDistance uses convex mesh interpretation, not exact rendered STL triangles'
+        phase7q.write_csv(args.out/'jaw_other_attached_geom_table_distances.csv',attachment_audit)
         # Show explicit min-gap geoms as highlights; no force or dynamics evaluation.
         original_rgba=model.geom_rgba.copy()
         shown=list(fixed)+list(moving)+list(bottle)+[floor]
