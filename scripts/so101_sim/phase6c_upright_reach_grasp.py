@@ -155,6 +155,13 @@ def model_build(args):
     for g in bottle:
         model.geom_contype[g]=1;model.geom_conaffinity[g]=2|4
     model.geom_contype[floor]=4;model.geom_conaffinity[floor]=1
+    # Enable ONLY the jaw <-> tabletop contacts on request, retaining
+    # bottle/table, jaw/bottle, and the original self-collision exclusions.
+    # For MuJoCo contact bitmasks, one reciprocal mask match suffices.
+    if bool(getattr(args,'jaw_table_contact',False)):
+        model.geom_conaffinity[floor] |= 2
+        for gid in (*fixed,*moving):
+            model.geom_conaffinity[gid] |= 4
     return model,qadr,vadr,aids,np.asarray(low),np.asarray(high),fixed,moving,bottle,floor
 
 
