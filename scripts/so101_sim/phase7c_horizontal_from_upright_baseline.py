@@ -706,7 +706,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  real_pose_safety_valid=bool(safety['valid']),
                  q_deg=row['ik_angles_deg']))
             if best is None or (valid,-score)>(best[0],-best[1]):
-                best=(valid,score,q,row,q_first.copy())
+                best=(valid,score,q,row,q_first.copy(),q_heading.copy())
         except Exception as exc:
             trials.append(dict(seed=label,error=repr(exc),
                                valid_for_physics=False))
@@ -716,6 +716,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         raise RuntimeError('Ordered J5 alignment did not yield a candidate')
     report=dict(method='ordered_J5_top_view_then_fixed_J5_approach_then_J6',
         chosen=best[3],n_candidates=len(seeds),
+        stage1_j1_heading_q_deg=np.rad2deg(best[5]).tolist(),
         stage1_j5_aligned_q_deg=np.rad2deg(best[4]).tolist(),
         stage2_approach_q_deg=np.rad2deg(best[2]).tolist(),
         actual_finger_axis_local=finger_local.tolist(),
@@ -1193,6 +1194,17 @@ def run(args):
                     model,data,qadr,bq,lo,hi,xyz,args.object_quat,
                     fixed,moving,bottle,floor,tool_geoms,q,anchor,bj,args,sub,
                     real_samples)
+                # Capture the J1-only posture separately (before J5).
+                heading_q=np.deg2rad(np.asarray(
+                    clearance_report['stage1_j1_heading_q_deg'],float))
+                render_j5_stage_top_view(model,qadr,bq,heading_q,xyz,
+                                          args.object_quat,hi,sub)
+                for source_name,target_name in (
+                    ('stage1_j5_top_view.png','stage1_j1_heading_top_view.png'),
+                    ('stage1_j4_side_view.png','stage1_j1_heading_side_view.png')):
+                    source_path=sub/source_name
+                    if source_path.is_file():
+                        source_path.rename(sub/target_name)
                 aligned_deg=clearance_report['stage1_j5_aligned_q_deg']
                 aligned_q=np.deg2rad(np.asarray(aligned_deg,float))
                 render_j5_stage_top_view(model,qadr,bq,aligned_q,xyz,
