@@ -584,14 +584,24 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                 max_j23_deg=args.max_approach_j123_deg,
                 max_j4_deg=35.,
                 max_j5_deg=args.max_j5_from_recorded_deg,
-                max_nfev=max(120,args.horizontal_ik_max_nfev))
+                max_nfev=max(120,args.horizontal_ik_max_nfev),
+                finger_body=bid, finger_axis_local=finger_local,
+                orientation_tolerance_deg=12.)
             target_error_mm = center_target['error_mm']
             inner_face_valid = bool(center_target['inward_face_valid'])
+            orientation_valid = bool(center_target['orientation_valid'])
+            elevation_error = float(center_target['finger_table_elevation_error_deg'])
+            axis_perp_error = float(center_target['finger_to_muhi_axis_perpendicular_error_deg'])
+            aperture_perp_error = float(center_target['aperture_to_muhi_axis_perpendicular_error_deg'])
             stages.append(dict(seed=label, stage='3_center_side_cartesian_target',
                 target_world_m=center_target['target_world_m'],
                 fixed_surface_world_m=center_target['fixed_surface_world_m'],
                 position_error_mm=target_error_mm,
                 inward_face_valid=inner_face_valid,
+                orientation_valid=orientation_valid,
+                finger_table_elevation_error_deg=elevation_error,
+                finger_muhi_perpendicular_error_deg=axis_perp_error,
+                aperture_muhi_perpendicular_error_deg=aperture_perp_error,
                 aperture_alignment_cos=center_target['jaw_aperture_alignment_cos'],
                 q_deg=np.rad2deg(q).tolist()))
             (fg,mg,m80,m100,err,angle,proj,bracket,fw,mw,opposition,
@@ -622,9 +632,9 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
             path_valid=all(check['valid'] for check in path_audit)
             final_heading_error,final_jaw_xy,_=heading_to_muhi(q)
             valid=(safety['valid'] and path_valid
-                   and inner_face_valid and target_error_mm<=2. and 1.<=fg<=2. and fw['axial_offset_mm']<=2.
-                   and mg>=1. and angle<=angle_limit
-                   and proj>=.55 and (mg-m80)>=2.
+                   and inner_face_valid and orientation_valid
+                   and target_error_mm<=2. and 1.<=fg<=2. and fw['axial_offset_mm']<=2.
+                   and mg>=1. and (mg-m80)>=2.
                    and bracket['between_centroids']
                    and bracket['fixed_surface_inward']
                    and fw['axial_offset_mm']<=central_half_mm
@@ -633,8 +643,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                    and min(open_floor['gap_mm'],closed_floor['gap_mm'])
                        >=args.min_tool_floor_gap_mm)
             score=(200.*float(not inner_face_valid)+25.*target_error_mm+3.*abs(fg-1.5)+20.*max(0.,1.-mg)+
-                   .3*abs(m80)+.1*err+2.*angle+
-                   80.*max(0.,.55-proj)+
+                   .3*abs(m80)+.1*err+
+                   3.*elevation_error+3.*axis_perp_error+3.*aperture_perp_error+
                    70.*float(not bracket['fixed_surface_inward'])+
                    30.*float(not bracket['between_centroids'])+
                    5.*max(0.,fw['axial_offset_mm']-central_half_mm)+
@@ -674,7 +684,11 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  center_target_ik=center_target,
                  center_target_all_anchors=center_trials,
                  center_target_error_mm=target_error_mm,
-                 center_target_valid=bool(inner_face_valid and target_error_mm<=2.),
+                 center_target_valid=bool(inner_face_valid and orientation_valid and target_error_mm<=2.),
+                 pose_orientation_valid=orientation_valid,
+                 finger_table_elevation_error_deg=elevation_error,
+                 finger_muhi_perpendicular_error_deg=axis_perp_error,
+                 aperture_muhi_perpendicular_error_deg=aperture_perp_error,
                  fixed_inner_face_valid=inner_face_valid,
                  fixed_target_inner_gap_mm=[1.,2.],
                  fixed_target_axial_center_mm=[-2.,2.],
@@ -690,7 +704,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  j5_locked_at_deg=float(np.rad2deg(q[4])),
                  perpendicular_tolerance_deg=angle_limit,
                  open_clear=bool(1.<=fg<=2. and mg>=1.),
-                 direction_clear=bool(angle<=angle_limit and proj>=.55),
+                 direction_clear=orientation_valid,
                  moving_closes_toward_muhi=bool((mg-m80)>=2.),
                  valid_for_physics=bool(valid),
                  ik_angles_deg=np.rad2deg(q).tolist(),
@@ -702,6 +716,8 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
                  fixed_gap_mm=fg,moving_gap_mm=mg,
                  center_target_error_mm=target_error_mm,
                  inward_face_valid=inner_face_valid,
+                 orientation_valid=orientation_valid,
+                 finger_table_elevation_error_deg=elevation_error,
                  j4_deg=float(np.rad2deg(q[3])),
                  candidate_valid=bool(valid),
                  real_pose_safety_valid=bool(safety['valid']),
@@ -725,7 +741,7 @@ def horizontal_jaw_clearance_search(model,data,qadr,bq,lo,hi,xyz,quat,
         top_view_angle_limit_deg=angle_limit,
         seed_strategy='actual_recorded_follower_kinematically_nearest_diverse',
         j4_sign_override=False,
-        note='J1/J5 initialize pose. Stage3 samples fixed-vs-moving INNER jaw surface points and optimizes 3D cylinder-side target; aperture must face Muhi and Muhi must lie between jaws. Only then apply geometry/path gates and J6 physics.')
+        note='J1/J5 initialize pose. Task-frame IK jointly optimizes fixed inner jaw 3D position, finger vertical for horizontal Muhi (horizontal for upright), both finger and aperture perpendicular to Muhi long axis, inward-facing aperture and Muhi between jaws. 5DOF cannot guarantee arbitrary full 6D pose. All geometry/path gates precede J6.')
     return best[2],report
 
 
@@ -1248,7 +1264,7 @@ def run(args):
                  ik['anchor_error_mm']<=args.max_ik_error_mm))
             phys=physics(model,qadr,vadr,aids,lo,hi,xyz,bq,bd,fixed,moving,bottle,floor,q,args,sub) if can_run else {
                 'status':'GEOMETRY_DIAGNOSTIC_ONLY',
-                'reason':'Explicit center-side Cartesian target <=2mm, inner fixed-jaw gap 1-2mm, end-cap rejection, floor, orientation, opposition or path not satisfied; inspect horizontal_jaw_ik_candidates.json',
+                'reason':'Task-frame pose IK requires finger-table elevation <=12deg, finger/aperture perpendicular to Muhi <=12deg, fixed inside face, 3D target <=2mm, gap 1-2mm, floor and path gates. Inspect horizontal_jaw_ik_candidates.json',
                 'bilateral_hold_steps':None}
         except Exception as exc:
             ik={};geo={};phys={'status':'EXECUTION_ERROR','reason':repr(exc),'bilateral_hold_steps':0}
